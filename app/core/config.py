@@ -1,0 +1,177 @@
+"""应用配置。
+
+Spec 13 §2 Configuration：敏感配置不得硬编码
+（DB password / Redis password / signing secret / encryption key / MFA encryption key），
+应通过环境变量或正式 Secret Management 注入。
+
+本模块只从环境变量 / .env 读取，仓库内不保存任何真实凭据。
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal
+from urllib.parse import quote_plus
+
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+AppEnv = Literal["local", "dev", "test", "staging", "prod"]
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+class Settings(BaseSettings):
+    """运行时配置。所有字段均可通过环境变量覆盖。"""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ------------------------------------------------------------------
+    # Application
+    # ------------------------------------------------------------------
+    app_name: str = "VCTN"
+    app_env: AppEnv = "local"
+    debug: bool = False
+
+    # Spec 08 §1 Base：/api/v1/admin
+    api_v1_prefix: str = "/api/v1/admin"
+
+    # Spec 06 §4 / 13 §5 Logging
+    log_level: LogLevel = "INFO"
+    log_json: bool = True
+
+    # ------------------------------------------------------------------
+    # PostgreSQL
+    # 本地开发不安装实例，通过环境变量指向可用地址
+    # ------------------------------------------------------------------
+    postgres_host: str = "127.0.0.1"
+    postgres_port: int = 5432
+    postgres_user: str = "vctn"
+    postgres_password: SecretStr = SecretStr("")
+    postgres_db: str = "vctn"
+
+    db_echo: bool = False
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 1800
+
+    # ------------------------------------------------------------------
+    # Redis
+    # 注意：Redis Key 命名规范尚未冻结（UNRESOLVED DESIGN DECISION），
+    # 本阶段只建立连接，不定义任何 key 结构。
+    # ------------------------------------------------------------------
+    redis_host: str = "127.0.0.1"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: SecretStr = SecretStr("")
+    redis_socket_timeout: float = 5.0
+
+    # ------------------------------------------------------------------
+    # Snowflake
+    # Frozen（Spec 00 §6 / 07 §2 / 15 D-014）：BIGINT + Snowflake，
+    # API JSON 序列化为字符串，禁止自增业务 ID，禁止 UUID 业务主键。
+    #
+    # 以下位分配与 epoch 参数属于 DD-14 的技术参数，
+    # Spec 尚未冻结 → UNRESOLVED DESIGN DECISION，此处为保守默认值，
+    # 必须可由环境变量覆盖，待人类冻结后回填。
+    # ------------------------------------------------------------------
+    snowflake_worker_id: int = Field(default=1, ge=0)
+    snowflake_datacenter_id: int = Field(default=1, ge=0)
+    snowflake_epoch_ms: int = 1735689600000  # 2025-01-01T00:00:00Z
+
+    # ------------------------------------------------------------------
+    # Secrets —— 13 §2
+    # 本阶段不实现 Token / MFA，因此仅登记配置入口，默认留空。
+    # ------------------------------------------------------------------
+    signing_secret: SecretStr = SecretStr("")
+    encryption_key: SecretStr = SecretStr("")
+    mfa_encryption_key: SecretStr = SecretStr("")
+
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_log_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("api_v1_prefix")
+    @classmethod
+    def _normalize_prefix(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("api_v1_prefix 必须以 / 开头")
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _guard_production_secrets(self) -> Settings:
+        """生产环境禁止使用空密钥启动。
+
+        安全默认值：保守实现，只阻止明显不安全的 prod 启动；
+        local / dev / test 环境放行，便于无凭据的开发与测试。
+        """
+        if self.app_env != "prod":
+            return self
+
+        missing: list[str] = []
+        if not self.postgres_password.get_secret_value():
+            missing.append("POSTGRES_PASSWORD")
+        if not self.redis_password.get_secret_value():
+            missing.append("REDIS_PASSWORD")
+        if not self.signing_secret.get_secret_value():
+            missing.append("SIGNING_SECRET")
+        if not self.encryption_key.get_secret_value():
+            missing.append("ENCRYPTION_KEY")
+        if missing:
+            raise ValueError("生产环境缺少必需的密钥配置：" + ", ".join(missing))
+        return self
+
+    # ------------------------------------------------------------------
+    # Derived
+    # ------------------------------------------------------------------
+    @property
+    def database_url(self) -> str:
+        """SQLAlchemy async DSN（asyncpg 驱动）。"""
+        password = quote_plus(self.postgres_password.get_secret_value())
+        user = quote_plus(self.postgres_user)
+        return (
+            f"postgresql+asyncpg://{user}:{password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def database_url_safe(self) -> str:
+        """脱敏后的 DSN，可安全写入日志。"""
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:***"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def redis_url(self) -> str:
+        """Redis DSN。"""
+        password = self.redis_password.get_secret_value()
+        auth = f":{quote_plus(password)}@" if password else ""
+        return f"redis://{auth}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    @property
+    def redis_url_safe(self) -> str:
+        """脱敏后的 Redis DSN，可安全写入日志。"""
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "prod"
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """返回进程级单例配置。"""
+    return Settings()
+
+
+settings = get_settings()

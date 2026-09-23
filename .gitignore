@@ -1,0 +1,38 @@
+# ---- 环境与密钥 ----
+.env
+.env.*
+!.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- 工具缓存 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.swp
+
+# ---- 日志 ----
+logs/
+*.log
+
+# ---- Agent 工作区 ----
+# 含工作日志与本地决策记录，可能包含环境信息（如远程主机/端口），
+# 属本地运营数据，不纳入版本库。
+.workbuddy/
