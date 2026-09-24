@@ -334,7 +334,18 @@ class TestRouteSurface:
         }
         assert user_crud_paths == set()
 
-    async def test_mfa_endpoints_still_absent(self, app: FastAPI) -> None:
-        """MFA 属 `PHASES.md` Phase 5，本阶段不得预实现（DD-01 只落地边界）。"""
+    async def test_mfa_endpoints_are_confined_to_auth_domain(self, app: FastAPI) -> None:
+        """MFA 端点不得混入 admin 资源域。
+
+        ⚠️ 本测试的前身是一条**反向钉住**（断言"不存在任何 mfa 端点"），
+        服务于当时的目标：Session 阶段不得预实现 MFA。
+        现在 `PHASES.md` Phase 5（MFA）已进入实现，该断言已失效。
+
+        但"MFA 属于认证域、不属于 `/api/v1/admin` 资源域"这条边界**仍然成立**，
+        所以此处换成正向断言：MFA 只能出现在 `/api/v1/auth` 之下。
+        若将来有人把 MFA 挂到 `/admin`，会立刻失败。
+        """
         paths = set(app.openapi()["paths"])
-        assert not any("mfa" in path for path in paths)
+        assert not any(path.startswith("/api/v1/admin") and "mfa" in path for path in paths)
+        # 且认证域下确实已经有 MFA（防止"本应实现却没有实现"）。
+        assert any("mfa" in path for path in paths if "/auth/" in path)

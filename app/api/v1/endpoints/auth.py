@@ -58,6 +58,7 @@ from app.models.user import AdminUser
 from app.schemas.auth import (
     AuthUserResponse,
     ChangePasswordRequest,
+    LoginMfaRequiredResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
@@ -65,6 +66,8 @@ from app.schemas.auth import (
     RefreshRequest,
     TokenPairResponse,
 )
+from app.schemas.mfa import MfaVerifyRequest
+from app.services.auth import MfaPendingResult
 
 router = APIRouter(tags=["Auth"])
 
@@ -101,10 +104,60 @@ async def login(
     """校验凭据、创建会话并签发令牌对（Spec `04 §1` 全流程）。
 
     失败一律返回 401 + 统一文案（Spec `10 §5`：不泄露用户是否存在）。
+
+    口令通过但用户已绑定二次验证时，返回 **200 + `mfa_required=true`** 而不是令牌
+    （DD-23 方案 A）。此时**没有**创建会话，客户端必须调用
+    `POST /auth/mfa/verify` 续完登录。
     """
     result = await service.login(
         username=payload.username,
         password=payload.password.get_secret_value(),
+        ip=client_ip(request),
+        user_agent=client_user_agent(request),
+    )
+    await session.commit()
+
+    if isinstance(result, MfaPendingResult):
+        return success_response(
+            LoginMfaRequiredResponse(
+                mfa_required=True,
+                mfa_token=result.mfa_token,
+                expires_at=result.expires_at,
+                provider=result.provider,
+            )
+        )
+
+    return success_response(
+        LoginResponse(
+            access_token=result.tokens.access_token,
+            refresh_token=result.tokens.refresh_token,
+            access_expires_at=result.tokens.access_expires_at,
+            refresh_expires_at=result.tokens.refresh_expires_at,
+            must_change_password=result.must_change_password,
+            user=_user_response(result.user),
+        )
+    )
+
+
+@router.post("/mfa/verify", summary="完成登录的二次验证")
+async def mfa_verify(
+    payload: MfaVerifyRequest,
+    request: Request,
+    service: AuthServiceDep,
+    session: DbSessionDep,
+) -> JSONResponse:
+    """核销 MFA 挑战并**续完登录**（DD-23 方案 A）。
+
+    该端点**不需要也不可能有**已认证身份：此刻还没有会话 ——
+    挑战令牌就是这个事实的唯一凭证。
+
+    成功后返回与 `POST /auth/login` **完全相同**的令牌结构：
+    客户端不必为"有没有 MFA"准备两套处理逻辑，
+    "登录"的最终形态始终只有一个。
+    """
+    result = await service.complete_mfa_login(
+        mfa_token=payload.mfa_token,
+        code=payload.code,
         ip=client_ip(request),
         user_agent=client_user_agent(request),
     )

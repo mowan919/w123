@@ -434,9 +434,31 @@ class TestRouteSurface:
             f"{AUTH_PREFIX}/password",
         }
         assert expected <= paths
-        # 不得出现未冻结的 Phase 5 / Phase 8 端点（预实现）
-        assert not [p for p in paths if p.startswith(f"{AUTH_PREFIX}/mfa")]
+        # Phase 8 的端点仍未冻结，不得预实现
         assert f"{AUTH_PREFIX}/permissions" not in paths
+
+    def test_mfa_paths_match_spec_exactly(self, app: FastAPI) -> None:
+        """`/auth/mfa*` 必须与 `08 §3` 的清单**逐条相等**。
+
+        ⚠️ 本测试的前身是一条**反向钉住**（断言"不存在任何 mfa 端点"）。
+        它服务于当时的目标：Phase 5（Session）阶段不得预实现 MFA。
+        现在 `PHASES.md` Phase 5（MFA）已进入实现，那条断言已失效 ——
+        因此这里不是"删掉护栏"，而是**把护栏换成正向钉住**：
+        多一个端点（越权实现）或少一个（漏实现）都会失败。
+        """
+        paths = set(app.openapi()["paths"])
+        expected = {
+            f"{AUTH_PREFIX}/mfa",
+            f"{AUTH_PREFIX}/mfa/setup",
+            f"{AUTH_PREFIX}/mfa/enable",
+            f"{AUTH_PREFIX}/mfa/disable",
+            f"{AUTH_PREFIX}/mfa/verify",
+        }
+        assert expected <= paths
+        # 不得在 `08 §3` 之外自造 MFA 端点（例如恢复码 / 管理员重置）。
+        # 恢复流程在 Spec 中没有依据，实现者不得自行扩张接口面（AGENTS.md §4）。
+        extra = {p for p in paths if p.startswith(f"{AUTH_PREFIX}/mfa") and p not in expected}
+        assert extra == set()
 
     def test_auth_is_not_mounted_under_admin_prefix(self, app: FastAPI) -> None:
         """DD-02 阶段裁定 `/api/v1/auth` 独立；`08 §1` 的 `/admin` 不含认证。

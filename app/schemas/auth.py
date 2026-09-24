@@ -131,6 +131,22 @@ class LoginResponse(TokenPairResponse):
     user: AuthUserResponse
 
 
+class LoginMfaRequiredResponse(BaseModel):
+    """`POST /auth/login` 在"口令已通过、二次验证未完成"时的响应（DD-23 方案 A）。
+
+    此刻**没有任何会话与令牌** —— 只有 `mfa_token`。
+    客户端须携带它调用 `POST /auth/mfa/verify` 才能完成登录。
+
+    为什么 `mfa_required` 这个布尔值不能省：只靠"有没有 token 字段"来判断，
+    会让客户端不得不做结构探测；而布尔字段让"这个响应是哪种"成为显式事实。
+    """
+
+    mfa_required: bool = Field(default=True, description="恒为 true")
+    mfa_token: str = Field(description="一次性挑战令牌，非持久化明文，仅本次有效")
+    expires_at: datetime = Field(description="挑战过期时间 (UTC)")
+    provider: str = Field(description="本次校验使用的 MFA Provider 名称")
+
+
 class LogoutResponse(BaseModel):
     """`POST /auth/logout` 响应。
 
@@ -162,6 +178,7 @@ class MeResponse(BaseModel):
 __all__ = [
     "AuthUserResponse",
     "ChangePasswordRequest",
+    "LoginMfaRequiredResponse",
     "LoginRequest",
     "LoginResponse",
     "LogoutResponse",

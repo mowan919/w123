@@ -144,6 +144,32 @@ class ConflictError(AppError):
     message = "conflict"
 
 
+class MfaChallengeInvalidError(AppError):
+    """MFA 挑战令牌无效 / 已过期 / 已核销 / 已耗尽（HTTP 401）。
+
+    文案**刻意不区分**四种成因：区分它们等于告诉调用方
+    "这个令牌曾经存在且已经过期"，可被用于枚举有效令牌
+    （与 `10 §5` 的登录失败文案同口径）。真实原因只写入审计。
+    """
+
+    code = int(ErrorCode.MFA_CHALLENGE_INVALID)
+    http_status = 401
+    message = "invalid or expired verification challenge"
+
+
+class MfaCodeRejectedError(AppError):
+    """MFA 动态码被拒绝（HTTP 401）。
+
+    文案统一，不区分"码错误"与"前置状态已失效" ——
+    若区分，攻击者就能察觉"我的码其实是对的、只是状态不对"，
+    从而把一个内部的正确性判断变成可观测信号。
+    """
+
+    code = int(ErrorCode.MFA_CODE_REJECTED)
+    http_status = 401
+    message = "invalid verification code"
+
+
 class DependencyUnavailableError(AppError):
     """依赖（PostgreSQL / Redis）不可用。"""
 

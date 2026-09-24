@@ -156,6 +156,11 @@ class Settings(BaseSettings):
             missing.append("SIGNING_SECRET")
         if not self.encryption_key.get_secret_value():
             missing.append("ENCRYPTION_KEY")
+        # DD-22 P2：MFA Secret 的加密密钥同样必须在 prod 显式提供。
+        # 缺它的话，`MfaSecretBox` 会在**第一次有人启用 MFA 时**才失败 ——
+        # 把一个"启动时就该炸"的配置错误，推迟成运行期某个用户点击后的报错。
+        if not self.mfa_encryption_key.get_secret_value():
+            missing.append("MFA_ENCRYPTION_KEY")
         if missing:
             raise ValueError("生产环境缺少必需的密钥配置：" + ", ".join(missing))
         return self

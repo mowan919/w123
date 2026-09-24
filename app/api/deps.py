@@ -44,6 +44,7 @@ from app.core.errors import AuthenticationError, PermissionDeniedError
 from app.core.security.token import extract_bearer_token
 from app.db.session import get_db
 from app.services.auth import AuthService
+from app.services.mfa_management import MfaManagementService
 from app.services.session import AuthenticatedSession, SessionService
 from app.services.session_management import SessionManagementService
 
@@ -105,6 +106,17 @@ async def get_session_management_service(
     return SessionManagementService(session)
 
 
+async def get_mfa_management_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> MfaManagementService:
+    """提供 MFA 管理服务（状态 / 绑定 / 启用 / 禁用 / 挑战核销）。
+
+    与 `AuthService` 一致，默认不注入审计记录器：审计事件经端口产生，
+    **落库属 Phase 6**（DD-08 未冻结）。
+    """
+    return MfaManagementService(session)
+
+
 async def get_authenticated_session(
     request: Request,
     token: Annotated[str, Depends(get_bearer_token)],
@@ -157,6 +169,7 @@ AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 SessionManagementServiceDep = Annotated[
     SessionManagementService, Depends(get_session_management_service)
 ]
+MfaManagementServiceDep = Annotated[MfaManagementService, Depends(get_mfa_management_service)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -166,6 +179,7 @@ __all__ = [
     "CurrentActorAllowPasswordChangeDep",
     "CurrentActorDep",
     "DbSessionDep",
+    "MfaManagementServiceDep",
     "SessionManagementServiceDep",
     "client_ip",
     "client_user_agent",
@@ -174,6 +188,7 @@ __all__ = [
     "get_bearer_token",
     "get_current_actor",
     "get_current_actor_allow_password_change",
+    "get_mfa_management_service",
     "get_session_management_service",
     "get_session_service",
 ]

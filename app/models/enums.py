@@ -187,12 +187,29 @@ class MfaStatus(StrEnum):
     ENABLED = "ENABLED"
 
 
+class MfaPolicySubject(StrEnum):
+    """MFA 策略的主体类型（DD-24 方案 A / Spec `04 §7`）。
+
+    `04 §7` 冻结了 `user > role > system` 三层，其中 **system** 级
+    由配置 / 系统参数提供，**不需要**落库；落库的是这里两种主体。
+
+    为什么用"类型 + ID"而不是两张表或两个可空外键：见
+    `app/models/mfa.py::MfaPolicy` 的类文档。
+    本枚举只负责把"策略可以作用于什么"写成封闭集合 ——
+    开放枚列会让"第三种主体"在无声中出现在库里。
+    """
+
+    USER = "USER"
+    ROLE = "ROLE"
+
+
 __all__ = [
     "FIELD_ACCESS_READABLE",
     "FIELD_ACCESS_WRITABLE",
     "DepartmentStatus",
     "FieldAccessLevel",
     "HttpMethod",
+    "MfaPolicySubject",
     "MfaStatus",
     "PermissionResourceType",
     "PermissionStatus",

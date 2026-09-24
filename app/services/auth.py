@@ -55,7 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import AuditAction, AuditRecorder, AuditResult, NullAuditRecorder
 from app.auth.actor import CurrentActor
-from app.core.errors import AuthenticationError
+from app.core.errors import AuthenticationError, ConfigurationError
 from app.core.security.password import (
     LOCKOUT_DURATION,
     MAX_FAILED_LOGIN_ATTEMPTS,
@@ -69,6 +69,7 @@ from app.models.user import AdminUser
 from app.repositories.user import UserRepository
 from app.services.auth_audit import AuthAudit, AuthOperator
 from app.services.mfa import MfaService
+from app.services.mfa_management import MfaManagementService
 from app.services.session import IssuedTokens, SessionService
 from app.services.user import UserService
 
@@ -87,12 +88,33 @@ class LoginResult:
     `must_change_password` 为 True 时，客户端**必须**先调用本人改密接口；
     服务端侧由 `app.api.deps.get_current_actor` 强制拦截其他受保护请求
     （否则该标志只是装饰，见 `docs/DESIGN-DECISIONS.md` INTERIM-4-02）。
+
+    `mfa_setup_required` 表示"策略要求二次验证，但该用户尚未完成绑定"。
+    此时登录**不被阻断**（见 `login` 第 6c 步的注释）：阻断会形成死锁，
+    因为绑定本身需要一个已认证的会话。
     """
 
     user: AdminUser
     session: UserSession
     tokens: IssuedTokens
     must_change_password: bool
+    mfa_setup_required: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MfaPendingResult:
+    """口令已通过、二次验证未完成的中间态（DD-23 方案 A）。
+
+    此时**没有 Session、没有令牌** —— 只有一个一次性挑战令牌。
+    客户端必须带上它调用 `POST /auth/mfa/verify` 才能完成登录。
+
+    为什么不给任何可用的 access token：给了就等于承认"第一因素已足够"，
+    之后要求二次验证只是礼貌性询问。
+    """
+
+    mfa_token: str
+    expires_at: datetime
+    provider: str
 
 
 class AuthService:
@@ -104,6 +126,7 @@ class AuthService:
         *,
         audit: AuditRecorder | None = None,
         mfa: MfaService | None = None,
+        mfa_management: MfaManagementService | None = None,
     ) -> None:
         self._session = session
         self._recorder: AuditRecorder = audit or NullAuditRecorder()
@@ -111,6 +134,7 @@ class AuthService:
         self._users = UserRepository(session)
         self._sessions = SessionService(session, audit=self._recorder)
         self._mfa = mfa or MfaService()
+        self._mfa_management = mfa_management or MfaManagementService(session, audit=self._recorder)
         # 本人改密复用 Phase 2 的实现（口令策略、历史 5 条、审计口径都只此一份）。
         self._user_service = UserService(session, audit=self._recorder)
 
@@ -125,8 +149,12 @@ class AuthService:
         ip: str | None = None,
         user_agent: str | None = None,
         now: datetime | None = None,
-    ) -> LoginResult:
+    ) -> LoginResult | MfaPendingResult:
         """执行登录流程。
+
+        Returns:
+            `LoginResult`：登录完成（已签发会话与令牌）；
+            `MfaPendingResult`：口令已通过，但还需要二次验证（DD-23 方案 A）。
 
         Raises:
             AuthenticationError: 任一环节失败（对外文案统一，见模块 docstring）。
@@ -213,7 +241,49 @@ class AuthService:
         # 位置必须在"口令已验证"之后、"签发令牌"之前：
         # 若放在口令之前，攻击者无需口令即可触发 MFA 流程；
         # 若放在签发之后，就会先给出可用令牌再要求二次验证 —— 保护形同虚设。
+        #
+        # Phase 4 的 `MfaService.check_login` 只回答"策略要不要 + Provider 有没有"，
+        # 策略要求却无可用 Provider 时它 **fail-closed**（抛 ConfigurationError）。
+        # 该行为保持不变，此处不另造分支。
         await self._mfa.check_login(user_id=user.id)
+
+        # 6b. 该用户**已绑定**二次验证 → 停下来，签发挑战（DD-23 方案 A）。
+        #
+        # 注意判定依据是"是否已绑定"而不是"策略是否要求"：
+        #   已启用 ⇒ 必须验（启用的意义就在于此，与策略无关）；
+        #   策略要求但未绑定 ⇒ 见下方 6c。
+        # 若反过来只看策略，那么"用户自己开了 MFA、策略却没要求"时
+        # 二次验证会被跳过 —— 启用按钮就变成了装饰。
+        credential = await self._mfa_management.enabled_credential(user_id=user.id)
+        if credential is not None:
+            provider_name = self._mfa_management.active_provider_name()
+            if provider_name is None:  # 理论上不可达：有凭据 ⇒ 有 Provider
+                raise ConfigurationError("MFA 凭据存在，但当前没有可用的 Provider")
+            issued = await self._mfa_management.issue_challenge(
+                user_id=user.id, provider_name=provider_name, now=checked_at
+            )
+            # 挑战签发**不单独产生审计事件**：`04 §8` 的安全日志清单只有
+            # MFA setup / enable / disable / failure 四类，新增动作属于扩展 Spec，
+            # 因此这里保持沉默；真正需要留痕的是随后可能发生的 `MFA_FAILURE`，
+            # 以及在挑战成功核销时由 `complete_mfa_login` 记录的登录成功事件。
+            # （登记为 FINDING-MFA，便于后续裁定是否补这个事件。）
+            #
+            # 关键：**不创建 Session**。口令通过只代表"第一因素正确"，
+            # 此时若建会话，只输对密码的人会出现在在线用户列表里（DD-23 方案 A）。
+            return MfaPendingResult(
+                mfa_token=issued.token,
+                expires_at=issued.expires_at,
+                provider=issued.provider,
+            )
+
+        # 6c. 策略要求 MFA，但用户尚未完成绑定。
+        #
+        # 这里**不阻断登录**：绑定（`POST /auth/mfa/setup`）需要一个已认证的会话，
+        # 若在此拒绝，用户就永远走不到绑定那一步 —— 那是死锁，不是安全。
+        # 因此放行并在结果里如实标记，由客户端引导用户去绑定。
+        # 该取舍登记为 JUDGMENT-MFA-01（Spec 未规定未绑定时的处置）。
+        requirement = await self._mfa_management.requirement_for(user_id=user.id)
+        setup_required = requirement.required
 
         # ---- 7. 口令到期 → 强制改密（DD-02 P8） ------------------------
         password_expired = is_password_expired(user.password_changed_at, now=checked_at)
@@ -235,6 +305,7 @@ class AuthService:
             after={
                 "must_change_password": user.must_change_password,
                 "password_expired": password_expired,
+                "mfa_setup_required": setup_required,
             },
         )
 
@@ -243,6 +314,64 @@ class AuthService:
             session=user_session,
             tokens=tokens,
             must_change_password=user.must_change_password,
+            mfa_setup_required=setup_required,
+        )
+
+    async def complete_mfa_login(
+        self,
+        *,
+        mfa_token: str,
+        code: str,
+        ip: str | None = None,
+        user_agent: str | None = None,
+        now: datetime | None = None,
+    ) -> LoginResult:
+        """核销 MFA 挑战并**续完登录**（DD-23 方案 A 的另一半）。
+
+        口令已在 `login` 的第 1~5 步验证过（挑战就是这个事实的凭证），
+        因此这里不需要、也不应该再收一次密码 —— 重收等于把密码的暴露面
+        再放大一次。此处只完成 `04 §1` 的第 7~9 步。
+
+        Raises:
+            MfaChallengeInvalidError / MfaCodeRejectedError: 挑战或动态码不通过。
+            AuthenticationError: 该用户在挑战签发后已被禁用 / 删除。
+        """
+        checked_at = now or utc_now()
+        user_id = await self._mfa_management.redeem_challenge(
+            token=mfa_token, code=code, now=checked_at
+        )
+        user = await self._users.get(user_id)
+        if user is None or user.status is not UserStatus.ACTIVE or user.deleted_at:
+            # 挑战签发后账号被处置过 —— 不能因为"曾经验过一次"就放行。
+            raise AuthenticationError(_INVALID_CREDENTIALS_MESSAGE)
+
+        password_expired = is_password_expired(user.password_changed_at, now=checked_at)
+        if password_expired:
+            user.must_change_password = True
+        await self._session.flush()
+
+        user_session, tokens = await self._sessions.create(
+            user=user, ip=ip, user_agent=user_agent, now=checked_at
+        )
+        self._audit.success(
+            action=AuditAction.AUTH_LOGIN_SUCCESS,
+            operator=AuthOperator.of_user(
+                user_id=user.id, username=user.username, ip=ip, user_agent=user_agent
+            ),
+            resource_type=_SESSION_RESOURCE,
+            resource_id=user_session.id,
+            after={
+                "must_change_password": user.must_change_password,
+                "password_expired": password_expired,
+                "via": "MFA_CHALLENGE",
+            },
+        )
+        return LoginResult(
+            user=user,
+            session=user_session,
+            tokens=tokens,
+            must_change_password=user.must_change_password,
+            mfa_setup_required=False,
         )
 
     async def _register_login_failure(self, user: AdminUser, *, now: datetime) -> bool:

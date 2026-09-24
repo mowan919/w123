@@ -38,6 +38,12 @@ class ErrorCode(IntEnum):
     #: 未认证 / 令牌无效或过期（Phase 4 新增）。
     #: DD-12 未冻结 401 段位，此处取 "HTTP 401 + 序号 001" 的既有推导惯例。
     UNAUTHENTICATED = 401001
+    #: MFA 挑战令牌无效 / 已过期 / 已作废（Phase 5 新增，INTERIM）。
+    #: 与 `UNAUTHENTICATED` 分开是必要的：前者是"会话认证失败"，
+    #: 后者是"登录尚未完成"，客户端的处理路径完全不同（前者重登、后者续验）。
+    MFA_CHALLENGE_INVALID = 401002
+    #: MFA 动态码被拒绝（Phase 5 新增，INTERIM）：码错误，或该挑战已耗尽次数。
+    MFA_CODE_REJECTED = 401003
     VALIDATION_ERROR = 422001
     NOT_FOUND = 404001
     METHOD_NOT_ALLOWED = 405001

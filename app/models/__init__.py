@@ -19,8 +19,14 @@ Phase 4 追加（DD-02 / DD-03 **方案 A** 均已裁定并落地）：
       —— 不透明令牌 + PG 唯一真源，**不引入** Redis（DD-03 留 Phase 9）。
       因此本 Phase 没有"Redis Key 命名"这一未冻结依赖。
 
+Phase 5 追加（DD-22 / DD-23 / DD-24 **方案 A** 已按裁定草案落地）：
+    - DD-24：`mfa_policies`（策略，作用主体 USER / ROLE，`required` 可空以区分
+      "未表态"与"明确不要求"）、`user_mfa`（凭据，唯一键含 provider 以支持迁移并存）、
+      `mfa_challenges`（DD-23 的一次性挑战，只存令牌哈希）
+    - **仍未冻结**：V1 具体 Provider（`00 §4` / `16 §1`）—— 因此本项目的 `app/`
+      下不存在任何具体算法实现，Phase 5 只交付 Provider-无关的骨架。
+
 尚未注册（属后续 Phase 或未冻结）：
-    user_mfa（Phase 5，DD-01 具体 Provider 未冻结）、
     各日志表（Phase 6，DD-08 未冻结）
 """
 
@@ -33,6 +39,7 @@ from app.models.enums import (
     DepartmentStatus,
     FieldAccessLevel,
     HttpMethod,
+    MfaPolicySubject,
     MfaStatus,
     PermissionResourceType,
     PermissionStatus,
@@ -42,6 +49,7 @@ from app.models.enums import (
     UserStatus,
     most_permissive_field_level,
 )
+from app.models.mfa import MfaChallenge, MfaPolicy, UserMfa
 from app.models.password_history import AdminUserPasswordHistory
 from app.models.permission import (
     MenuPage,
@@ -64,6 +72,9 @@ __all__ = [
     "FieldAccessLevel",
     "HttpMethod",
     "MenuPage",
+    "MfaChallenge",
+    "MfaPolicy",
+    "MfaPolicySubject",
     "MfaStatus",
     "PermissionResource",
     "PermissionResourceType",
@@ -78,6 +89,7 @@ __all__ = [
     "RoleStatus",
     "SessionRefreshTokenHistory",
     "SessionRevokeReason",
+    "UserMfa",
     "UserRole",
     "UserSession",
     "UserStatus",

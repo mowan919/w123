@@ -25,6 +25,7 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.api.v1.endpoints.auth import router as auth_router
+from app.api.v1.endpoints.mfa import router as mfa_router
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
@@ -94,6 +95,11 @@ def create_app() -> FastAPI:
     application.include_router(api_router, prefix=settings.api_v1_prefix)
     # 认证域独立前缀：登录时尚不存在"操作者"，不属于 admin 资源域。
     application.include_router(auth_router, prefix=settings.auth_v1_prefix)
+    # MFA 自我管理端点（`/auth/mfa*`）同样是认证域
+    # —— 它们操作的是"我自己的二次验证"，不需要 admin 资源域的数据范围语义。
+    # `POST /auth/mfa/verify` 例外地挂在 auth_router 里（它是登录流程的续完），
+    # 理由见 `app/api/v1/endpoints/mfa.py` 的模块文档。
+    application.include_router(mfa_router, prefix=settings.auth_v1_prefix)
 
     @application.get("/health", include_in_schema=False, tags=["Health"])
     async def root_liveness() -> object:
