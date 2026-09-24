@@ -74,6 +74,61 @@ class TestUserScopeCondition:
         assert await _names_for_user_scope(db_session, scope) == {"u2"}
 
 
+class TestIncludeSelfScopeCondition:
+    """DD-19 的 `include_self` 下推到 SQL 后的行为。
+
+    这是最容易写出越权的地方：`include_self` 必须表达为
+    `department IN (...) OR id = actor_id`，而**不是**
+    `department IN (...) AND id = actor_id`（后者会把部门可见性收窄成"仅本人"），
+    也不能是"空集合时忽略条件"（那会放大成全局）。
+    """
+
+    @pytest.mark.security
+    async def test_empty_department_set_still_allows_actor(self, db_session) -> None:
+        """`SELF ∪ 空集合` 必须仍然看得到本人 —— 而不是谁都看不到。"""
+        await _seed(db_session)
+        scope = ResolvedScope.for_departments(
+            frozenset(), scope=DataScope.CUSTOM, actor_id=2002, include_self=True
+        )
+        assert await _names_for_user_scope(db_session, scope) == {"u2"}
+
+    @pytest.mark.security
+    async def test_department_set_plus_actor_is_a_union(self, db_session) -> None:
+        """`{部门1} ∪ {本人 u2}` = {u1, u2}，证明是 OR 而不是 AND。"""
+        await _seed(db_session)
+        scope = ResolvedScope.for_departments(
+            frozenset({1}), scope=DataScope.DEPARTMENT, actor_id=2002, include_self=True
+        )
+        assert await _names_for_user_scope(db_session, scope) == {"u1", "u2"}
+
+    @pytest.mark.security
+    async def test_actor_without_department_is_reachable(self, db_session) -> None:
+        """未分配部门的用户只能靠 `include_self` 被看见（部门维度永远匹配不到）。"""
+        await _seed(db_session)
+        scope = ResolvedScope.for_departments(
+            frozenset({1}), scope=DataScope.DEPARTMENT, actor_id=2003, include_self=True
+        )
+        assert await _names_for_user_scope(db_session, scope) == {"u1", "u3"}
+
+    @pytest.mark.security
+    async def test_include_self_does_not_leak_other_users(self, db_session) -> None:
+        await _seed(db_session)
+        scope = ResolvedScope.for_departments(
+            frozenset({1}), scope=DataScope.DEPARTMENT, actor_id=2002, include_self=True
+        )
+        assert await _names_for_user_scope(db_session, scope) == {"u1", "u2"}
+        # u3 既不在部门 1，也不是操作者本人 → 必须被排除。
+        assert "u3" not in await _names_for_user_scope(db_session, scope)
+
+    async def test_without_include_self_actor_is_not_privileged(self, db_session) -> None:
+        """对照组：不加 `include_self` 时本人不因为"是自己"而被放行。"""
+        await _seed(db_session)
+        scope = ResolvedScope.for_departments(
+            frozenset({1}), scope=DataScope.DEPARTMENT, actor_id=2002
+        )
+        assert await _names_for_user_scope(db_session, scope) == {"u1"}
+
+
 class TestDepartmentScopeCondition:
     async def test_department_scope_restricts_in_sql(self, db_session) -> None:
         await _seed(db_session)

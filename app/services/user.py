@@ -46,6 +46,7 @@ from app.models.enums import UserStatus
 from app.models.role import Role
 from app.models.user import AdminUser
 from app.repositories.department import DepartmentRepository
+from app.repositories.permission import PermissionVersionRepository
 from app.repositories.role import RoleRepository
 from app.repositories.user import UserRepository
 from app.services.authorization import AuthorizationService
@@ -107,6 +108,7 @@ class UserService:
         self._session = session
         self._users = UserRepository(session)
         self._roles = RoleRepository(session)
+        self._versions = PermissionVersionRepository(session)
         self._departments = DepartmentRepository(session)
         self._scope = DataScopeResolver(self._departments)
         self._authz = AuthorizationService(session)
@@ -591,6 +593,10 @@ class UserService:
                 raise BadRequestError("包含不存在或已删除的角色")
 
         before, after = await self._roles.replace_user_roles(user_id, role_ids)
+        # 角色授予 / 撤销直接改变该用户的有效权限 → 必须递增权限版本
+        # （Spec `11 §2`：权限修改必须更新 / 递增 permission version）。
+        # 漏掉这一步的后果是"权限已改但缓存仍有效"，违反 `00 §1#5` 立即生效。
+        await self._versions.bump()
         self._record(
             actor=actor,
             action=AuditAction.USER_ROLE_ASSIGN,

@@ -6,26 +6,65 @@ Alembic autogenerate 会漏表（Spec `13 §3` migration 必须完整可审查�
 Phase 2 注册的表：
     departments / admin_users / roles / user_roles / admin_user_password_histories
 
+Phase 3 追加（DD-05 / DD-06 / DD-07 / DD-19 / DD-20 均已冻结并落地）：
+    - DD-07：`roles.data_scope` 列 + `role_custom_scope_departments`
+    - DD-05：`role_inheritances`（邻接表 + 三重环路防护）
+    - DD-20：`permission_resources` / `menu_pages` / `role_permissions`
+    - DD-06：`role_field_permissions`（四级取值，最宽松者胜）
+    - DD-04（仍为 INTERIM）：`permission_versions` —— 本表只提供**单调递增**的
+      版本号；Redis Key 命名与缓存失效机制未冻结（Phase 9）。
+
 尚未注册（属后续 Phase 或未冻结）：
-    sessions（Phase 5）、user_mfa（Phase 5）、role_inheritances（DD-05 未冻结）、
-    role_permissions（CONFLICT-001 未关闭）、五类日志表（Phase 6，DD-08 未冻结）
+    sessions（Phase 4）、user_mfa（Phase 5）、各日志表（Phase 6，DD-08 未冻结）
 """
 
 from __future__ import annotations
 
 from app.models.department import Department
-from app.models.enums import DepartmentStatus, RoleStatus, UserStatus
+from app.models.enums import (
+    FIELD_ACCESS_READABLE,
+    FIELD_ACCESS_WRITABLE,
+    DepartmentStatus,
+    FieldAccessLevel,
+    HttpMethod,
+    PermissionResourceType,
+    PermissionStatus,
+    RoleStatus,
+    UserStatus,
+    most_permissive_field_level,
+)
 from app.models.password_history import AdminUserPasswordHistory
-from app.models.role import Role, UserRole
+from app.models.permission import (
+    MenuPage,
+    PermissionResource,
+    PermissionVersion,
+    RoleFieldPermission,
+    RolePermission,
+)
+from app.models.role import Role, RoleCustomScopeDepartment, RoleInheritance, UserRole
 from app.models.user import AdminUser
 
 __all__ = [
+    "FIELD_ACCESS_READABLE",
+    "FIELD_ACCESS_WRITABLE",
     "AdminUser",
     "AdminUserPasswordHistory",
     "Department",
     "DepartmentStatus",
+    "FieldAccessLevel",
+    "HttpMethod",
+    "MenuPage",
+    "PermissionResource",
+    "PermissionResourceType",
+    "PermissionStatus",
+    "PermissionVersion",
     "Role",
+    "RoleCustomScopeDepartment",
+    "RoleFieldPermission",
+    "RoleInheritance",
+    "RolePermission",
     "RoleStatus",
     "UserRole",
     "UserStatus",
+    "most_permissive_field_level",
 ]

@@ -177,5 +177,19 @@ class DepartmentRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def existing_ids(self, department_ids: frozenset[int]) -> frozenset[int]:
+        """返回给定集合中**存在且未删除**的部门 ID。
+
+        供引用完整性校验使用（例如 CUSTOM 数据范围引用的部门）。
+        只做存在性判断，不做任何授权判断。
+        """
+        if not department_ids:
+            return frozenset()
+        stmt = select(Department.id).where(
+            Department.id.in_(sorted(department_ids)),
+            Department.deleted_at.is_(None),
+        )
+        return frozenset((await self._session.execute(stmt)).scalars().all())
+
 
 __all__ = ["DepartmentRepository"]
