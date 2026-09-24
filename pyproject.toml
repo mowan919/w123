@@ -12,6 +12,13 @@ dependencies = [
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
     "redis==8.1.0",
+    # 口令哈希（Spec 04 §2 / 10 §1：argon2id）。
+    # 2026-09-24 补齐：此依赖此前只在 venv 中存在、未写入 pyproject，
+    # 会导致全新环境部署后 `import app.core.security.password` 直接失败。
+    "argon2-cffi==25.1.0",
+    # MFA Secret 的 AEAD 加解密（DD-22 / Spec 04 §6「Secret 必须加密保存」）。
+    # 由 OpenSSL 支撑的对称加密实现，不自研 AES-GCM。
+    "cryptography==46.0.3",
 ]
 
 [project.optional-dependencies]

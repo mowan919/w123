@@ -28,7 +28,7 @@
 
 | 编号 | 验收 | 状态 | 结果文件 |
 |---|---|---|---|
-| 001 | Organization / User | **NOT RUN（无结果文件）** | —（对应实现提交于 `ec66678`） |
+| 001 | Organization / User | **PASS**（13/13，0 BLOCKED） | `001-organization-user-result.md`（2026-09-24 **补做**） |
 | 002 | Permission | **PASS** | `002-permission-result.md` |
 | 003 | Authentication | **PASS** | `003-authentication-result.md` |
 | 004 | Session | **PASS** | `004-session-result.md`（2026-09-24，15/15，0 BLOCKED） |
@@ -39,13 +39,13 @@
 | 009 | Hardening | NOT RUN | — |
 | 010 | Final Acceptance | NOT RUN | — |
 
-> ⚠️ **001 的缺口（不得静默处理）**：`001-organization-user.md` 的 13 个检查项
-> 从未产出结果文件，而与其对应的实现早已提交（`ec66678`
-> `feat: complete phase 2 organization and user management`）。
-> 也就是说该项的验收**没有被记录过**，状态只能是 `NOT RUN` ——
-> 不能因为"代码已经写了"就记成 PASS。
-> 按最终停止条件，**Phase 10 之前必须补做 Verification 001 并留下结果文件**。
-> 本缺口不是本次执行（PHASE-004-AUTH）的交付范围，此处仅登记，不代做。
+> ✅ **001 的缺口已于 2026-09-24 关闭**：该项曾长期停在 `NOT RUN ——
+> 实现早已提交（`ec66678`），但从未产出过结果文件，不能因为"代码已经写了"就记成 PASS。
+> 本次按裁判书**逐项重新判定**（13/13 PASS，0 BLOCKED），
+> 结果见 `001-organization-user-result.md`。
+> 判定对象是当前代码（`e0665fe`）而非历史快照 ——
+> 若 Phase 2~4 的演进曾**退化**过 Phase 1 的能力，本次判定有责任把它暴露为 FAIL。
+> 顺带发现并修复了一处依赖缺陷（见结果文件 FINDING-1-01）。
 
 > 🔒 **005 的 BLOCKED 判定**：`PHASES.md` Phase 5（MFA）的执行在**编码前**即被阻塞，
 > 因此**没有**结果文件、**没有**任何 MFA 业务代码。
