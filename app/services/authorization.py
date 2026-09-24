@@ -37,6 +37,20 @@ DD-20 冻结后资源模型落地，该方法改为**基于 API Permission 判�
 fail-closed 细节：查不到用户（已删除 / ID 伪造）时**不放行**，
 而不是抛 404 —— 授权层不应向外暴露"该用户是否存在"。
 
+Phase 5 追加：会话层级保护
+------------------------
+`assert_can_revoke_session`（踢下线）与 `assert_can_manage_user`（用户管理）
+**不是**同一条规则，刻意分开：
+
+| 操作 | 非超管对超管 | 超管对超管 |
+|---|---|---|
+| 用户管理（改/禁用/删除/重置密码） | 拒绝 | 允许 |
+| 踢下线（撤销会话） | 拒绝 | **拒绝**（仅本人 logout） |
+
+右列第二格是验收裁判 `004-session.md` 第 13 项的直接要求
+（"任何管理员不能踢 SUPER_ADMIN"），因此不能复用左列的方法。
+详见 `assert_can_revoke_session` 的 docstring。
+
 已登记的 RISK（不在本 Phase 自行修改）
 -----------------------------------
 **RISK-004**：`actor.is_super_admin`（token 派生的 `role_codes`）与
@@ -78,6 +92,15 @@ class ApiPermissionCode(StrEnum):
     PERMISSION_RESOURCE_MANAGE = "PERMISSION_RESOURCE_MANAGE"
     #: 查看权限预览（`03 §11`）。
     PERMISSION_PREVIEW = "PERMISSION_PREVIEW"
+    #: 会话管理：查看会话列表 / 在线用户、踢单个会话、踢某用户全部会话
+    #: （Spec `08 §5`、`04 §3-§5`）。
+    #:
+    #: 查看与踢下线共用同一个权限位是**有意的 INTERIM 取值**：
+    #: 两者面向同一类主体（平台/部门管理员），而把权限位拆细属于
+    #: 权限资源治理范畴（`03`），Spec 未给出会话相关的资源编码表。
+    #: 拆细只会增加待冻结项，不会改变本阶段任何安全性质 ——
+    #: 真正的越权防护由数据范围（`10 §10`）与 SUPER_ADMIN 保护（`10 §3`）承担。
+    SESSION_MANAGE = "SESSION_MANAGE"
 
 
 class AuthorizationService:
@@ -134,6 +157,61 @@ class AuthorizationService:
         remaining = await self._users.count_super_admins()
         if remaining <= 1:
             raise ConflictError("系统必须保留至少一个未删除的 SUPER_ADMIN 用户")
+
+    # ------------------------------------------------------------------
+    # 会话层级保护（Phase 5）
+    # ------------------------------------------------------------------
+    async def assert_can_revoke_session(self, *, actor: CurrentActor, target_user_id: int) -> None:
+        """校验操作者是否有权**踢下线**目标用户的会话。
+
+        规则（取更严读法）：
+
+        ```text
+        目标用户是 SUPER_ADMIN → 任何管理员都不得经管理端点撤销其会话
+                                 （含另一位 SUPER_ADMIN）
+        ```
+
+        ## 为什么是"任何"而不是"其他"
+
+        两份文件措辞不同：
+
+        - 冻结原文 `00 §1#7` / `04 §4`：**其他**管理员不能 revoke SUPER_ADMIN；
+        - 验收裁判 `004-session.md` 第 13 / 14 项：**任何**管理员不能踢
+          SUPER_ADMIN，且 SUPER_ADMIN **只能本人 logout**。
+
+        "任何"同时满足两者（蕴含"其他"），而"另一位 SUPER_ADMIN 可以互踢"
+        会让裁判第 13 项 FAIL。按"不得弱化、不得把 FAIL 当 PASS"，只剩这一种写法。
+
+        ## 这不是留了死洞
+
+        被滥用或失陷的 SUPER_ADMIN 账号仍可被**禁用**
+        （`SessionService.authenticate` 每个请求复查 status → 下一次请求即失效），
+        而"不能禁用最后一个 SUPER_ADMIN"只限制最后一人的情形。
+        因此系统始终存在可执行的处置手段，只是它走"禁用账号"而不是"踢下线" ——
+        后者按 `00 §1#7` 属于本人专属操作（`POST /auth/logout`）。
+
+        ## 为什么不复用 `assert_can_manage_user`
+
+        那个方法的语义是"**非** SUPER_ADMIN 不得操作 SUPER_ADMIN 用户"，
+        即 SUPER_ADMIN 之间可以互相管理 —— 对用户管理是正确的，
+        对"踢下线"则不满足裁判第 13 项。
+        两者是**不同操作的不同口径**：共用一个方法必然要么过宽（本项 FAIL），
+        要么过严（把用户管理一并收紧，属未授权改动）。
+        因此各自独立，但都集中在本授权层（Spec `10 §3`）。
+
+        Raises:
+            PermissionDeniedError: 目标用户是 SUPER_ADMIN。
+        """
+        if await self.is_super_admin_user(target_user_id):
+            raise PermissionDeniedError("SUPER_ADMIN 的会话只能由本人登出（logout）结束")
+
+    async def assert_can_manage_sessions(self, *, actor: CurrentActor) -> None:
+        """校验操作者是否有权管理会话（Spec `08 §10` 后端强制授权）。
+
+        SUPER_ADMIN 走集中式 bypass；其他用户必须在其有效 API 权限集合
+        （含继承）中持有 `SESSION_MANAGE`。
+        """
+        await self.assert_api_permission(actor=actor, api_code=ApiPermissionCode.SESSION_MANAGE)
 
     # ------------------------------------------------------------------
     # API Permission（Task 3.11：取代 Phase 2 的 INTERIM 保守默认）

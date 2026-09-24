@@ -358,3 +358,110 @@
 | `app/models/session.py` | **只留档 refresh 哈希，不留档 access 哈希** | Access 的 TTL 仅 15 分钟，且重放一个已轮换的 access 没有任何攻击价值（查不到即 401）。若也留档，一个 7 天会话会产出约 672 行纯噪声。这是刻意取舍，不是遗漏 |
 | `app/services/session.py::rotated_access_expiry` | 轮换时新 access 的到期时间**封顶到会话总寿命** | 见 DEFECT-4-01。使 `expires_at <= refresh_expires_at` **构造性成立**，`ck_sessions_refresh_expires_not_before_access` 退化为"TTL 用反"探针 |
 | `app/repositories/session.py::record_retired_refresh_token` | 用 `ON CONFLICT DO NOTHING` 写入退役哈希 | 该记录表达**集合成员关系**，重复写入语义上无意义；而在并发刷新下重复是必然的。用普通 INSERT 会让"检测到盗用却因唯一约束回滚而未能撤销会话"成为真实失败模式 |
+
+---
+
+## 9. Phase 5 裁定（Session 管理，2026-09-24）
+
+> 执行 Phase：`PHASE-005-SESSION-MFA` 的 **Session 部分**（= `PHASES.md` Phase 4 — Session），
+> 裁判文件 `docs/verification/004-session.md`（15 项）。
+> MFA 部分属 `PHASES.md` Phase 5，**未预实现**（`/auth/mfa/*` 仍不存在）。
+
+### JUDGMENT-5-01 SUPER_ADMIN 会话保护取"任何管理员"读法（**已执行**，非自行放宽）
+
+- **张力**：`00 §1#7` / `04 §4` 写的是"**其他**管理员不能 revoke SUPER_ADMIN"，
+  而裁判 `004-session.md` 第 13 / 14 项要求"**任何**管理员不能踢 SUPER_ADMIN，
+  且 SUPER_ADMIN **只能本人 logout**"。
+- **取更严读法（R1）**：目标用户是 SUPER_ADMIN 时，
+  **任何**管理员都不得经管理端点撤销其会话，含**另一位 SUPER_ADMIN**。
+- **为什么这不是"自行决定"**：R1 同时满足冻结原文与裁判（"任何"蕴含"其他"）；
+  取宽松读法（超管可互踢）会让裁判第 13 项 FAIL。
+  按"不得弱化、不得把 FAIL 当 PASS"，只有 R1 可写。
+- **为什么不是死洞**：被滥用 / 失陷的超管账号仍可被**禁用**
+  （`SessionService.authenticate` 每请求复查 status，下一次请求即失效），
+  而"不能禁用最后一个 SUPER_ADMIN"只限制最后一人的情形。
+  处置手段存在，只是走"禁用账号"而不是"踢下线"。
+- **实现**：新增 `AuthorizationService.assert_can_revoke_session`，
+  **不修改** `assert_can_manage_user`（用户管理口径 = "非超管不得操作超管"，
+  若复用它，超管互踢将被放行，裁判第 13 项 FAIL）。
+- **证据**：`app/services/authorization.py`；
+  `tests/test_session_management.py::TestSuperAdminProtection`（6 例）。
+
+### FINDING-5-01 `00 §5` 的"Session 详情"未在 `08 §5` 落地为独立路由 —— 未新增接口
+
+- **现状**：`00 §5` 要求"Session 列表/详情"；`04 §3` 列出必须记录的字段；
+  但 `08 §5` 只列了 `GET /sessions` 与 `POST /sessions/{id}/revoke`，
+  **没有** `GET /sessions/{id}`。
+- **本次实现**："详情"由列表行的**完整字段**承载（`SessionResponse` 覆盖
+  `04 §3` 的全部记录项），因此裁判 §2-§8 的逐项要求全部满足。
+- **为什么不自行新增 detail 路由**：`08 §5` 是 API 契约的权威清单，
+  在它之外新增路由属于扩展接口面；而裁判并未要求独立详情页。
+  若产品确需"单会话详情"，请裁定后由 `08` 补齐该路由。
+- **证据**：`app/schemas/session.py::SessionResponse`；
+  `tests/test_session_management.py::TestSessionFields`（3 例）；
+  `tests/test_session_api.py::TestResponseContract::test_user_sessions_endpoint`。
+
+### FINDING-5-02 目标用户范围判定存在两处口径（已统一到 `allows_user`，未改旧代码）
+
+- **现状**：`UserService._load_target`（Phase 1/2 已验收）在"非 SELF、非全局"分支
+  只判 `scope.allows_department(user.department_id)`；
+  而 `ResolvedScope.allows_user`（`core/scope.py` 声明的**服务端二次校验唯一入口**）
+  在该分支之外还放行 `include_self` 情形（DD-19 的"SELF ∪ 其他"合并结果中的本人）。
+- **差异窗口**：仅"多角色合并后 `include_self=True` 且本人部门不在部门集合内"。
+  此时 `allows_user` 放行（人能看到/管理自己的会话），`_load_target` 拒绝。
+- **本次实现**：会话管理统一调用 `allows_user` ——
+  它是文档化的唯一入口，且 SQL 版（`scope_filters.user_scope_condition`）的语义
+  与它逐分支一致；若另写一份，就会产生"SQL 一套、Python 一套"的双份真相。
+- **未做的事**：**不**修改 Phase 1/2 已验收的 `UserService`。
+  那是已通过 Verification 002 的代码，口径统一应由人类裁定后一次性完成
+  （否则等于在未授权的范围内改动已验收行为）。
+- **影响面**：差异方向是"更宽"，且只涉及**操作者本人的会话**，不涉及他人数据。
+- **证据**：`app/services/session_management.py::_load_visible_user`；
+  `app/core/scope.py::ResolvedScope.allows_user`；
+  `tests/test_session_management.py::TestDataScope`（8 例）。
+
+### FINDING-5-03 SUPER_ADMIN 保护只作用于 revoke（写），只读查看仍由数据范围决定
+
+- **现状**：`004 §13/§14` 与 `00 §1#7` 的措辞都是"**踢下线** / revoke"，
+  没有规定"非超管不得**查看**超管的会话"。
+- **本次实现**：查看（列表 / 某用户会话）只受数据范围约束，
+  不额外隐藏超管会话；revoke 才施加超管保护。
+- **为什么不在读侧也排除**：扁平列表 `/sessions` 若要在读侧排除超管，
+  就必须引入一条**未文档化**的 SQL 规则（对 ADMIN 角色的 NOT EXISTS 排除），
+  而 `/users/{id}/sessions` 又可以定向读取 —— 两条路径会出现不一致。
+  更保守的替代方案（读侧也拒绝）属**新增业务规则**，请裁定后再改。
+- **风险与缓解**：全范围管理员可以看到超管会话的 IP / UA（取证元数据，非凭据）。
+  若认为该元数据本身敏感，需先裁定；本实现不自行加规则，也不自行放宽 revoke 保护。
+- **证据**：`app/services/session_management.py`（步骤 2 与步骤 3 的分离）；
+  `tests/test_session_management.py::TestDataScope`。
+
+### FINDING-5-04 全踢的审计 `resource_id` 为 None —— Phase 6 检索需支持 `after_data`
+
+- **现状**：一次"踢全部"影响多条会话，`resource_id`（单值）无法表达。
+  因此 `resource_id=None`，目标用户与数量记在
+  `after_data = {"scope": "ALL", "target_user_id": ..., "revoked_count": ...}`。
+- **单踢**仍用 `resource_type=SESSION` + `resource_id=会话 ID`。
+  单踢与全踢共用同一个 `AUTH_SESSION_REVOKE` 动作（`04 §8` 只列一项
+  "session revoke"），用 `after_data["scope"]` 区分。
+- **待办**：若运维需要"按目标用户检索被踢记录"，Phase 6 的审计查询必须能检索
+  `after_data`（DD-08 / 审计落库未冻结，本阶段不预设查询接口）。
+- **证据**：`app/audit/events.py::AuditAction.AUTH_SESSION_REVOKE` 注释；
+  `app/services/session_management.py::revoke_all_sessions`；
+  `tests/test_session_management.py::TestRevokeAll::test_revoke_all_audited_with_count`。
+
+---
+
+## 10. Phase 5 期间新增的 INTERIM 取值与技术默认
+
+| 位置 | 取值 | 说明 |
+|---|---|---|
+| `app/repositories/session.py::online_session_condition` | 在线 = **未撤销 + 会话总寿命（refresh）未过 + 用户 ACTIVE 且未删除** | **INTERIM-5-01**。`04 §5` 只说"由有效 Session / 最近活动**等**规则计算"，未给口径。**不把 access 到期算作离线**（access 仅 15 分钟，客户端 refresh 即可续用，会话并未结束）；**不引入空闲阈值**（Spec 未规定数值，自造数值等于发明业务规则），需要按空闲判断时读 `last_active_at` |
+| `app/schemas/session.py::SessionListQuery.online` | `online=true` 只返回在线会话；`false`（默认）= **不筛选** | **INTERIM-5-02**。`04 §5` 要求"后台在线用户查询"，而 `08 §5` 只列了 `GET /sessions` 一条路径，故以查询参数实现，**未新增**"在线用户"专用端点。默认不筛选是因为排查"某个登录为什么失效"恰恰需要看到**已结束**的会话 |
+| `app/schemas/session.py::SessionResponse.online` | 响应中**暴露**在线判定结果 | **INTERIM-5-02（配套）**。若只在查询参数上过滤而不返回判定结果，调用方只能自行重实现一遍规则，必然产生第二份真相 |
+| `app/api/v1/endpoints/sessions.py` | `/users/{id}/sessions*` 与 `/sessions*` **实现同处一个模块** | **INTERIM-5-03**。路径前缀属 Users 资源（`08 §4`），但业务语义是会话管理：共用同一 Service、同一数据范围、同一超管保护。拆开会让同一条安全规则写在两个文件里 |
+| `app/services/authorization.py::ApiPermissionCode.SESSION_MANAGE` | 查看与踢下线**共用**一个 API 权限位 | **INTERIM-5-04**。两者面向同一类主体；拆细属权限资源治理（`03`），Spec 未给出会话相关资源编码表。真正的越权防护由数据范围与超管保护承担。权限位命名规范本身待 DD 冻结 |
+| `app/repositories/session.py::list_for_admin` | 排序 `login_at DESC, id DESC` | **INTERIM-5-05**。`login_at` 是 `04 §3` 的字段；`id`（Snowflake 单调）作为同秒并列的第二排序键 —— 没有第二键时分页会在并列数据上重复 / 漏行 |
+| `app/repositories/session.py::list_active_for_user` | 全踢只撤销**当前有效**的会话 | **INTERIM-5-06**。给早已自然过期的会话补写 `ADMIN_REVOKE` 会让审计无法区分"到期结束"与"被人踢掉"——那是**改写历史**，取证价值高于"计数好看" |
+| `app/repositories/session.py::revoke_and_retire` | 会话终结（置撤销 + 留档 refresh 哈希）**全系统唯一实现** | 本人登出 / 单踢 / 全踢三类调用方共用。若各自实现，会出现"登出退役了哈希、踢下线没有"的不一致，使取证线索取决于用户是"自己退出"还是"被踢" |
+| `app/services/audit_guard.py`（复用） | 越权 / 超管保护的拒绝一律写 FAILURE 审计 | `10 §8`。拒绝路径包在 `denial_audited` 守卫内，避免因提前 `raise` 而绕过审计（Phase 2 已验证过的模式） |
+| `app/audit/events.py::AuditAction.SESSION_READ` | 会话**读取**也记审计 | `04 §8` 未把"查看会话"列为安全事件，但会话元数据含 IP / UA，属敏感读取面；与既有 `USER_READ` 同口径记录，使"谁在踢之前查过这个账号"可回答 |

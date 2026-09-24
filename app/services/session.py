@@ -457,23 +457,16 @@ class SessionService:
     ) -> bool:
         """撤销指定会话（幂等）。
 
+        实现委托给 `SessionRepository.revoke_and_retire` ——
+        "会话终结"（置撤销标记 + 留档 refresh 哈希）全系统只有那一处实现，
+        因此**本人登出**与**管理员踢下线**对令牌与取证线索的影响完全一致。
+
         Returns:
             True = 本次调用真正撤销了它；False = 它此前已撤销。
             两种情况下 `10 §7` 都成立（令牌都已不可用），
             因此调用方应把两者都视为成功（DD-11 方案 A：语义幂等）。
         """
-        revoked_at = now or utc_now()
-        revoked = await self._sessions.revoke(session, reason=reason, now=revoked_at)
-        if revoked:
-            # 把当前 refresh 一并留档，避免"会话已撤销但旧 refresh 仍表现为未知令牌"
-            # 从而丢失取证线索。
-            await self._sessions.record_retired_refresh_token(
-                session_id=session.id,
-                token_hash=session.refresh_token_hash,
-                reason=RefreshTokenRetirement.SESSION_REVOKED,
-                retired_at=revoked_at,
-            )
-        return revoked
+        return await self._sessions.revoke_and_retire(session, reason=reason, now=now or utc_now())
 
     async def logout(
         self,

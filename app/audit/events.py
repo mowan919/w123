@@ -88,7 +88,14 @@ class AuditAction(StrEnum):
     #: 这不是 `04 §8` 列举的事件，而是 DD-02 冻结后**必须**可观测的安全信号：
     #: 该事件意味着"某个会话的令牌可能已被窃取"，比普通登录失败严重得多。
     AUTH_TOKEN_REUSE_DETECTED = "AUTH_TOKEN_REUSE_DETECTED"  # noqa: S105 - 审计动作名
-    #: `04 §8` 的 session revoke（管理员踢出，Session Phase 产生事件）。
+    #: `04 §8` 的 session revoke（管理员踢出）。
+    #:
+    #: 单踢与全踢**共用**本动作，用 `after_data` 区分：
+    #: `{"scope": "SINGLE"|"ALL", "target_user_id": ..., "revoked_count": ...}`。
+    #: 理由：`04 §8` 只列了一项 "session revoke"，
+    #: 拆成两个动作会让"查所有被踢记录"必须查两次；
+    #: 而两者共享 `10 §7` 的同一份义务（令牌立即不可用），
+    #: 语义上确实是同一个安全事件。
     AUTH_SESSION_REVOKE = "AUTH_SESSION_REVOKE"
     #: `04 §8` 的 MFA 四类事件。Phase 4 只落地登录流程中的 MFA 步骤与策略解析
     #: （DD-01 方案 A），具体 Provider 未冻结 → 事件枚举先行登记，
@@ -97,6 +104,16 @@ class AuditAction(StrEnum):
     MFA_ENABLE = "MFA_ENABLE"
     MFA_DISABLE = "MFA_DISABLE"
     MFA_FAILURE = "MFA_FAILURE"
+
+    # ---- Phase 5：会话管理 ----
+    #: 查看会话列表 / 在线用户 / 某用户的会话（`04 §5`）。
+    #:
+    #: `04 §8` 未把"查看会话"列为安全事件（它只要求记录 session revoke），
+    #: 但会话元数据包含 IP 与 User-Agent，属敏感读取面；
+    #: 与既有的 `USER_READ` 同口径记录，
+    #: 使"谁看了谁的在线信息"可追溯（对审计取证的对称性很重要：
+    #: 只有写操作留痕时，无法回答"踢之前谁查过这个账号"）。
+    SESSION_READ = "SESSION_READ"
 
 
 class AuditResult(StrEnum):

@@ -45,6 +45,7 @@ from app.core.security.token import extract_bearer_token
 from app.db.session import get_db
 from app.services.auth import AuthService
 from app.services.session import AuthenticatedSession, SessionService
+from app.services.session_management import SessionManagementService
 
 _UNAUTHENTICATED_MESSAGE = "认证失败或登录状态已失效"
 
@@ -91,6 +92,17 @@ async def get_auth_service(
 ) -> AuthService:
     """提供认证服务。"""
     return AuthService(session)
+
+
+async def get_session_management_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> SessionManagementService:
+    """提供会话管理服务（列表 / 在线查询 / 踢下线）。
+
+    与 `AuthService` 一致，默认不注入审计记录器：
+    审计事件通过端口产生，**落库属 Phase 6**（DD-08 未冻结）。
+    """
+    return SessionManagementService(session)
 
 
 async def get_authenticated_session(
@@ -142,6 +154,9 @@ CurrentActorAllowPasswordChangeDep = Annotated[
 ]
 BearerTokenDep = Annotated[str, Depends(get_bearer_token)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+SessionManagementServiceDep = Annotated[
+    SessionManagementService, Depends(get_session_management_service)
+]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -151,6 +166,7 @@ __all__ = [
     "CurrentActorAllowPasswordChangeDep",
     "CurrentActorDep",
     "DbSessionDep",
+    "SessionManagementServiceDep",
     "client_ip",
     "client_user_agent",
     "get_auth_service",
@@ -158,5 +174,6 @@ __all__ = [
     "get_bearer_token",
     "get_current_actor",
     "get_current_actor_allow_password_change",
+    "get_session_management_service",
     "get_session_service",
 ]

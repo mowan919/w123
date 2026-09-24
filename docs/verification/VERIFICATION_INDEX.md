@@ -31,7 +31,7 @@
 | 001 | Organization / User | **NOT RUN（无结果文件）** | —（对应实现提交于 `ec66678`） |
 | 002 | Permission | **PASS** | `002-permission-result.md` |
 | 003 | Authentication | **PASS** | `003-authentication-result.md` |
-| 004 | Session | NOT RUN | — |
+| 004 | Session | **PASS** | `004-session-result.md`（2026-09-24，15/15，0 BLOCKED） |
 | 005 | MFA | NOT RUN | — |
 | 006 | Logging / Audit / Trace | NOT RUN | — |
 | 007 | Dictionary | NOT RUN | — |

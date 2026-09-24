@@ -1,4 +1,4 @@
-"""会话数据访问（Phase 4 / DD-02 方案 A）。
+"""会话数据访问（Phase 4 认证 / Phase 5 会话管理）。
 
 设计要点
 -------
@@ -12,18 +12,30 @@
    在高频轮询下把认证热路径变成写热点。
 4. 计数用 `RETURNING` 而非 `rowcount`（理由同 `UserRepository.prune_password_history`：
    `AsyncSession.execute` 声明返回基类 `Result`，`rowcount` 只存在于 `CursorResult`）。
+5. **会话终结只有一处实现**（`revoke_and_retire`）：本人登出、管理员踢单个、
+   管理员踢全部三类调用方共用同一段代码，避免"登出做了 A、踢下线只做了 B"
+   这类语义漂移（`10 §7` 对三者提出的是同一个要求：令牌立即不可用）。
+6. **管理侧列表的范围条件下推到 SQL**（`10 §10`）：`sessions` 与 `admin_users`
+   join 后直接施加 `user_scope_condition`，绝不允许"先取全部再在内存过滤"。
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, and_, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.enums import RefreshTokenRetirement, SessionRevokeReason
+from app.core.scope import ResolvedScope
+from app.models.enums import (
+    RefreshTokenRetirement,
+    SessionRevokeReason,
+    UserStatus,
+)
 from app.models.session import SessionRefreshTokenHistory, UserSession
+from app.models.user import AdminUser
+from app.repositories.scope_filters import user_scope_condition
 
 #: `last_active_at` 的写入抑制窗口。
 #:
@@ -32,6 +44,39 @@ from app.models.session import SessionRefreshTokenHistory, UserSession
 #: 更细的粒度换不到可观测收益，却让每个请求都产生一次 UPDATE。
 #: 该值只影响"最近的活跃时间戳有多新"，**不影响**任何鉴权判定。
 SESSION_ACTIVITY_WRITE_INTERVAL = timedelta(seconds=60)
+
+
+def online_session_condition(now: datetime) -> ColumnElement[bool]:
+    """**在线会话**的 SQL 条件（`04 §5` 在线状态判定的落地）。
+
+    INTERIM-4-04：Spec `04 §5` 只说"在线状态由有效 Session / 最近活动**等**规则
+    计算"，未给数值口径。本实现取：
+
+    ```text
+    在线 = 会话未撤销 且 会话总寿命（refresh）未过
+    ```
+
+    两个刻意的取舍：
+
+    1. **不把 access 到期算作离线**。access 只活 15 分钟，
+       若把它算进来，那么"用户开着页面但 20 分钟没动"就会显示离线 ——
+       而客户端只要 refresh 一下就能继续用，会话并未结束。
+       因此判定用 refresh（会话总寿命），不用 access。
+    2. **不引入空闲阈值**（如"30 分钟无活动即离线"）。
+       Spec 未规定该数值，自造数值等于发明业务规则；
+       需要按空闲度判断时，调用方读响应里的 `last_active_at` 自行判断。
+
+    与实体方法 `UserSession.is_active` 语义完全一致
+    （SQL 版与 Python 版必须同源，否则会出现"列表说在线、鉴权说失效"）。
+    此外**在线**还要求所属用户为 ACTIVE 且未逻辑删除 ——
+    该部分条件在 `_admin_conditions` 中与用户表一起施加，
+    因为 `authenticate()` 要求"会话有效 **且** 用户 ACTIVE"，
+    被禁用用户的会话实际不可用，报其为"在线"会与系统自身的有效性定义矛盾。
+    """
+    return and_(
+        UserSession.revoked_at.is_(None),
+        UserSession.refresh_expires_at > now,
+    )
 
 
 class SessionRepository:
@@ -136,7 +181,12 @@ class SessionRepository:
         reason: SessionRevokeReason,
         now: datetime,
     ) -> bool:
-        """撤销会话（幂等：已撤销则返回 False 且不改写原因）。
+        """置撤销标记（幂等：已撤销则返回 False 且不改写原因）。
+
+        这是**底层原语**：只改 `sessions` 两列，不碰退役哈希留档。
+        业务代码请不要直接调用它，改用 `revoke_and_retire`
+        —— 否则会漏掉 refresh 哈希留档，使三个终结入口语义不一致。
+        保留本方法是因为它是最小原子单元，便于单独测试与复用。
 
         `revoked_at` 一旦写入即**立即**生效（Spec `10 §7`），
         因为每次请求都会读取该列。不改写已有的 `revoke_reason`：
@@ -148,6 +198,44 @@ class SessionRepository:
         user_session.revoke_reason = reason
         await self._session.flush()
         return True
+
+    async def revoke_and_retire(
+        self,
+        user_session: UserSession,
+        *,
+        reason: SessionRevokeReason,
+        now: datetime,
+    ) -> bool:
+        """终结一个会话：置撤销标记 + 把当前 refresh 哈希留档。
+
+        ## 为什么单独一个方法
+
+        "会话终结"在本系统里有三个触发点：
+
+        | 触发点 | reason |
+        |---|---|
+        | 本人登出（`POST /auth/logout`） | `LOGOUT` |
+        | 管理员踢单个（`POST /sessions/{id}/revoke`） | `ADMIN_REVOKE` |
+        | 管理员踢全部 / 盗用检测 | `ADMIN_REVOKE` / `TOKEN_REUSE_DETECTED` |
+
+        三者对 `10 §7` 的义务完全相同（"Revoke 后 Token 必须不能继续访问"），
+        因此**必须**共用同一段实现。若各自写一份，迟早出现
+        "登出额外退役了 refresh 哈希、踢下线没有"这类不一致 ——
+        不一致本身不是安全问题，但它会让"取证时能否追到这个令牌"取决于
+        用户是被踢还是自己退出，属于不应存在的差异。
+
+        Returns:
+            True = 本次调用真正撤销了它；False = 它此前已撤销（幂等，DD-11 方案 A）。
+        """
+        revoked = await self.revoke(user_session, reason=reason, now=now)
+        if revoked:
+            await self.record_retired_refresh_token(
+                session_id=user_session.id,
+                token_hash=user_session.refresh_token_hash,
+                reason=RefreshTokenRetirement.SESSION_REVOKED,
+                retired_at=now,
+            )
+        return revoked
 
     async def record_retired_refresh_token(
         self,
@@ -234,5 +322,103 @@ class SessionRepository:
         )
         return int((await self._session.execute(stmt)).scalar_one())
 
+    # ------------------------------------------------------------------
+    # 管理侧查询（`10 §10`：范围条件下推到 SQL）
+    # ------------------------------------------------------------------
+    def _admin_conditions(
+        self,
+        scope: ResolvedScope,
+        *,
+        now: datetime,
+        online_only: bool,
+        user_id: int | None,
+    ) -> list[ColumnElement[bool]]:
+        """管理侧列表 / 计数的查询条件（唯一构造点，保证两者口径一致）。
 
-__all__ = ["SESSION_ACTIVITY_WRITE_INTERVAL", "SessionRepository"]
+        `online_only` 为什么还要带 `AdminUser.status == ACTIVE`：
+        在线与否是**用户与会话的联合状态**（见 `online_session_condition`），
+        用户被禁用时其会话不可用，因此不能计入在线。
+        这一条与 `authenticate()` 的校验链完全同源。
+        """
+        conditions: list[ColumnElement[bool]] = [
+            # 逻辑删除的用户不得出现在普通查询中（`02 §5`）；
+            # 其会话也已无法通过认证（`authenticate` 会拒绝删除用户）。
+            AdminUser.deleted_at.is_(None),
+            user_scope_condition(scope),
+        ]
+        if user_id is not None:
+            conditions.append(UserSession.user_id == user_id)
+        if online_only:
+            conditions.append(online_session_condition(now))
+            conditions.append(AdminUser.status == UserStatus.ACTIVE)
+        return conditions
+
+    async def list_for_admin(
+        self,
+        scope: ResolvedScope,
+        *,
+        now: datetime,
+        page_num: int,
+        page_size: int,
+        online_only: bool = False,
+        user_id: int | None = None,
+    ) -> list[tuple[UserSession, AdminUser]]:
+        """分页列出**范围内**用户的会话（含已撤销 / 已过期）。
+
+        返回会话与所属用户的二元组：列表需要展示"这是谁的会话"，
+        而单独再查一次用户会在同一次响应里产生 N+1 查询。
+
+        排序 `login_at DESC, id DESC`：`login_at` 是 Spec `04 §3` 的字段，
+        `id` 为 Snowflake（单调递增）作为同秒并列时的稳定次序 ——
+        没有第二排序键时，分页在并列数据上可能出现重复 / 漏行。
+        """
+        conditions = self._admin_conditions(
+            scope, now=now, online_only=online_only, user_id=user_id
+        )
+        stmt = (
+            select(UserSession, AdminUser)
+            .join(AdminUser, AdminUser.id == UserSession.user_id)
+            .where(*conditions)
+            .order_by(UserSession.login_at.desc(), UserSession.id.desc())
+            .offset((page_num - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [(row[0], row[1]) for row in rows]
+
+    async def count_for_admin(
+        self,
+        scope: ResolvedScope,
+        *,
+        now: datetime,
+        online_only: bool = False,
+        user_id: int | None = None,
+    ) -> int:
+        """统计范围内会话总数（与 `list_for_admin` 使用**完全相同**的条件）。"""
+        conditions = self._admin_conditions(
+            scope, now=now, online_only=online_only, user_id=user_id
+        )
+        stmt = (
+            select(func.count())
+            .select_from(UserSession)
+            .join(AdminUser, AdminUser.id == UserSession.user_id)
+            .where(*conditions)
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def list_active_for_user(self, user_id: int, *, now: datetime) -> list[UserSession]:
+        """列出该用户**当前仍有效**的会话（未撤销且 refresh 未过期）。
+
+        只取有效会话，而不是"所有未撤销的会话"：
+        后者会把早已自然过期的会话也打上 `ADMIN_REVOKE` ——
+        那等于**改写历史**，让审计再也无法区分
+        "这个会话是到期结束的"与"这个会话是被人踢掉的"。
+        """
+        stmt = select(UserSession).where(
+            UserSession.user_id == user_id,
+            online_session_condition(now),
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+
+__all__ = ["SESSION_ACTIVITY_WRITE_INTERVAL", "SessionRepository", "online_session_condition"]
