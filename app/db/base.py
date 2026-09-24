@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from sqlalchemy import BigInteger, DateTime, MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
+from app.core.snowflake import next_id
+
 #: 约束命名规范。Spec 07 §9：必须检查 FK / index / unique / soft-delete-aware unique
 #: / parent-child index / user/role indexes / session lookup indexes / audit trace indexes
 NAMING_CONVENTION: dict[str, str] = {
@@ -54,12 +56,17 @@ class PrimaryKeyMixin:
 
     注意：这里显式指定 `BigInteger` 且 `autoincrement=False`，
     以杜绝"顺手用自增 ID"的实现偏差。
+
+    `default=next_id` 是 **Python 侧默认值**（不产生任何 DDL），
+    单实例下无需手工赋值即可 flush；Seed 或需要外部指定 ID 的场景
+    仍可显式传入（Spec 07 §10）。
     """
 
     id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True,
         autoincrement=False,
+        default=next_id,
         comment="Snowflake BIGINT 业务主键",
     )
 

@@ -22,6 +22,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.core.config import settings
 from app.db.base import Base
 
+# 必须导入模型包，令全部业务表注册进 Base.metadata；
+# 否则 autogenerate 会漏表（Spec 13 §3：migration 必须完整可审查）。
+import app.models  # noqa: F401  # isort: skip
+
 config = context.config
 
 if config.config_file_name is not None:
@@ -29,7 +33,6 @@ if config.config_file_name is not None:
 
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
-# Phase 1 无业务模型；后续 Phase 需在此导入全部模型模块，否则 autogenerate 会漏表。
 target_metadata = Base.metadata
 
 
