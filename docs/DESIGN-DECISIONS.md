@@ -13,7 +13,7 @@
 
 | 编号 | 主题 | 当前状态 | 目标 Phase |
 |---|---|---|---|
-| **DD-01** | **MFA Provider** | **已冻结（方案 A，2026-09-24）**：Phase 4 落地步骤 + Provider 抽象 + fail-closed；具体 Provider 留 Phase 5 | Phase 5（005）落地实现 |
+| **DD-01** | **MFA Provider** | **部分冻结（方案 A，2026-09-24）**：Phase 4 落地登录步骤 + Provider 抽象 + fail-closed。**「具体 Provider 选型」本身仍未冻结** → **阻塞 Phase 5** | **Phase 5（待裁定）** |
 | **DD-02** | **Token 生命周期** | **已冻结（方案 A，2026-09-24）** | ✅ Phase 4 |
 | **DD-03** | **Redis Key 命名** | 未冻结（Phase 4 已裁定**不使用 Redis**，继续留 Phase 9） | Phase 9（009） |
 | DD-04 | Permission Version 缓存语义 | 未冻结（Phase 3 **已落地单调版本号**，缓存语义待定） | Phase 9（009） |
@@ -32,6 +32,9 @@
 | **DD-19** | **多角色数据范围的合并规则** | **已冻结（求并 / 最宽，2026-09-24）** | ✅ Phase 3 |
 | **DD-20** | **权限资源模型与资源 CRUD 契约（= CONFLICT-001）** | **已冻结（方案 A，2026-09-24）** | ✅ Phase 3 |
 | **DD-21** | **无有效角色用户的有效权限上下文表示** | **未冻结（Phase 3 新发现 FINDING-3-01）** | **Phase 8 之前必须裁定** |
+| **DD-22** | **MFA Secret 加密方案**（算法 / 密文格式 / 密钥来源与轮换） | **未冻结（Phase 5 新发现）→ 阻塞 Phase 5** | **Phase 5（待裁定）** |
+| **DD-23** | **MFA 挑战与会话续接机制**（`/auth/login` → `/auth/mfa/verify` 的中间态载体） | **未冻结（Phase 5 新发现）→ 阻塞 Phase 5** | **Phase 5（待裁定）** |
+| **DD-24** | **MFA 策略与凭据的存储模型**（user / role 策略落在哪、凭据表形态） | **未冻结（Phase 5 新发现，源于 `07 §7`「具体字段随 Provider 设计确定」）→ 阻塞 Phase 5** | **Phase 5（待裁定）** |
 
 ---
 
@@ -358,6 +361,7 @@
 | `app/models/session.py` | **只留档 refresh 哈希，不留档 access 哈希** | Access 的 TTL 仅 15 分钟，且重放一个已轮换的 access 没有任何攻击价值（查不到即 401）。若也留档，一个 7 天会话会产出约 672 行纯噪声。这是刻意取舍，不是遗漏 |
 | `app/services/session.py::rotated_access_expiry` | 轮换时新 access 的到期时间**封顶到会话总寿命** | 见 DEFECT-4-01。使 `expires_at <= refresh_expires_at` **构造性成立**，`ck_sessions_refresh_expires_not_before_access` 退化为"TTL 用反"探针 |
 | `app/repositories/session.py::record_retired_refresh_token` | 用 `ON CONFLICT DO NOTHING` 写入退役哈希 | 该记录表达**集合成员关系**，重复写入语义上无意义；而在并发刷新下重复是必然的。用普通 INSERT 会让"检测到盗用却因唯一约束回滚而未能撤销会话"成为真实失败模式 |
+| `app/services/mfa.py::MfaProvider` 的方法签名 | `04 §6` 的 `setup() / verify() / enable() / disable()` **补全为带参数**：`setup(*, user_id, account_name)` / `verify(*, secret, code)` / `enable(*, user_id)` / `disable(*, user_id)` | **INTERIM-4-04（补登记，2026-09-24）**。`04 §6` 是**示意性伪代码**（原文用 `例如：` 引出，且省略了全部参数），无法据此实现。补全遵循两条约束：① `setup` / `verify` 与**算法**相关 → 归 Provider，故它们只见 `secret` / `code`，**不见数据库**；② `enable` / `disable` 只改生命周期状态 → 由服务层落库，Provider 仅收 `user_id` 通知。另将 `04 §6` 未提及的 `MfaSetupMaterial`（`secret` + `provisioning_uri`）作为 `setup` 的返回类型引入。此登记为**事后补记**：该签名在 Phase 4 已实现并通过 Verification 003，但当时漏登记于本表 |
 
 ---
 
@@ -465,3 +469,105 @@
 | `app/repositories/session.py::revoke_and_retire` | 会话终结（置撤销 + 留档 refresh 哈希）**全系统唯一实现** | 本人登出 / 单踢 / 全踢三类调用方共用。若各自实现，会出现"登出退役了哈希、踢下线没有"的不一致，使取证线索取决于用户是"自己退出"还是"被踢" |
 | `app/services/audit_guard.py`（复用） | 越权 / 超管保护的拒绝一律写 FAILURE 审计 | `10 §8`。拒绝路径包在 `denial_audited` 守卫内，避免因提前 `raise` 而绕过审计（Phase 2 已验证过的模式） |
 | `app/audit/events.py::AuditAction.SESSION_READ` | 会话**读取**也记审计 | `04 §8` 未把"查看会话"列为安全事件，但会话元数据含 IP / UA，属敏感读取面；与既有 `USER_READ` 同口径记录，使"谁在踢之前查过这个账号"可回答 |
+
+---
+
+## 11. Phase 5 MFA —— 阻塞与新增未冻结项（2026-09-24）
+
+> 执行 Phase：`PHASES.md` **Phase 5 — MFA**，裁判文件 `docs/verification/005-mfa.md`（13 项）。
+> **状态：`BLOCKED — NEED USER DECISION`，在编码前停止。**
+> 正式决策请求：`docs/DECISION-REQUEST-PHASE-5.md`。
+> 本节仅登记结论，不构成任何冻结。
+
+### 11.1 为什么必须在编码前停止
+
+`07 §7` 用一句"**具体字段随 Provider 设计确定**"把**持久化模型**绑在
+**尚未冻结的 Provider 选型**上；`16 §技术设计待冻结项 #1` 又规定
+"这些属于技术设计决策，应在实现相应 Phase 前冻结"——现在正是该 Phase。
+四个未冻结决策**互相耦合**（密文格式决定列类型、Provider 选型决定 `secret` 形态、
+挑战机制决定登录响应契约、策略模型决定迁移脚本），
+不存在"先做一半"的安全切分，强行切分必然返工。
+
+### 11.2 新增未冻结项
+
+#### DD-22 MFA Secret 加密方案 —— 未冻结（阻塞 Phase 5）
+
+- **Spec 只冻结了义务**（`04 §6`「Secret 必须加密保存」、`13 §2` 密钥由环境变量 /
+  Secret Management 注入、`10 §4` / `06 §4`「MFA Secret 绝不记录」），
+  **未冻结**算法、密文格式、密钥长度、nonce 策略、是否绑定 AAD、密钥轮换。
+- **现状缺口（可复现）**：`app/core/config.py::_guard_production_secrets`
+  在 `APP_ENV=prod` 时检查 `POSTGRES_PASSWORD` / `REDIS_PASSWORD` /
+  `SIGNING_SECRET` / `ENCRYPTION_KEY`，**未包含 `MFA_ENCRYPTION_KEY`**；
+  而 `app/core/security/` 下**不存在任何加解密设施**。
+- **草案 A**：AES-256-GCM；密钥 = `MFA_ENCRYPTION_KEY`（base64 的 32 字节）；
+  密文 = `v1.<base64url(nonce‖ct‖tag)>`；AAD 绑定 `user_id` + `provider`；
+  密钥缺失 / 解密失败一律 fail-closed；密文列用 `Text`。
+- **关键理由**：AAD 绑定是为了防"跨行替换"——没有 AAD 时，
+  把 A 的密文写进 B 的行会让系统**用 A 的 secret 正常验证 B 的登录**且无迹可循。
+  版本前缀是为了将来能逐行渐进迁移，而不是停机全量重加密。
+
+#### DD-23 MFA 挑战与会话续接机制 —— 未冻结（阻塞 Phase 5）
+
+- **张力**：`04 §1` 的顺序图把 `create session` 放在 `MFA check` **之后**，
+  但 `08 §3` 要求存在 `POST /auth/mfa/verify` ——
+  "密码已通过、MFA 未完成"的中间态**必须有载体**，而这个载体无 Spec 依据。
+- **草案 A（推荐）**：该中间态**不建 Session**。
+  `POST /auth/login` 返回一次性 `mfa_token`（5 分钟、只存哈希、成功或失败即作废）；
+  `POST /auth/mfa/verify` 校验通过后才建 Session 并签发令牌。
+- **为什么不能提前建 Session**：Phase 4 已验收的在线判定
+  （`online_session_condition`：未撤销 + 未过期 + 用户 ACTIVE）会把
+  "**只输对密码的人**"立刻算成**在线**；更要紧的是"认证是否完成"
+  会退化成 `sessions` 上的一个**可选列**——任何一条漏检该列的路径
+  都是**认证绕过**。把安全状态放在"默认放行"的位置不可接受。
+- **草案 A 附带**：MFA 挑战失败**不锁定账号**（`10 §5` 的锁定语义是"密码连续失败"）。
+  否则"密码正确但拿不到动态码"（如手机丢失）的用户会被锁在账号外，
+  而正确处置应是走恢复流程。防暴力由**挑战级作废 + rate limit**承担。
+
+#### DD-24 MFA 策略与凭据的存储模型 —— 未冻结（阻塞 Phase 5）
+
+- **未冻结**：`07 §7` 建议的 `user_mfa` 字段（`provider` / `status` /
+  `encrypted_secret` / `setup_at` / `enabled_at` / `verified_at`）**全是凭据字段**，
+  **没有任何一处**表达 `04 §7` 要求的"是否要求 MFA"；
+  且该节明写"**建议**包含"与"具体字段随 Provider 设计确定"。
+- **草案 A**：**策略与凭据分离**——
+  `mfa_policies(subject_type, subject_id, required)`（`subject_type ∈ {USER, ROLE}`，
+  `required = NULL` 表示**未表态**，唯一约束 `(subject_type, subject_id)`）
+  + `user_mfa(user_id, provider, status, encrypted_secret, *_at)`（唯一键 `(user_id, provider)`）
+  + `mfa_challenges`。
+- **`required` 必须可空**：这与 Phase 4 已固化的语义**逐字对齐**——
+  `UnsetUserMfaPolicySource` / `UnsetRoleMfaPolicySource` 返回 `None`（未表态，
+  继续向下询问）；若把"未表态"合并成 `False`，**用户级实现一旦上线就会永久屏蔽
+  角色级策略**，且运行时完全看不出来（`app/services/mfa.py` 已将此理由写入 docstring）。
+- **唯一键取 `(user_id, provider)` 而非仅 `user_id`**：支持同一用户未来从 TOTP
+  **迁移**到 WebAuthn 时两者并存，由 `MfaProviderRegistry.active_name` 决定生效者
+  （`04 §6` 抽象中的 `MfaProvider.name` 已为该用途预留）。
+- **跨 Phase 边界（需裁定）**：`05 §5` 把 "MFA default policy" 列为**系统参数**
+  （须有类型 / 默认值 / 状态 / 描述 / 审计），而系统参数属 **Phase 7**；
+  现状由环境变量 `settings.mfa_required_default` 提供（需重启才生效、无审计）。
+  候选：Phase 5 保持环境变量、**Phase 7 迁入参数表**（推荐，`MfaPolicyResolver`
+  已把 system 级抽象为构造参数，迁移时**无需改动 MFA 代码**）；
+  或 Phase 5 就地建参数表（会与 Phase 7 交付**重叠**、可能形成两套参数机制）。
+
+### 11.3 裁判第 12 项「恢复流程不会泄漏 Secret」—— 无 Spec 依据
+
+- **可复现证据**：
+
+  ```text
+  grep -rn "恢复流程\|恢复码\|备用码\|recovery code\|backup code" docs/
+    → docs/verification/005-mfa.md:14（**仅裁判书自身那一行**）
+  grep -rn "恢复\|recovery\|Recovery" docs/spec/
+    → （无输出）
+  ```
+
+- **结论**：Spec 未定义 MFA 的"恢复流程"，也未规定其中 Secret 的处理方式，
+  但裁判项要求验证它。三种可能意图（恢复码 / 管理员重置 MFA / 仅"重置与查询过程中
+  Secret 不回显"）的实现差异极大，其中前两者属**新增业务能力**
+  （会超出 `08 §3` 的端点清单），按 `AGENTS.md §4` 必须**先停止扩展、记录问题**。
+- **处置**：按 **BLOCKED_BY_DESIGN** 记录（不是环境阻塞，而是"**验收标准缺少
+  Spec 依据**"），**不判 PASS、不判 FAIL**，等待人类澄清。
+
+### 11.4 本 Phase **未**写入任何 MFA 业务代码
+
+`git status` 干净；`app/` 下无 MFA 模型、无加解密模块、无 `/auth/mfa*` 端点。
+已冻结且已在 **Phase 4** 交付的部分（`MfaProvider` 抽象、`MfaStatus` 枚举、
+`MfaPolicyResolver`、脱敏规则、`AuditAction.MFA_*` 枚举）**未被改动**。
