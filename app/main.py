@@ -1,11 +1,18 @@
 """FastAPI 应用装配。
 
 Spec 08 §1 Base：所有业务 API 位于 `/api/v1/admin`。
+Spec 08 §3：认证端点位于 `/api/v1/auth`（DD-02 阶段裁定，见决策台账）。
 Spec 06 §3：Trace 中间件必须覆盖所有请求。
 Spec 13 §5：结构化、带 trace_id / request_id、脱敏的日志。
 
-Phase 1 边界：本阶段不实现任何业务模块
-（User / Department / Role / Permission / Auth / Session / MFA / Dictionary）。
+两个前缀的分工
+-------------
+- `/api/v1/admin/**`：**管理员资源**域。调用者必须已经是"已认证的操作者"。
+- `/api/v1/auth/**`：**认证**域。登录时尚不存在操作者身份，
+  因此不能放在 admin 域下（否则语义上要求"先认证才能登录"）。
+
+Phase 4 边界：业务资源端点（users / roles / departments / sessions /
+audit / dicts ...）分别属于后续 Phase，本阶段只交付认证域。
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
+from app.api.v1.endpoints.auth import router as auth_router
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
@@ -84,6 +92,8 @@ def create_app() -> FastAPI:
     register_exception_handlers(application)
     application.add_middleware(TraceMiddleware)
     application.include_router(api_router, prefix=settings.api_v1_prefix)
+    # 认证域独立前缀：登录时尚不存在"操作者"，不属于 admin 资源域。
+    application.include_router(auth_router, prefix=settings.auth_v1_prefix)
 
     @application.get("/health", include_in_schema=False, tags=["Health"])
     async def root_liveness() -> object:

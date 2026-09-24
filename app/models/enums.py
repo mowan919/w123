@@ -7,6 +7,8 @@ Frozen 依据
               见 Spec `00 §6` / `07 §3`。）
 - Spec `02 §1` 部门支持禁用 → DepartmentStatus 取 ACTIVE / DISABLED。
 - Spec `03 §2` Role 含 status，未给定取值 → 取 ACTIVE / DISABLED。
+- Spec `04 §6` MFA 生命周期 → `MfaStatus` 三态（DISABLED / SETUP / ENABLED）。
+- Spec `04 §3` Session 需记录 `revoke_reason`（取值域未规定 → INTERIM）。
 
 注意：枚举值使用大写字符串，与 Spec 表述一致；Python 侧使用 `StrEnum`
 以便直接参与 JSON 序列化与字符串比较。
@@ -135,15 +137,68 @@ class HttpMethod(StrEnum):
     DELETE = "DELETE"
 
 
+class SessionRevokeReason(StrEnum):
+    """会话被撤销的原因（写入 `sessions.revoke_reason`）。
+
+    Spec `04 §3` 要求记录 `revoke_reason`，但**未规定取值域**，
+    因此本枚举属 INTERIM 技术取值，集中定义以免散落字符串
+    （`revoke_reason` 只有本模块的所有者会写，取值完全可控）。
+
+    取值说明：
+
+    - `LOGOUT`：用户本人登出（`04 §4` "仅本人 logout"）；
+    - `ADMIN_REVOKE`：管理员踢出单个会话（`04 §4` revoke one，Session Phase 落地）；
+    - `REVOKE_ALL`：管理员踢出某用户全部会话（`04 §4` revoke all，同上）；
+    - `TOKEN_REUSE_DETECTED`：检测到已轮换的 Refresh Token 被复用（DD-02 P4）。
+    """
+
+    LOGOUT = "LOGOUT"
+    ADMIN_REVOKE = "ADMIN_REVOKE"
+    REVOKE_ALL = "REVOKE_ALL"
+    TOKEN_REUSE_DETECTED = "TOKEN_REUSE_DETECTED"  # noqa: S105 - 撤销原因枚举值
+
+
+class RefreshTokenRetirement(StrEnum):
+    """已退役 Refresh Token 的退役原因（写入 `session_refresh_token_history.reason`）。
+
+    与 `SessionRevokeReason` 分开的原因：退役原因与"会话为何被撤销"是两个问题。
+    本枚举只有两种取值，且**恰好**对应两种截然不同的处理路径：
+
+    - `ROTATED`：被正常轮换取代 → 该哈希若再次出现即为**盗用信号**
+      （真正合法的持有者已经换到了新令牌），必须触发 family revocation；
+    - `SESSION_REVOKED`：所属会话被撤销而一并失效 → 该哈希再次出现
+      只是"拿着作废令牌再试一次"，属正常失败，**不得**误报为盗用。
+    """
+
+    ROTATED = "ROTATED"
+    SESSION_REVOKED = "SESSION_REVOKED"
+
+
+class MfaStatus(StrEnum):
+    """用户 MFA 生命周期状态（Spec `04 §6` 冻结的三态）。
+
+    ```text
+    DISABLED → SETUP → ENABLED
+    ```
+    """
+
+    DISABLED = "DISABLED"
+    SETUP = "SETUP"
+    ENABLED = "ENABLED"
+
+
 __all__ = [
     "FIELD_ACCESS_READABLE",
     "FIELD_ACCESS_WRITABLE",
     "DepartmentStatus",
     "FieldAccessLevel",
     "HttpMethod",
+    "MfaStatus",
     "PermissionResourceType",
     "PermissionStatus",
+    "RefreshTokenRetirement",
     "RoleStatus",
+    "SessionRevokeReason",
     "UserStatus",
     "most_permissive_field_level",
 ]

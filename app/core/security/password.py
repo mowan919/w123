@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher as _Argon2Hasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -32,6 +33,13 @@ PASSWORD_HISTORY_SIZE = 5
 PASSWORD_MAX_AGE_DAYS = 90
 MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOCKOUT_MINUTES = 30
+
+#: 口令最长寿命（与 `PASSWORD_MAX_AGE_DAYS` 同源的 timedelta 形式，
+#: 供各调用方复用，避免各处 `timedelta(days=...)` 重复出现）。
+PASSWORD_MAX_AGE = timedelta(days=PASSWORD_MAX_AGE_DAYS)
+
+#: 连续失败达到阈值后的锁定时长。
+LOCKOUT_DURATION = timedelta(minutes=LOCKOUT_MINUTES)
 
 _UPPERCASE = re.compile(r"[A-Z]")
 _LOWERCASE = re.compile(r"[a-z]")
@@ -90,6 +98,22 @@ def get_password_hasher() -> PasswordHasher:
     return _password_hasher
 
 
+def is_password_expired(password_changed_at: datetime | None, *, now: datetime) -> bool:
+    """口令是否已超过 90 天必须更换的期限（Spec `00 §2`）。
+
+    `password_changed_at` 为 None 时返回 **True**（视为已过期）：
+    我们无法证明该口令在 90 天内被设置过。按本项目一贯的 fail-closed 取向
+    （`11 §5`"宁可拒绝，也不放行"），此时应要求用户改密，
+    而不是假定它是新的 —— 后者会让"从未记录改密时间的账号"永久免于轮换。
+
+    到期后的处理**不是**拒绝登录，而是强制改密（DD-02 P8 已裁定），
+    因此本函数只回答"是否到期"，不决定登录是否放行。
+    """
+    if password_changed_at is None:
+        return True
+    return now - password_changed_at >= PASSWORD_MAX_AGE
+
+
 def validate_password_policy(password: str) -> list[PasswordPolicyViolation]:
     """按 Spec `00 §2` 校验密码复杂度。
 
@@ -142,13 +166,16 @@ def validate_password_policy(password: str) -> list[PasswordPolicyViolation]:
 
 
 __all__ = [
+    "LOCKOUT_DURATION",
     "LOCKOUT_MINUTES",
     "MAX_FAILED_LOGIN_ATTEMPTS",
     "PASSWORD_HISTORY_SIZE",
+    "PASSWORD_MAX_AGE",
     "PASSWORD_MAX_AGE_DAYS",
     "PASSWORD_MIN_LENGTH",
     "PasswordHasher",
     "PasswordPolicyViolation",
     "get_password_hasher",
+    "is_password_expired",
     "validate_password_policy",
 ]

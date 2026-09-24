@@ -13,9 +13,9 @@
 
 | 编号 | 主题 | 当前状态 | 目标 Phase |
 |---|---|---|---|
-| DD-01 | MFA Provider | 未冻结（Spec 04 未定 Provider） | Phase 5（005） |
-| DD-02 | Token 生命周期 | 未冻结 | Phase 4（003） |
-| DD-03 | Redis Key 命名 | 未冻结（Phase 3 不启用缓存，暂不需要） | Phase 9（009） |
+| **DD-01** | **MFA Provider** | **已冻结（方案 A，2026-09-24）**：Phase 4 落地步骤 + Provider 抽象 + fail-closed；具体 Provider 留 Phase 5 | Phase 5（005）落地实现 |
+| **DD-02** | **Token 生命周期** | **已冻结（方案 A，2026-09-24）** | ✅ Phase 4 |
+| **DD-03** | **Redis Key 命名** | 未冻结（Phase 4 已裁定**不使用 Redis**，继续留 Phase 9） | Phase 9（009） |
 | DD-04 | Permission Version 缓存语义 | 未冻结（Phase 3 **已落地单调版本号**，缓存语义待定） | Phase 9（009） |
 | **DD-05** | **角色继承（Role Inheritance）存储与展开** | **已冻结（方案 A，2026-09-24）** | ✅ Phase 3 |
 | **DD-06** | **Field Permission 表结构** | **已冻结（专用表 + 最宽松者胜，2026-09-24）** | ✅ Phase 3 |
@@ -23,7 +23,7 @@
 | DD-08 | 日志分区策略 | DEFERRED | Phase 6（006） |
 | DD-09 | Secret Manager | 未冻结 | Phase 9（009） |
 | DD-10 | Rate Limit 阈值 | 未冻结 | Phase 9（009） |
-| DD-11 | 幂等策略 | 未冻结 | Phase 4（003） |
+| **DD-11** | **幂等策略** | **已冻结（方案 A，2026-09-24）**：语义幂等，不引入 `Idempotency-Key` 头 | ✅ Phase 4 |
 | DD-12 | 错误码段位表 | 未冻结（现用集中式 INTERIM 码） | 待定 |
 | DD-13 | 分页协议 | 未冻结（现用 `pageNum`/`pageSize` + `{list,total,...}` 临时协议） | 待定 |
 | DD-14 | Snowflake 参数（epoch / 机器位分配） | 未冻结（现用默认参数） | 待定 |
@@ -240,6 +240,22 @@
 - **证据**：`tests/test_effective_permission.py::TestRisk004Characterization`（2 例）；
   `app/services/authorization.py` 模块级风险说明。
 
+### FINDING-4-01 `authenticate()` 的 refresh 过期判定不可达 —— 有意保留
+
+- **现状**：DEFECT-4-01 修复后，`expires_at <= refresh_expires_at` 由
+  `sessions` 上的 CHECK 强制、且由 `SessionService.rotated_access_expiry`
+  构造性保证，因此 `SessionService.authenticate` 中
+  `or session.is_refresh_expired(checked_at)` 这一支**必然冗余** ——
+  不存在能触发它的合法数据状态，**该分支无法被测试覆盖**。
+- **为什么不删**：这是**安全判定的冗余**，与业务判定的冗余价值不同。
+  一旦将来有人放宽或移除那条 CHECK（例如 DD-02 若改判为滑动续期），
+  少写这一个 `or` 就会把"会话总寿命是硬上界"静默变成一句空话。
+  删掉它能让用例更好写，代价是删掉一条安全性质 —— 不划算。
+- **处理**：保留，并在代码注释与验收报告中显式说明"该分支不可达且无覆盖"，
+  避免后续评审把它误判为"漏测"。
+- **证据**：`app/services/session.py:196`；
+  `docs/verification/003-authentication-result.md §4`。
+
 ### Phase 2 已裁定的行为外推（延续有效）
 
 | 项 | Spec 原文范围 | 本次实现 | 状态 |
@@ -247,7 +263,7 @@
 | 创建用户时 `must_change_password` | `00 §2` 只规定"管理员**重置**密码后"必须改密 | 创建同样置 `True` | 已裁定（RISK-001） |
 | 禁用 / 删除**最后一个** SUPER_ADMIN | `00 §1#7` 只规定"其他管理员不能踢 SUPER_ADMIN" | 禁止禁用 / 逻辑删除最后一个，且记 FAILURE 审计 | 已裁定（RISK-002） |
 | 响应返回真实手机号 / 邮箱 | `00 §8` / `06 §4` 只约束日志与审计 | 响应返回真实值；脱敏仅在日志 / 审计链路 | 已裁定（RISK-003） |
-| 解除强制改密的入口 | `00 §2` 只规定"必须改密"，未规定如何解除 | `UserService.change_own_password`（HTTP 端点属 Phase 4） | 已裁定（RISK-001 配套） |
+| 解除强制改密的入口 | `00 §2` 只规定"必须改密"，未规定如何解除 | `UserService.change_own_password`；HTTP 端点 `POST /auth/password` **已于 Phase 4 交付** | 已裁定（RISK-001 配套，已闭环） |
 
 ### Phase 2 的技术默认（延续有效）
 
@@ -258,3 +274,87 @@
 | `app/db/types.py` | `VARCHAR(16) + CHECK`（`native_enum=False`） | 枚举落库形态选择；Spec 未规定 |
 | `app/core/error_codes.py` | `INTERIM` 错误码 | DD-12 未冻结 |
 | `app/schemas/*` | 分页字段名 `pageNum` / `pageSize`、响应体 `{list,total,pageNum,pageSize}` | 人类裁定采用，但 DD-13 仍未冻结 |
+
+---
+
+## 7. Phase 4 裁定（人类已裁定，2026-09-24）
+
+> 执行 Phase：`PHASE-004-AUTH`（= `PHASES.md` Phase 3 — Authentication），
+> 裁判文件 `docs/verification/003-authentication.md`。
+> 人类对 `docs/DECISION-REQUEST-PHASE-4.md` 的四项草案**全部批准方案 A**。
+
+### DD-02 Token 生命周期 —— 已冻结（方案 A）
+
+- **令牌形态**：**不透明随机串**（`secrets.token_urlsafe(32)`，43 字符 / 256 bit），
+  `sessions` 表为**唯一真源**。**不使用 JWT**。
+- **TTL**：Access **15 分钟** / Refresh **7 天固定、不滑动**。
+- **轮换**：每次 `POST /auth/refresh` 同时轮换 access 与 refresh；
+  旧 refresh 哈希留档于 `session_refresh_token_history`。
+- **复用检测（P4）**：已轮换的 refresh 再次出现 → 撤销**整个会话**
+  （access + refresh 同时失效，family revocation）+ 记 `AUTH_TOKEN_REUSE_DETECTED`。
+- **并发刷新（P7）**：以 `WHERE access_token_hash = 旧值 AND revoked_at IS NULL`
+  做 **CAS**，保证**只有一个**请求赢得轮换；竞争失败方按**复用**处理（撤销会话）。
+- **传输位置（P6）**：refresh token 放**请求体**（非 HttpOnly Cookie）。
+- **口令 90 天（P8）**：过期后**允许登录**但强制改密（拒绝登录会造成"必须改密却无法登录"的死锁）。
+- **为什么不需要签名密钥与 denylist**：`10 §7` 要求"Revoke 后 Token 必须不能继续访问"。
+  无状态 JWT 的天然缺陷正是无法即时撤销；本方案让**每个请求**都查库并读 `revoked_at`，
+  撤销一旦提交，下一个请求必然被拒 —— 不存在"TTL 内仍然可用"的窗口。
+  因此 `SIGNING_SECRET` 在 Phase 4 **保留但未被使用**
+  （删除一项 Frozen 要求不属于实现 Phase 可自决的范围）。
+- **落地过程中的实现裁定（已在验收报告中登记）**：新 access 的到期时间
+  **封顶到会话总寿命**（`SessionService.rotated_access_expiry`）。
+  理由见 `docs/verification/003-authentication-result.md` DEFECT-4-01。
+- **证据**：`app/core/security/token.py`、`app/models/session.py`、
+  `app/services/session.py`、`app/repositories/session.py`；
+  `tests/test_session_service.py`（31 例）、`tests/test_token.py`（30 例）。
+
+### DD-03 Redis Key 命名 —— Phase 4 不使用 Redis
+
+- 与 Phase 3 同口径：会话存于 **PostgreSQL**，不存在"两个真相"。
+  因此 DD-03（Key 命名）与"Session 存储介质"均继续留 Phase 9。
+- **证据**：`app/models/session.py` 模块 docstring；Phase 4 未新增任何 Redis 依赖。
+
+### DD-11 幂等策略 —— 已冻结（方案 A：语义幂等）
+
+- **不引入** `Idempotency-Key` 请求头。
+- `POST /auth/logout` 在会话早已失效时返回 **200**
+  （`{revoked: false, already_revoked: true}`）而非 401：
+  登出的意图在"会话早已失效"时已经达成，返回 401 只会让客户端把一次**成功**的登出
+  当成错误并重试。
+- 区分"语义幂等"与"未认证"：后者仍由认证依赖返回 401。
+- **证据**：`app/services/session.py:478`（`logout`）、`app/api/v1/endpoints/auth.py`；
+  `tests/test_auth_api.py::TestLogoutEndpoint::test_logout_revokes_and_is_idempotent`。
+
+### DD-01 MFA Provider —— 已冻结（方案 A：只落地边界，不选定算法）
+
+- Phase 4 落地：登录流程中的 **MFA 检查步骤**（`04 §1` 第 6 步）、
+  `MfaProvider` **Protocol**（`04 §6`）、生命周期枚举 `DISABLED/SETUP/ENABLED`、
+  策略优先级 `user > role > system`（`04 §7`，user/role 两级存储留 Phase 5）。
+- **不选定** TOTP / WebAuthn / SMS 中的任何一者。
+- **fail-closed**：策略要求二次验证但没有可用 Provider → 抛 `ConfigurationError`，
+  登录**明确失败**。宁可让配置缺失立刻可见，也不放行一个"号称有 MFA、实际没有"的系统。
+  （`required=True` 且 Provider 可用时同样拒绝：挑战签发与校验属 Phase 5，
+  本 Phase 不得"假装通过"。）
+- **003 的判定口径**：`MFA 检查` 一项判为 PASS，标准是"步骤存在且按策略执行"。
+- **证据**：`app/services/mfa.py`；`tests/test_mfa_policy.py`（13 例）、
+  `tests/test_auth_service.py::TestMfaStep`（3 例）。
+
+---
+
+## 8. Phase 4 期间新增的 INTERIM 取值与技术默认
+
+| 位置 | 取值 | 说明 |
+|---|---|---|
+| `app/core/config.py::auth_v1_prefix` | `/api/v1/auth` | **INTERIM-4-01**。认证与 `/api/v1/admin` 分开：登录是"取得身份"的入口，而 `/admin` 之下的一切都要求"已取得身份"；混挂会让后续权限守卫把登录端点也纳入拦截范围。`08 §1` 只规定了 `/api/v1/admin` 作为 Base，未禁止独立认证前缀 |
+| `app/api/deps.py::get_current_actor` | 强制改密期间返回 **403**（非 401） | **INTERIM-4-02**。调用者**是**已认证的，只是当前状态下不允许访问；401 会让客户端误判"登录失效"而清掉会话，用户反而走不到改密那一步。客户端 IP 只取 socket 对端，**不读 `X-Forwarded-For`**（无可信代理列表时信任 XFF 等于允许伪造来源；属 Phase 9） |
+| `app/api/v1/endpoints/auth.py` | `POST /auth/password` 为**补充端点** | **INTERIM-4-03**。`08 §3` 未列出改密端点，但 `04 §2` 冻结了"重置后首次登录必须改密"；若无解除路径，`must_change_password` 只能置 True 不能置 False —— 那不是策略，是死锁。Phase 2 已有同类先例（`POST /users/{id}/delete` 等由人类裁定补齐） |
+| `app/repositories/session.py::SESSION_ACTIVITY_WRITE_INTERVAL` | `last_active_at` 写抑制窗口 **60 秒** | Spec 未规定"最近活动"的更新粒度。60 秒对应 `04 §5` 的分钟级在线判定；更细换不到可观测收益，却让每个请求都产生一次 UPDATE。**不影响任何鉴权判定** |
+| `app/core/security/device.py::describe_device` | 设备粗分类形如 `Chrome · Windows · desktop` | 明确标注为**非安全信号**：仅用于展示与取证。用启发式的 UA 解析结果做安全判定会构成误判（可伪造） |
+| `app/services/session.py::_UNAUTHENTICATED_MESSAGE` | 会话侧 401 文案统一为"认证失败或登录状态已失效" | `10 §5` 的落地：令牌无效 / 过期 / 已撤销 / 所属用户被禁用一律同一文案，区分它们会让攻击者能枚举"哪些令牌曾经存在" |
+| `app/services/auth.py::_INVALID_CREDENTIALS_MESSAGE` | 登录失败文案统一为"用户名或密码错误" | 覆盖"用户不存在 / 口令错 / 已锁定 / 已禁用"四种内部原因；内部原因只写审计（供诊断），不对外区分 |
+| `app/services/auth.py`（模块 docstring） | 自动锁定时**不**把 `status` 改为 `LOCKED` | 锁定语义完全由 `locked_until` 表达。若同时改 `status`，到期后无人把它改回（需要一个后台任务），账号会被**永久锁死**。`02 §3` 允许 `LOCKED` 存在（供管理员手工设置），与"自动锁定用 `locked_until`"不冲突 |
+| `app/services/auth.py::_register_login_failure` | 达到阈值后**不清零**计数，只设 `locked_until` | "consecutive failures"要求**登录成功**才清零。若解锁时清零，攻击者只需等到锁定期结束就能立刻再获得 5 次尝试。代价（锁定期过后再错一次即再次锁定）属可接受的保守取向，已报备 |
+| `app/models/session.py` | `sessions` **不含** `deleted_at` | 会话不是"可删除的业务实体"，其终态是**被撤销**（`revoked_at`）。引入软删除会出现"`revoked_at` 与 `deleted_at` 谁说了算"的第二套语义。留存 / 归档 / 分区属 Phase 6（DD-08） |
+| `app/models/session.py` | **只留档 refresh 哈希，不留档 access 哈希** | Access 的 TTL 仅 15 分钟，且重放一个已轮换的 access 没有任何攻击价值（查不到即 401）。若也留档，一个 7 天会话会产出约 672 行纯噪声。这是刻意取舍，不是遗漏 |
+| `app/services/session.py::rotated_access_expiry` | 轮换时新 access 的到期时间**封顶到会话总寿命** | 见 DEFECT-4-01。使 `expires_at <= refresh_expires_at` **构造性成立**，`ck_sessions_refresh_expires_not_before_access` 退化为"TTL 用反"探针 |
+| `app/repositories/session.py::record_retired_refresh_token` | 用 `ON CONFLICT DO NOTHING` 写入退役哈希 | 该记录表达**集合成员关系**，重复写入语义上无意义；而在并发刷新下重复是必然的。用普通 INSERT 会让"检测到盗用却因唯一约束回滚而未能撤销会话"成为真实失败模式 |

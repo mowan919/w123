@@ -35,6 +35,9 @@ class ErrorCode(IntEnum):
 
     # ---- INTERIM (DD-12 未冻结，临时代码) ----
     BAD_REQUEST = 400001
+    #: 未认证 / 令牌无效或过期（Phase 4 新增）。
+    #: DD-12 未冻结 401 段位，此处取 "HTTP 401 + 序号 001" 的既有推导惯例。
+    UNAUTHENTICATED = 401001
     VALIDATION_ERROR = 422001
     NOT_FOUND = 404001
     METHOD_NOT_ALLOWED = 405001
@@ -50,6 +53,7 @@ DEFAULT_MESSAGES: dict[int, str] = {
     ErrorCode.SUCCESS: "success",
     ErrorCode.PERMISSION_DENIED: "permission denied",
     ErrorCode.BAD_REQUEST: "bad request",
+    ErrorCode.UNAUTHENTICATED: "unauthenticated",
     ErrorCode.VALIDATION_ERROR: "validation error",
     ErrorCode.NOT_FOUND: "resource not found",
     ErrorCode.METHOD_NOT_ALLOWED: "method not allowed",

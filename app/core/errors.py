@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # INTERIM（DD-12 未冻结）：HTTP 状态码 → 业务错误码的临时映射。
 _HTTP_STATUS_TO_CODE: dict[int, int] = {
     400: ErrorCode.BAD_REQUEST,
-    401: ErrorCode.PERMISSION_DENIED,
+    401: ErrorCode.UNAUTHENTICATED,
     403: ErrorCode.PERMISSION_DENIED,
     404: ErrorCode.NOT_FOUND,
     405: ErrorCode.METHOD_NOT_ALLOWED,
@@ -93,6 +93,49 @@ class PermissionDeniedError(AppError):
     code = int(ErrorCode.PERMISSION_DENIED)
     http_status = 403
     message = "permission denied"
+
+
+class AuthenticationError(AppError):
+    """未认证：令牌缺失 / 无效 / 过期 / 已撤销，或凭据不正确（HTTP 401）。
+
+    对外文案约束（Spec `10 §5`）
+    --------------------------
+    "登录失败信息不得泄露用户是否存在等不必要信息"。
+    因此**登录链路**抛出的本异常文案必须统一（"用户名或密码错误"），
+    不区分"用户不存在 / 密码错误 / 被锁定 / 状态禁用"；
+    这些区别只写入**审计与安全日志**（`04 §8`），供运维诊断。
+
+    同时附带 `WWW-Authenticate: Bearer`（RFC 6750 §3）——
+    这是 401 的协议要求，也让客户端知道该用哪种认证方案。
+    """
+
+    code = int(ErrorCode.UNAUTHENTICATED)
+    http_status = 401
+    message = "unauthenticated"
+
+    def to_response(self) -> JSONResponse:
+        return error_response(
+            self.code,
+            message=self.message,
+            http_status=self.http_status,
+            data=self.data,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class ConfigurationError(AppError):
+    """服务端配置缺失导致该操作**无法安全执行**（fail-closed 而非放行）。
+
+    使用场景（Phase 4）：MFA 策略要求二次验证，但没有任何可用的 MFA Provider
+    （DD-01 具体 Provider 未冻结）。此时**绝不能静默放行** ——
+    那会把"要求 MFA"变成装饰性配置。因此显式失败，让配置问题立刻暴露。
+
+    文案不含任何内部细节（无密钥、无路径），故可安全返回给调用方。
+    """
+
+    code = int(ErrorCode.INTERNAL_ERROR)
+    http_status = 500
+    message = "server configuration error"
 
 
 class ConflictError(AppError):

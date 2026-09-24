@@ -67,6 +67,37 @@ class AuditAction(StrEnum):
     PERMISSION_RESOURCE_DELETE = "PERMISSION_RESOURCE_DELETE"
     PERMISSION_PREVIEW = "PERMISSION_PREVIEW"
 
+    # ---- Phase 4：认证与会话（严格对应 Spec `04 §8` 的安全日志清单） ----
+    #
+    # `04 §8` 要求记录：
+    #   login success / login failure / lockout / password reset / password change /
+    #   MFA setup·enable·disable·failure / session revoke。
+    #
+    # 与既有动作的对应关系（**刻意不新增重复事件**）：
+    #   - password reset   → 复用 Phase 2 的 `USER_RESET_PASSWORD`
+    #   - password change  → 复用 Phase 2 的 `USER_CHANGE_PASSWORD`
+    #     （无论是管理员重置还是本人改密，该动作都表达"口令被修改"，
+    #       再新增一个 AUTH_* 同义事件只会让安全日志出现重复记录）
+    #   - session revoke   → 加下文的 `AUTH_LOGOUT`（仅本人登出）
+    AUTH_LOGIN_SUCCESS = "AUTH_LOGIN_SUCCESS"
+    AUTH_LOGIN_FAILURE = "AUTH_LOGIN_FAILURE"
+    AUTH_LOCKOUT = "AUTH_LOCKOUT"
+    #: 仅本人 logout（`04 §4`"仅本人 logout"）。管理员踢出会话属 Session Phase。
+    AUTH_LOGOUT = "AUTH_LOGOUT"
+    #: 检测到已轮换的 Refresh Token 被复用（DD-02 P4：family revocation）。
+    #: 这不是 `04 §8` 列举的事件，而是 DD-02 冻结后**必须**可观测的安全信号：
+    #: 该事件意味着"某个会话的令牌可能已被窃取"，比普通登录失败严重得多。
+    AUTH_TOKEN_REUSE_DETECTED = "AUTH_TOKEN_REUSE_DETECTED"  # noqa: S105 - 审计动作名
+    #: `04 §8` 的 session revoke（管理员踢出，Session Phase 产生事件）。
+    AUTH_SESSION_REVOKE = "AUTH_SESSION_REVOKE"
+    #: `04 §8` 的 MFA 四类事件。Phase 4 只落地登录流程中的 MFA 步骤与策略解析
+    #: （DD-01 方案 A），具体 Provider 未冻结 → 事件枚举先行登记，
+    #: 由 Phase 5（MFA）产生实际事件。
+    MFA_SETUP = "MFA_SETUP"
+    MFA_ENABLE = "MFA_ENABLE"
+    MFA_DISABLE = "MFA_DISABLE"
+    MFA_FAILURE = "MFA_FAILURE"
+
 
 class AuditResult(StrEnum):
     """审计结果。"""

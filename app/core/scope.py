@@ -84,6 +84,26 @@ _SCOPE_LABEL_PRIORITY: tuple[DataScope, ...] = (
 )
 
 
+def widest_data_scope(scopes: Sequence[DataScope]) -> DataScope:
+    """在一组策略中取**最宽**的一个（按 `_SCOPE_LABEL_PRIORITY`）。
+
+    用途：多角色合并后的"代表策略"标签（诊断 / 审计 / 前端展示）。
+    真正的判权依据始终是 `ResolvedScope` 的
+    `department_ids` / `restrict_to_actor` / `include_self` 三个字段，
+    本函数只解决"合并后该怎么称呼"这一表达问题。
+
+    为什么单独抽成函数：认证层（Phase 4）构造 `CurrentActor` 时也要填一个
+    代表策略，若各处自行写 `max(...)`，一旦优先级表调整就会出现
+    "同一组角色在不同路径得到不同标签"的漂移。
+
+    Raises:
+        ValueError: `scopes` 为空（无策略就无"最宽者"，不得凭空造出一个）。
+    """
+    if not scopes:
+        raise ValueError("无法在空策略集合上取最宽者。")
+    return max(scopes, key=_SCOPE_LABEL_PRIORITY.index)
+
+
 @dataclass(frozen=True, slots=True)
 class RoleScopeConfig:
     """**单个角色**的数据范围配置（DD-19 合并的输入单元）。
@@ -244,10 +264,7 @@ class ResolvedScope:
 
         all_self = all(item.restrict_to_actor for item in scopes)
         any_self = any(item.restrict_to_actor for item in scopes)
-        label = max(
-            (item.scope for item in scopes),
-            key=_SCOPE_LABEL_PRIORITY.index,
-        )
+        label = widest_data_scope([item.scope for item in scopes])
 
         return cls(
             scope=label,
@@ -318,4 +335,4 @@ class ResolvedScope:
         return self.include_self and self.actor_id is not None and user_id == self.actor_id
 
 
-__all__ = ["DataScope", "ResolvedScope", "RoleScopeConfig"]
+__all__ = ["DataScope", "ResolvedScope", "RoleScopeConfig", "widest_data_scope"]

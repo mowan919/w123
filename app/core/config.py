@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # Spec 08 §1 Base：/api/v1/admin
     api_v1_prefix: str = "/api/v1/admin"
 
+    # 认证端点前缀（Phase 4）。
+    #
+    # INTERIM（已向人类报备并获批）：Spec `08 §3` 只给出 `/auth/*` 相对路径，
+    # 而 `08 §1` 的 Base 是 `/api/v1/admin`。认证端点**不属于** admin 资源域
+    # （登录时尚未成为"管理员操作者"），因此独立为 `/api/v1/auth`。
+    # 该取值记录在 `docs/DESIGN-DECISIONS.md`，Spec 冻结后只需改此一处。
+    auth_v1_prefix: str = "/api/v1/auth"
+
     # Spec 06 §4 / 13 §5 Logging
     log_level: LogLevel = "INFO"
     log_json: bool = True
@@ -86,11 +94,33 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------
     # Secrets —— 13 §2
-    # 本阶段不实现 Token / MFA，因此仅登记配置入口，默认留空。
+    #
+    # DD-02 已裁定为**不透明令牌**（不签发 JWT），因此当前实现
+    # **不使用** `signing_secret`。仍然保留该配置项与 prod fail-closed 校验：
+    # 它是 Spec `13 §2` 冻结的密钥清单的一部分，
+    # 而"移除一个冻结要求"不属于实现阶段可以自行决定的事（Spec 14 §1）。
+    # 未使用 ≠ 可以删除；如需移除，应由人类在 Spec 中裁定。
+    #
+    # `encryption_key` / `mfa_encryption_key` 由 Phase 5（MFA Secret 加密保存，
+    # `04 §6`）使用。
     # ------------------------------------------------------------------
     signing_secret: SecretStr = SecretStr("")
     encryption_key: SecretStr = SecretStr("")
     mfa_encryption_key: SecretStr = SecretStr("")
+
+    # ------------------------------------------------------------------
+    # MFA 策略（DD-01 方案 A 已裁定）
+    #
+    # Spec `04 §7` 冻结了策略层级 `user > role > system`，但 V1 具体 Provider
+    # 未冻结。DD-01 方案 A 的落地口径：
+    #   - 系统级默认值 = 本配置项（**默认 False**：不要求 MFA）；
+    #   - user / role 两级策略的存储属 Phase 5；
+    #   - 若本项被设为 True 而系统尚无可用 Provider，
+    #     `MfaService.check_login` 会 **fail-closed 报错**而不是静默放行。
+    # 因此在 Phase 5 落地 Provider 之前，把它改成 True 会让登录**明确失败**，
+    # 这正是期望行为（配置问题必须立刻可见）。
+    # ------------------------------------------------------------------
+    mfa_required_default: bool = False
 
     # ------------------------------------------------------------------
     # Validators
@@ -100,7 +130,7 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("api_v1_prefix")
+    @field_validator("api_v1_prefix", "auth_v1_prefix")
     @classmethod
     def _normalize_prefix(cls, value: str) -> str:
         if not value.startswith("/"):
