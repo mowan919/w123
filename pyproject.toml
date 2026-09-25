@@ -44,7 +44,11 @@ include = ["app*"]
 [tool.pytest.ini_options]
 minversion = "9.0"
 testpaths = ["tests"]
-pythonpath = ["."]
+# `scripts/` 也放进来：种子脚本内部用的是平铺 import（`from seed_data import ...`），
+# 测试要复用同一份清单与写入实现，就得与脚本保持同一个模块对象。
+# 若这里只放 `.`，`scripts` 会退化成命名空间包，测试拿到的是与脚本**另一个副本**，
+# 两边各改一处就会静默不一致。
+pythonpath = [".", "scripts"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

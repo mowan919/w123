@@ -1307,10 +1307,21 @@ Phase 8 / Phase 10 的验收也是按这个路径判定的。
 约束（后续改动必须遵守）：
 
 1. 新增受保护端点时，`require_api_permission` 的入参必须**同时**出现在
-   `scripts/seed_e2e.py` 的 `APIS` 里，否则 E2E 里的授权角色会被静默降级；
+   `scripts/seed_common` 所引用的那张 API 清单里（现由 `scripts/seed_data.py`
+   作为唯一来源），否则种子里的授权角色会被静默降级；
 2. `permission_resources` 的唯一键是 `(resource_type, resource_code)`，
    一个权限码只能写一行；
-3. `api_path` 取**后端相对路径**（`/admin/users`），不含 `/api/v1` 前缀。
+3. `api_path` 取**后端完整路由去掉 `settings.api_v1_prefix` 之后的相对路径**。
+   ⚠️ `settings.api_v1_prefix` 本身已经是 `/api/v1/admin`
+   （`app/core/config.py`），因此写 `/users` 而不是 `/admin/users`。
+
+   这一条在最初登记时写成了"/admin/users 这种相对路径"，是**错的**：
+   `settings.api_v1_prefix` 已经把 `/api/v1/admin` 吃掉了，再补一个 `/admin/`
+   就成了双前缀。`tests/test_seed_data.py` 的
+   `test_api_paths_and_methods_are_real_backend_routes` 一上线就抓出全部
+   9 条路径都写错了（`GET /admin/users` 实际是 `GET /users`），
+   其中部门那条更严重 —— `GET /admin/departments` 这个端点**根本不存在**，
+   部门列表只以 `GET /departments/tree` 提供。
 
 ### 18.3 OPERATION-11-01 —— `seed_e2e.py` 与测试套件共用同一个数据库
 
@@ -1354,3 +1365,55 @@ Phase 8 / Phase 10 的验收也是按这个路径判定的。
 | 三层菜单塌成平级 | 侧边栏层级全乱 | 挂点落到"父的挂载点"而非"父节点" |
 | 授权了却照样 403 | E2E 里自造编码不被识别 | 见 `INTERIM-11-01` |
 | 菜单一个都没给 | 页面全给、菜单全无 | `menu_for_page in resource_id` 恒 False（键为二元组） |
+
+## 19. 初始数据（Initial Data）—— 实际落地口径
+
+### 19.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `OPERATION-19-01` | `scripts/seed_data.py` 是初始数据清单的**唯一来源** | 操作约定，非设计决策 |
+| `INTERIM-19-01` | 初始管理员的**创建时机** | 技术决策，**未冻结** —— 当前实现：口令必须由 `SEED_INIT_ADMIN_PASSWORD` 注入，缺省则报错退出；待定的是"是否改为 `--with-admin` 缺省即静默跳过" |
+
+### 19.2 OPERATION-19-01 —— 清单与写入拆分，两份种子共用
+
+背景：`alembic upgrade head` 之后库是**空的** —— 没有部门、角色、权限资源，
+也就没有任何人能登录，连进管理界面改数据的人都没有。
+
+因此新增 `scripts/seed_init.py`（全新部署入口），并把清单从 `seed_e2e.py`
+抽到 `scripts/seed_data.py`：
+
+- `scripts/seed_data.py` —— **纯数据**（部门 / 角色 / 资源 / 授权映射）；
+- `scripts/seed_common.py` —— **写入实现**（两个脚本共用）；
+- `scripts/seed_init.py` —— 全新部署入口（骨架 + 可选初始管理员）；
+- `scripts/seed_e2e.py` —— E2E 三角色种子（改动实现，清单改为 import）。
+
+理由：`seed_init` 与 `seed_e2e` 需要的骨架几乎相同，两份各写一份必然漂移，
+而漂移是**静默**的（`18.2` 已经因此出过一次事故）。
+
+约束（后续改动必须遵守）：
+
+1. **新增 / 改资源编码只改 `scripts/seed_data.py`**；
+2. 新增种子内容时，写入逻辑放 `seed_common.py`，`seed_init.py` 与
+   `seed_e2e.py` 都调用它；
+3. pytest 的 `pythonpath` 必须包含 `scripts/` —— 否则测试拿到的是与脚本
+   **另一个副本**的模块对象，两边各改一处就会静默不一致。
+
+### 19.3 幂等口径：统计的是"本次实际新建行数"
+
+`--dry-run` 与实跑走**完全相同**的代码路径，只在最后 `rollback()`，因此
+"预演成功"意味着"真跑也一定成功"；但同一事务内反复跑看不出"已提交过"的状态，
+所以 `tests/test_seed_common.py` 用 `db_session` 夹具（外层事务 + 结束回滚）
+**跑两遍**，第二遍要求新建数归零且不抛异常。
+
+该用例在写上显式 `flush()` 之前是**空过**的：夹具是 `autoflush=False`，
+不落库的话第二遍读到的仍是空表。这正说明"断言跑过了"与"断言有效"是两件事。
+
+### 19.4 本批次实现/验证中修复的缺陷
+
+| 缺陷 | 症状 | 根因 |
+|---|---|---|
+| 第二次执行必崩 | `IntegrityError: duplicate key violates pk_role_field_permissions` | 授权函数只 `add()` 不查，而两张授权表是复合主键、无 upsert 余地 |
+| 台账指向不存在的端点 | `GET /admin/departments` 404（真实只有 `/departments/tree`） | API 路径口径写错，漏算 `settings.api_v1_prefix` 已含 `/api/v1/admin` |
+| 幂等用例空过 | 第二遍断言"0 新建"恒真 | `autoflush=False` 下计数查询不触发 flush，重复写入从未落库 |
+| 授权清单漂移风险 | 两个脚本各写一份清单 | 已拆为 `seed_data.py` 唯一来源 |
