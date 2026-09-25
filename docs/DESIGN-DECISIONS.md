@@ -1278,3 +1278,79 @@ Phase 8 / Phase 10 的验收也是按这个路径判定的。
 **不改动冻结 Spec**，登记为待裁项：若要让 09 与实现对齐，
 需要人类决定是"修改冻结的 09"还是"为该端点增加 `/admin` 别名"。
 前者是文档修订，后者是**凭空新增 API 面**，两者都不是我能在无人拍板时做的选择。
+
+---
+
+## 18. Phase 11（Admin Frontend）—— 实际落地口径
+
+### 18.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `INTERIM-11-01` | E2E 种子的 API 资源编码必须与 `ApiPermissionCode` 逐字一致 | 技术决策，**未冻结** |
+| `OPERATION-11-01` | `scripts/seed_e2e.py` 与测试套件共用同一个数据库 | 操作约定，非设计决策 |
+| `BLOCKED-11-01` | 真实浏览器 E2E 不可用（`BLOCKED_BY_ENVIRONMENT`） | 环境阻塞，不冒充 PASS |
+
+### 18.2 INTERIM-11-01 —— E2E 种子的资源编码必须与 `ApiPermissionCode` 对齐
+
+`scripts/seed_e2e.py` 的 `APIS` 最初写的是自造编码（`api:user:list` /
+`api:user:create` / `api:department:list` …）。这些编码**没有任何端点认** ——
+后端用的是 `app.services.authorization.ApiPermissionCode`（`USER_MANAGE` /
+`DEPARTMENT_MANAGE` / `ROLE_MANAGE` …）。
+
+后果是"权限界面上明明勾满了，接口照样 403"，而 403 的报错信息只说
+"缺少 USER_MANAGE"，看不出是自造编码没对上 —— 这类缺陷在只跑清单核对的验收里
+**永远不会被发现**。
+
+现改为逐字使用 `ApiPermissionCode` 的取值。
+
+约束（后续改动必须遵守）：
+
+1. 新增受保护端点时，`require_api_permission` 的入参必须**同时**出现在
+   `scripts/seed_e2e.py` 的 `APIS` 里，否则 E2E 里的授权角色会被静默降级；
+2. `permission_resources` 的唯一键是 `(resource_type, resource_code)`，
+   一个权限码只能写一行；
+3. `api_path` 取**后端相对路径**（`/admin/users`），不含 `/api/v1` 前缀。
+
+### 18.3 OPERATION-11-01 —— `seed_e2e.py` 与测试套件共用同一个数据库
+
+本机的 PostgreSQL 是**远程共享实例**，测试套件与 E2E 种子都写它。
+`seed_e2e.py --reset` 会清空 `roles` / `admin_users` / `permission_resources` /
+`department` / 会话等表，而 `tests/conftest.py` 自己往同样的表里塞夹具
+（例如 `tests/test_session_management.py` 会建一个固定
+`role_code="SUPER_ADMIN"` 的角色）并**期望库里没有同名行**。
+
+在测试库上跑一次 `--reset`，下一轮 pytest 会以 **412 个失败**开场 ——
+那些失败与代码无关，纯粹是数据被自己清掉了。
+
+因此：
+
+- `--reset` 保留，但只应用于**独立的 E2E 库**；
+- 新增 `--unseed`：**按业务键**只删本脚本写过的行（用户 / 角色 / 资源 /
+  部门及其关联），不影响其它数据；已实现并用抽样测试验证还原成功；
+- 明确要求：E2E 与测试套用**不同的数据库**；若必须共用，跑测期间禁止执行本脚本。
+
+### 18.4 BLOCKED-11-01 —— 真实浏览器 E2E 不可用（`BLOCKED_BY_ENVIRONMENT`）
+
+`FE-12 §4` 要求"至少 SUPER_ADMIN、DEPARTMENT_ADMIN、普通用户"三角色验证。
+本机 Playwright **未安装任何浏览器**（`~/.cache/ms-playwright` 不存在），
+因此浏览器级 E2E 无法执行。
+
+处理：
+
+1. 移除 `package.json` 中指向空目录的 `"e2e": "playwright test"` 脚本与
+   `@playwright/test` 依赖 —— 一个跑不起来的门禁比没有门禁更危险，
+   它会让人误以为 E2E 已经通过；
+2. E2E 以**契约级**方式交付：`scripts/seed_e2e.py` + `scripts/e2e_three_roles.py`，
+   对真实后端发真实 HTTP，**50 项判定全绿**；
+3. 该结论**不含渲染层**，浏览器级用例补齐前不视为完成。
+
+### 18.5 本阶段修复的实现缺陷
+
+| 缺陷 | 症状 | 根因 |
+|---|---|---|
+| 登录页永远打不开 | 未登录访问 `/login` → `infinite redirect` | `decideNavigation` 未放行登录页自身 |
+| 登出只清了一半 | 登出后旧账号的动态路由仍在 | `clearSession()` 未连带清权限与路由 |
+| 三层菜单塌成平级 | 侧边栏层级全乱 | 挂点落到"父的挂载点"而非"父节点" |
+| 授权了却照样 403 | E2E 里自造编码不被识别 | 见 `INTERIM-11-01` |
+| 菜单一个都没给 | 页面全给、菜单全无 | `menu_for_page in resource_id` 恒 False（键为二元组） |

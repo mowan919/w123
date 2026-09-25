@@ -16,6 +16,16 @@ dist/
 venv/
 env/
 
+# ---- Node / 前端 ----
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# ---- Spec 打包产物 ----
+# 与 docs/frontend-spec/ 完全重复的分发包，不纳入版本库。
+docs/vctn_frontend_spec_complete/
+docs/vctn_frontend_spec_complete.zip
+
 # ---- 工具缓存 ----
 .pytest_cache/
 .mypy_cache/
