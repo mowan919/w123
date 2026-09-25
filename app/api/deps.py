@@ -61,6 +61,7 @@ from app.services.auth import AuthService
 from app.services.authorization import AuthorizationService
 from app.services.department import DepartmentService
 from app.services.dict import DictService
+from app.services.log_query import LogQueryService
 from app.services.mfa_management import MfaManagementService
 from app.services.permission_contract import PermissionContractService
 from app.services.permission_resource import PermissionResourceService
@@ -228,6 +229,13 @@ async def get_role_data_scope_service(
     return RoleDataScopeService(session, audit=BufferingAuditRecorder())
 
 
+async def get_log_query_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> LogQueryService:
+    """提供日志查询服务（Phase 10 / FINDING-10-01：`08 §8` 的补交付）。"""
+    return LogQueryService(session, audit=BufferingAuditRecorder())
+
+
 async def get_permission_contract_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> PermissionContractService:
@@ -243,6 +251,16 @@ async def get_permission_contract_service(
 
 #: 以 `resource_code` 声明的 API 权限依赖签名。
 ApiPermissionDependency = Callable[..., Awaitable[None]]
+
+#: 声明式绑定在依赖函数上打的标记（供全路由授权护栏扫描）。
+#:
+#: 为什么必须打标记：DD-20 §5.1.3 选择声明式绑定的**全部**理由就是
+#: "漏声明的路由可以被静态扫描出来"。而扫描需要一个**可识别**的信号 ——
+#: 否则只能靠人记得在每个新路由上写一遍。
+#: 本项目已经因为"HTTP 面的缺失没人发现"踩过两次
+#: （FINDING-8-01 实体 CRUD 端点全无、FINDING-10-01 审计/链路端点全无），
+#: 两者的共同点是：**没有一条断言会因为它们不存在而变红**。
+API_PERMISSION_MARKER = "__vctn_api_permission__"
 
 
 def require_api_permission(
@@ -301,6 +319,9 @@ def require_api_permission(
                 actor=actor, api_code=api_code
             )
 
+    # 打标记（意义见 `API_PERMISSION_MARKER`）；`setattr` 而不是直接赋值，
+    # 因为 mypy --strict 不允许给函数对象加属性。
+    setattr(_dependency, API_PERMISSION_MARKER, str(api_code))
     return _dependency
 
 
@@ -379,6 +400,7 @@ AuthorizationServiceDep = Annotated[AuthorizationService, Depends(get_authorizat
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 DepartmentServiceDep = Annotated[DepartmentService, Depends(get_department_service)]
+LogQueryServiceDep = Annotated[LogQueryService, Depends(get_log_query_service)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -392,6 +414,7 @@ __all__ = [
     "DbSessionDep",
     "DepartmentServiceDep",
     "DictServiceDep",
+    "LogQueryServiceDep",
     "MfaManagementServiceDep",
     "PermissionContractServiceDep",
     "PermissionResourceServiceDep",

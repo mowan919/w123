@@ -130,7 +130,15 @@ async def get_user(
     actor: CurrentActorDep,
     service: UserServiceDep,
 ) -> object:
-    """读取单个用户；范围外用户按不存在处理（不泄露存在性）。"""
+    """读取单个用户。
+
+    范围外用户返回 **403**（不是 404）：
+    `UserService.get` 对"目标不在数据范围内"抛 `PermissionDeniedError`
+    （Phase 2 的既定行为，且带 FAILURE 审计）。
+    它与列表接口的表现不同 —— 列表是"看不见"（下推到 SQL，天然不泄露），
+    单个读是"看得见但拒绝"。两者并存是**有意的**：
+    列表接口要防止的是数据外泄，单读要留下的是"谁试图访问谁"的取证记录。
+    """
     user = await service.get(actor=actor, user_id=user_id)
     return success_response(UserResponse.model_validate(user))
 

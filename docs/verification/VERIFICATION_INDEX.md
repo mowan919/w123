@@ -36,8 +36,8 @@
 | 006 | Logging / Audit / Trace | **PASS**（35/35，0 BLOCKED） | `006-logging-audit-result.md`（2026-09-25） |
 | 007 | Dictionary | **PASS**（18/18，0 BLOCKED） | `007-dictionary-result.md`（2026-09-25） |
 | 008 | Dynamic Permission | **PASS**（11/11，0 BLOCKED） | `008-dynamic-permission-result.md`（2026-09-25） |
-| 009 | Hardening | NOT RUN | — |
-| 010 | Final Acceptance | NOT RUN | — |
+| 009 | Hardening | **PASS**（12/12，0 BLOCKED） | `009-hardening-result.md`（2026-09-25） |
+| 010 | Final Acceptance | **PASS**（29/29，0 BLOCKED） | `010-final-acceptance-result.md`（2026-09-25） |
 
 > ✅ **001 的缺口已于 2026-09-24 关闭**：该项曾长期停在 `NOT RUN ——
 > 实现早已提交（`ec66678`），但从未产出过结果文件，不能因为"代码已经写了"就记成 PASS。
@@ -117,3 +117,30 @@
 > MFA 的 system 级默认值由**系统参数表**提供（Seed 行 `700001`），
 > 行缺失时回退环境变量（= 迁移前口径，不制造可用性事故），
 > 行停用或类型不符则 fail-closed。端到端用例覆盖三种取值下的登录行为。
+
+> ✅ **009 已判定 PASS（12/12，0 BLOCKED）**：限流（登录双维 + MFA IP 维）、
+> 安全响应头、错误遮蔽、并发保护、幂等、无缓存/stale、迁移安全检查、
+> 索引与外键实查全部成立。修复 2 个真实缺陷（FINDING-9-01 密钥脱敏漏掉
+> JSON 形状、FINDING-9-02 PUT 部分更新被当成清空），关闭 1 个交付缺口
+> （FINDING-8-01 组织实体 CRUD 的 HTTP 面）。
+>
+> ⚠️ 该结果文件的门禁数字**已于 Phase 10 复核时更正**：原写 `1208 passed`
+> 是中间状态，Phase 9 提交（`623b08b`）的真实收集数是 **1213**（已用临时
+> worktree 复核）。结论不变，只有数字更正。
+
+> ✅ **010 已判定 PASS（29/29，0 BLOCKED）**：Build 4/4、Functional 12/12、
+> Security 8/8、Permission Matrix 5/5。Build 四项为**实跑**（uvicorn 启动、
+> `alembic upgrade head`、Redis 探针、四个健康检查端点），非推断。
+>
+> ⚠️ 本次验收抓到 **FINDING-10-01**：`08 §8` 冻结的审计 / 链路读端点
+> （`GET /audit/logs*`、`GET /traces*`）**一条都不存在** ——
+> 根因是 Phase 6 的 35 项裁判**全是落库判定**，没有一项问"能不能读出来"。
+> 这是与 FINDING-8-01 同类的第二次发生：**裁判项只判服务层，
+> 于是"HTTP 面不存在"永远判不出来**。已补交付 4 条端点 + 13 例测试，
+> 并以"路由面逐条钉住"作为防再犯网。
+>
+> ⚠️ 另修正 **FINDING-10-02**（docstring 与实现不符）：改的是文档不是实现 ——
+> 范围外单读返回 403 是**正确**的，它附带 FAILURE 审计，
+> 改成 404 会让"谁试图访问谁"的取证记录消失。
+>
+> **PROJECT FINAL ACCEPTANCE: PASS**

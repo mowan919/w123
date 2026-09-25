@@ -8,8 +8,18 @@
 | 项 | 值 |
 |---|---|
 | 结论 | **PASS**（12/12 检查通过；0 项 BLOCKED；0 项 NOT RUN） |
-| 门禁 | ruff `All checks passed!` / format `219 files already formatted` / mypy `Success: no issues found in 108 source files` / alembic `No new upgrade operations detected.` / pytest **`1208 passed`** |
-| 增量 | Phase 8 结束为 1156 例 → 现 **1208 例（+52）**，零告警 |
+| 门禁 | ruff `All checks passed!` / format `219 files already formatted` / mypy `Success: no issues found in 108 source files` / alembic `No new upgrade operations detected.` / pytest **`1213 passed`**（**已更正**，见下方脚注） |
+| 增量 | Phase 8 结束为 1156 例 → 现 **1213 例（+57）**，零告警 |
+
+> ⚠️ **更正（2026-09-25，Phase 10 复核时发现）**：本表原写 `1208 passed`，
+> 那是**中间状态**的用例数，不是 Phase 9 提交（`623b08b`）的真实数字。
+> 复核方式：对该提交建临时 worktree 后 `pytest --collect-only` → **1213**。
+> 差值 5 例来自 Phase 9 收尾阶段新增的用例（路由面护栏两处更新）。
+>
+> 更正的是**数字**，不是结论：12/12 PASS、0 BLOCKED 不变，
+> 门禁本身（ruff / format / mypy / alembic / pytest 全绿）也不变。
+> 之所以要更正而不是留着：验收文件里的数字必须是**可复现**的，
+> 一个与实际收集数不一致的数字会让后来者以为"有 5 个用例丢了"。
 
 ---
 
@@ -114,7 +124,7 @@
 .\.venv\Scripts\ruff.exe format --check .   # 219 files already formatted
 .\.venv\Scripts\mypy.exe                    # Success: no issues found in 108 source files
 .\.venv\Scripts\alembic.exe check           # No new upgrade operations detected.
-.\.venv\Scripts\python.exe -m pytest -q     # 1208 passed
+.\.venv\Scripts\python.exe -m pytest -q     # 1213 passed（原写 1208，已更正）
 .\.venv\Scripts\python.exe scripts\db_inspect.py   # 只读巡检（需 PYTHONPATH=.）
 ```
 

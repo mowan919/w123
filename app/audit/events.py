@@ -141,6 +141,17 @@ class AuditAction(StrEnum):
     PARAM_UPDATE = "PARAM_UPDATE"
     PARAM_DELETE = "PARAM_DELETE"
 
+    # ---- Phase 10：审计与链路的**读取**（`08 §8`） ----
+    #
+    # 为什么"读日志"本身也要留痕：审计表回答"谁做过什么"，
+    # 但它无法回答"谁**查过**这份记录"。若读取不留痕，
+    # 一次针对审计系统的针对性窥探（例如反复翻某个管理员的操作记录）
+    # 在审计里将完全不可见 —— 那等于给审计本身留了一个盲区。
+    #: 读取审计日志（`GET /audit/logs`、`GET /audit/logs/{id}`）。
+    AUDIT_LOG_READ = "AUDIT_LOG_READ"
+    #: 读取链路（`GET /traces`、`GET /traces/{traceId}`）。
+    AUDIT_TRACE_READ = "AUDIT_TRACE_READ"
+
 
 class AuditResult(StrEnum):
     """审计结果。"""

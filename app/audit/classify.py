@@ -104,6 +104,19 @@ READ_ONLY_ACTIONS: frozenset[AuditAction] = frozenset(
         AuditAction.DICT_TYPE_READ,
         AuditAction.DICT_ITEM_READ,
         AuditAction.PARAM_READ,
+        # ---- Phase 10：审计与链路的读取 ----
+        #
+        # 为什么不进 `SECURITY_ACTIONS`（与 `SESSION_READ` 分道）：
+        # 安全日志保留 180 天，审计日志保留 **2 年**。
+        # 若"谁读过审计"随安全日志在 180 天后消失，
+        # 那么 2 年内的老审计记录就再也无法回答"它被谁访问过" ——
+        # 取证链条会缺一截。放进只读类（仅审计表、留存 2 年）
+        # 才能让"读审计"与"审计本身"同寿命。
+        #
+        # 反方向的风险已记录：若人类认为查审计属 `06 §1` 的安全事件，
+        # 改动是把这两个动作从本集合搬到 `SECURITY_ACTIONS` 一次。
+        AuditAction.AUDIT_LOG_READ,
+        AuditAction.AUDIT_TRACE_READ,
     }
 )
 

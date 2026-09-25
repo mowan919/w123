@@ -32,6 +32,8 @@ Spec 08 §1 Base：`/api/v1/admin`
 
 其余业务端点分别属于后续或既有的 Phase，本阶段不实现（见
 `docs/DESIGN-DECISIONS.md` §15 的 FINDING-8-01）。
+
+`/audit/logs*`、`/traces*`（`08 §8`）于 Phase 10 补交付（FINDING-10-01）。
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    audit_logs,
     departments,
     dicts,
     health,
@@ -62,5 +65,8 @@ api_router.include_router(role_permissions.router)
 api_router.include_router(users.router)
 api_router.include_router(roles.router)
 api_router.include_router(departments.router)
+# FINDING-10-01 的补救：`08 §8` 冻结的审计 / 链路**读**端点
+# （Phase 6 只交付了落库，没有任何 HTTP 面能把它们查出来）。
+api_router.include_router(audit_logs.router)
 
 __all__ = ["api_router"]
