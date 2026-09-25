@@ -1127,6 +1127,7 @@ FINDING-9-02 部分更新被当成清空），关闭了 1 个交付缺口（FIND
 | **INTERIM-10-02** | 两个新权限位 `AUDIT_READ` / `TRACE_READ` | 与 `PARAM_MANAGE` / `DICT_MANAGE` 的分离同理 | `03` 未给出日志相关的资源编码表 |
 | **INTERIM-10-03** | 两个新审计动作 `AUDIT_LOG_READ` / `AUDIT_TRACE_READ` 归入 **READ_ONLY** | 与审计表同寿命（2 年） | 见 §17.4 |
 | **DEBT-10-01** | 10 条（18 个 operation）管理端点把授权绑在**服务层**而非路由层 | 登记为技术债，以全路由护栏防止扩大 | 见 §17.6（**不是安全缺口**：`08 §10` 已满足） |
+| **DEBT-10-02** | `/auth/permissions` 的路径：08 写 `/auth/permissions`，09 写 `/api/v1/admin/auth/permissions` | 实现取 **08** 的版本；09 是**冻结 Spec**，不自行改动 | 见 §17.7（需人类决定"改文档"还是"加别名"） |
 
 ### 17.2 FINDING-10-01 —— `08 §8` 的四条端点此前一条都没有
 
@@ -1251,3 +1252,29 @@ Phase 7：/dicts*（9 个 operation）、/params*（5 个 operation）
 都能读到全部应用日志 —— 那是一次**静默的权限放大**。
 `tests/test_log_query_api.py::TestAccessControl::test_audit_read_does_not_imply_trace_read`
 专门钉住这一点。
+
+### 17.7 DEBT-10-02（Spec 内部冲突，非实现缺口）—— `/auth/permissions` 的路径两处说法不一致
+
+本次做"冻结契约 ↔ 路由面"覆盖审计时扫出：
+
+```text
+08-API规范.md:40    GET `/auth/permissions`
+09-前端动态权限.md:11  GET `/api/v1/admin/auth/permissions`
+```
+
+两份 Spec 都是**已冻结**的，实现取的是 **`/api/v1/auth/permissions`**（与 08 一致），
+Phase 8 / Phase 10 的验收也是按这个路径判定的。
+
+为什么实现不取 09 的版本：
+
+1. `/auth/permissions` 是"**当前登录者查自己**"的端点，
+   与 `/auth/me` 同类，挂在 `/admin` 下会让"自己看自己"变成"管理员操作"；
+2. 09 是 Phase 8 才纳入的 Spec，08 是 API 面的**总纲**；
+   两者冲突时以总纲为准，这是本项目既有的取定习惯
+   （同类：`INTERIM-8-01` 的路径推导也以 08 为准）；
+3. 09 的第 11 行在语法上更像是把 08 的相对路径误粘进了 §2 的绝对地址段落
+   （同一段里其余条目没有写 `/api/v1` 前缀）。
+
+**不改动冻结 Spec**，登记为待裁项：若要让 09 与实现对齐，
+需要人类决定是"修改冻结的 09"还是"为该端点增加 `/admin` 别名"。
+前者是文档修订，后者是**凭空新增 API 面**，两者都不是我能在无人拍板时做的选择。
