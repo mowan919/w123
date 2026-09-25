@@ -30,8 +30,7 @@ Spec 08 §1 Base：`/api/v1/admin`
 与 `/auth/me` 同前缀（INTERIM-4-01），由 `create_app` 以
 `settings.auth_v1_prefix` 挂载。
 
-其余业务端点（users / departments / audit / traces ...）
-分别属于后续或既有的 Phase，本阶段不实现（见
+其余业务端点分别属于后续或既有的 Phase，本阶段不实现（见
 `docs/DESIGN-DECISIONS.md` §15 的 FINDING-8-01）。
 """
 
@@ -40,12 +39,15 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    departments,
     dicts,
     health,
     params,
     permission_resources,
     role_permissions,
+    roles,
     sessions,
+    users,
 )
 
 api_router = APIRouter()
@@ -55,5 +57,10 @@ api_router.include_router(dicts.router)
 api_router.include_router(params.router)
 api_router.include_router(permission_resources.router)
 api_router.include_router(role_permissions.router)
+# FINDING-8-01 的补救：`08 §4` / `§6` / `§7` 冻结的**实体 CRUD** 端点
+# （此前只交付了服务层，HTTP 面缺失）。
+api_router.include_router(users.router)
+api_router.include_router(roles.router)
+api_router.include_router(departments.router)
 
 __all__ = ["api_router"]

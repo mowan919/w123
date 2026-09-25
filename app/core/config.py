@@ -91,6 +91,43 @@ class Settings(BaseSettings):
     redis_socket_timeout: float = 5.0
 
     # ------------------------------------------------------------------
+    # Rate Limit（Phase 9 / `009`）
+    #
+    # **阈值本身属 DD-10，Spec 未冻结**。这里的默认值是 INTERIM-9-01：
+    # 取"能挡住自动化撞库、又不影响正常使用"的量级，
+    # DD-10 冻结后只改环境变量，不改代码。
+    #
+    # `fail_open` 的取向论证见 `app/core/rate_limit.py`
+    # （JUDGMENT-9-01）：单账号暴力破解的主防线是 `04 §2` 的账号锁定，
+    # 它落在 PostgreSQL 上，不依赖 Redis。
+    # ------------------------------------------------------------------
+    rate_limit_enabled: bool = True
+    rate_limit_fail_open: bool = True
+
+    #: 登录：同一用户名在窗口内允许的尝试次数。
+    rate_limit_login_per_subject: int = 10
+    #: 登录：同一来源 IP 在窗口内允许的尝试次数（挡撞库 / 锁定 DoS）。
+    rate_limit_login_per_ip: int = 30
+    #: 登录窗口长度（秒）。
+    rate_limit_login_window_seconds: int = 60
+
+    #: MFA 校验：同一来源 IP 在窗口内允许的尝试次数。
+    #: 每**用户**的约束由挑战自身的尝试次数上限承担（DD-23），不在此重复。
+    rate_limit_mfa_per_ip: int = 20
+    #: MFA 窗口长度（秒）。
+    rate_limit_mfa_window_seconds: int = 60
+
+    # ------------------------------------------------------------------
+    # 安全响应头（Phase 9）
+    #
+    # `security_hsts_enabled` 默认 **False**，理由见
+    # `app/middleware/security_headers.py`：HSTS 是一个"下发后难以撤回"
+    # 的承诺，必须由部署方在确认全站 HTTPS 后开启，不能由代码默认决定。
+    # ------------------------------------------------------------------
+    security_hsts_enabled: bool = False
+    security_hsts_max_age: int = 31536000  # 1 年
+
+    # ------------------------------------------------------------------
     # Snowflake
     # Frozen（Spec 00 §6 / 07 §2 / 15 D-014）：BIGINT + Snowflake，
     # API JSON 序列化为字符串，禁止自增业务 ID，禁止 UUID 业务主键。

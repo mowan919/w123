@@ -103,11 +103,10 @@
 > 证明契约充分性 —— 它只读响应、不读库、不引用任何 Python 权限常量。
 >
 > ⚠️ 三项需要留意：
-> 1. **FINDING-8-01（未关闭）**：`08 §4/§6/§7` 冻结的 Users / Departments /
->    Roles **实体 CRUD 的 HTTP 面至今未交付**（只有服务层）。根因是
->    `001` / `002` 裁判项全是服务层判定、不含端点存在性，因此 Phase 1 / 2
->    PASS 时不会暴露。本 Phase **不越界补实现**（属 Phase 1 / 2），
->    但必须在 Phase 10「Functional: Organization / User / Role」之前关闭。
+> 1. ~~**FINDING-8-01（未关闭）**~~ → ✅ **已于 Phase 9 关闭**：
+>    `08 §4/§6/§7` 冻结的 Users / Departments / Roles **实体 CRUD 的 HTTP 面**
+>    此前只有服务层（根因：`001` / `002` 裁判项全是服务层判定、不含端点存在性，
+>    所以 Phase 1 / 2 PASS 时不会暴露）。Phase 9 补交付 14 条端点。
 > 2. **DD-21 仍未冻结**，但本 Phase **未做需要裁定的行为变更**：
 >    `build()` 默认行为完全不变，只对新增读路径启用拒绝型上下文
 >    （`docs/DESIGN-DECISIONS.md §15.5`），**待人类追认**。

@@ -114,6 +114,15 @@ class ApiPermissionCode(StrEnum):
     #: 管理系统参数（`05 §5`）。与字典**分开**：参数承载运行时安全策略
     #: （如 system 级 MFA 默认值），其管理权限不应由"能改字典"隐含获得。
     PARAM_MANAGE = "PARAM_MANAGE"
+    #: 管理用户（`08 §4`）：创建 / 修改 / 禁用 / 启用 / 重置口令。
+    #:
+    #: 读与写共用一个权限位，理由同 `DICT_MANAGE`：用户清单本身是敏感信息
+    #: （暴露了系统里有哪些账号），且 `03` 未给出用户相关的资源编码表。
+    #: 越权防护由数据范围（`10 §10`）与 SUPER_ADMIN 保护（`10 §3`）承担。
+    USER_MANAGE = "USER_MANAGE"
+    #: 管理部门（`08 §6`）：创建 / 修改 / 禁用。
+    DEPARTMENT_MANAGE = "DEPARTMENT_MANAGE"
+
 
 
 class AuthorizationService:

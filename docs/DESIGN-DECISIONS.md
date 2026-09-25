@@ -950,3 +950,167 @@ DD-21 台账标注"Phase 8 之前必须裁定"。按"继续执行、不得自行
 满足（结构上不可能陈旧），符合 Phase 3 对 DD-03 / DD-04 的裁定。
 `009-hardening.md` 的"权限缓存有失效机制"将在 Phase 9 以
 "**无缓存** ⇒ 无失效需求，且无 stale" 论证，而不是届时引入缓存。
+
+---
+
+## 16. Phase 9（Hardening）—— 实际落地口径
+
+### 16.1 登记表
+
+| 编号 | 位置 | 取定 | 依据 / 未冻结来源 |
+|---|---|---|---|
+| **INTERIM-9-01** | 限流阈值（登录 10/分/用户名、30/分/IP；MFA 20/分/IP） | 全部做成配置项，默认值取"挡得住自动化撞库、不影响正常使用"的量级 | **DD-10 未冻结**。冻结后只改环境变量，不改代码 |
+| **INTERIM-9-02** | 限流键前缀 `rl:v1:<scope>:<sha256(subject)>:<window>` | 只放哈希，不放原始主体 | **DD-03（Redis Key 命名）未冻结**。本登记只覆盖限流这一类键，DD-03 对权限缓存仍开放 |
+| **JUDGMENT-9-01** | Redis 不可用时限流 **fail-open** | 由 `settings.rate_limit_fail_open` 显式表达（默认 True） | 见 §16.2 |
+| **JUDGMENT-9-02** | HSTS 默认**不下发** | `settings.security_hsts_enabled = False` | 见 §16.3 |
+| **JUDGMENT-9-03** | CASCADE 外键采用**白名单**而非"一律禁止" | 目前仅 `mfa_challenges → admin_users` 一条 | 见 §16.4 |
+| **FINDING-9-01** | JSON 形状的密钥**未被脱敏** | 已修复 | 见 §16.5（真实安全缺陷） |
+| **FINDING-9-02** | `PUT /users/{id}` / `PUT /departments/{id}` 无法做部分更新 | 已修复 | 见 §16.6（真实数据破坏缺陷） |
+| **FINDING-8-01** | 组织实体 CRUD 的 HTTP 面缺失 | **已关闭** | 见 §16.7 |
+
+### 16.2 JUDGMENT-9-01 —— 限流在 Redis 不可用时 fail-open
+
+选 fail-open 的理由**不是**"限流不重要"，而是**它在这里不是主防线**：
+
+- 单账号暴力破解的主防线是 `04 §2` 的账号锁定（`failed_login_count` /
+  `locked_until`），它**完全落在 PostgreSQL**，Redis 挂掉不影响它；
+- 选 fail-closed 则 Redis 故障 = **所有人无法登录**，
+  等于把登录可用性交给一个缓存组件 —— 这与本应用"启动 fail-soft、
+  可用性由 readiness 探针表达"的既有取向相反。
+
+因此 Redis 不可用时的结果是"退回账号锁定这一层"，不是"退回无保护"。
+
+**IP 维度为什么不可省**：账号锁定只按账号计数，挡不住
+"每个账号只试一次"的撞库，也挡不住"反复输错把别人账号锁死"的锁定 DoS。
+两者只有 IP 维度能缓解；而 IP 维度挡不住分布式，所以账号维度也不能省。
+两个维度防的是**不同的**攻击，任一个超限即拒绝。
+
+**`request.client` 缺失时**（Unix socket / 某些代理链路）落到 `unknown` 桶，
+而不是"不限流" —— 后者等于给"能隐藏自己来源"的调用方开一条绕行通道，
+而那恰好是攻击者最容易走的一条。代价是所有未知来源共用一个桶，
+相比"直接放行"仍是更严的选择。
+
+### 16.3 JUDGMENT-9-02 —— HSTS 默认不下发
+
+HSTS 是一个"一旦下发就难以撤回"的承诺：浏览器在 `max-age` 内强制 HTTPS。
+若部署其实只在 HTTP 下工作（或某个内网健康检查端口只开 HTTP），
+下发 HSTS 会把那个端口直接变成不可用。
+因此它由部署方在**确认**全站 HTTPS 之后开启，不由代码默认决定。
+
+其余四项（`nosniff` / `DENY` / `no-referrer` / `no-store`）无条件下发。
+其中 `Cache-Control: no-store` 对本系统尤其重要：响应里有权限契约与用户列表，
+一旦被缓存留存，"权限已变更"在缓存有效期内对客户端不可见 ——
+那正好破坏 `09 §7` 的"权限变更立即生效"。
+
+### 16.4 JUDGMENT-9-03 —— CASCADE 外键用白名单而非一律禁止
+
+"零 CASCADE"看起来更严，但会把唯一一条合理的
+（`mfa_challenges → admin_users`，瞬态挑战随用户清理）
+逼成"不写理由就删掉"，反而让人以为 CASCADE 一律不可用。
+
+因此改为**白名单断言**：CASCADE 集合发生变化时测试立刻失败，
+迫使新增者先给出理由。当前白名单只有一条，且它在实践上不可触发 ——
+物理删除用户会被其它 NO ACTION 外键（`sessions` / `user_roles`）挡住。
+
+### 16.5 FINDING-9-01 —— JSON 形状的密钥未被脱敏（**真实安全缺陷，已修复**）
+
+`app/core/masking.py::_SECRET_PAIR_RE` 原为 `键\s*[:=]\s*\S+`，
+它只能命中 `password=hunter2` 这类"裸"写法。而结构化日志**最常见的形状是
+JSON**：`{"password": "hunter2"}` —— 键名后紧跟一个 `"` 才是冒号，
+于是整条密码**原样落库**。
+
+这不是"少脱敏了一种格式"，而是漏掉了最常见的那一种。
+修复：键名与冒号之间、冒号与值之间都允许可选引号，
+值取到引号 / 空白 / 分隔符为止（不用贪婪 `\S+`，否则会吃掉值后的引号）。
+已验证对 `password=` / `password:` / `password='..'` / JSON 全部生效且幂等。
+
+**教训**：脱敏的测试只写了"我实现的那种形状"。
+写这类用例时必须问"生产日志里它**实际**长什么样"。
+
+### 16.6 FINDING-9-02 —— PUT 无法做部分更新（**真实数据破坏缺陷，已修复**）
+
+`UserUpdateRequest.department_id` 与 `DepartmentUpdateRequest.parent_id`
+默认值为 `None`，端点原本把 `payload.x` 原样传给服务层，
+于是"只想改个显示名"被解释成"顺便把用户移出部门"：
+
+- 非全局数据范围 → 直接 403（明显，但**改不动任何字段**）；
+- 全局数据范围 → **静默把用户移出部门**，没有任何报错。
+
+服务层其实已经支持三态（`_Unset` 哨兵），缺的是端点正确分派。
+修复：用 `model_fields_set` 判断客户端**实际**提交了哪些字段，
+未提交的显式传 `UNSET`（已把哨兵从私有 `_UNSET` 公开为 `UNSET`）。
+
+**教训**：`Optional[...] = None` 在 DTO 里天然是二义的。
+凡是"显式 null 有独立业务含义"的字段（清空、移出、移到根），
+端点必须按 `model_fields_set` 分派，不能图省事直接透传。
+
+### 16.7 FINDING-8-01 —— 组织实体 CRUD 的 HTTP 面（**已关闭**）
+
+`08 §4` / `§6` / `§7` 冻结的 Users / Departments / Roles 实体端点已在
+Phase 9 补交付：`endpoints/users.py`（7 条）、`endpoints/departments.py`（4 条）、
+`endpoints/roles.py`（3 条），全部声明式绑定
+`USER_MANAGE` / `DEPARTMENT_MANAGE` / `ROLE_MANAGE`。
+
+新增两个权限位（`ApiPermissionCode.USER_MANAGE` / `DEPARTMENT_MANAGE`），
+读与写共用一个位，理由与 `DICT_MANAGE` 同：用户/部门清单本身是敏感信息，
+且 `03` 未给出相应资源编码表，拆细只会增加待冻结项。
+
+**刻意没有**补 `DELETE /users/{id}` 与 `DELETE /departments/{id}` ——
+`08 §4` / `§6` 的冻结清单里没有它们。服务层有能力（`delete()`）
+不等于契约允许暴露；自行加一条等于在没有需求的地方发明 API 面。
+角色的删除沿用冻结的 `POST /roles/{id}/delete`（不是 `DELETE`）：
+本系统的删除是**逻辑删除**，用 `DELETE` 会让"已不存在"与"已停用"
+在协议层无法区分。
+
+### 16.8 与 Phase 9 裁判项的对应
+
+| 裁判项 | 结论 | 说明 |
+|---|---|---|
+| 权限缓存有失效机制 | **PASS（无缓存）** | 结构上不存在缓存，故无失效需求；用 AST/属性断言钉住"不得出现缓存痕迹" |
+| 权限变更无明显 stale permission | **PASS** | 连续两次构建之间无需任何失效动作 |
+| 关键写操作具备幂等策略 | **PASS** | DD-11 方案 A（语义幂等）已冻结并落地 |
+| 并发更新有保护 | **PASS** | 见 §16.9 |
+| 登录 / MFA 有必要的 rate limit | **PASS** | 新增 `app/core/rate_limit.py` |
+| 错误响应不泄漏内部异常 | **PASS** | 既有 `handle_unexpected_error` + 422 丢弃 `input` |
+| Secret 不进入日志 | **PASS（修复后）** | FINDING-9-01 |
+| Migration 可重复部署 | **PASS** | 见 §16.10 |
+| 数据库关键索引存在 | **PASS** | 实查 82 条索引、11 条 partial index |
+| FK 行为符合逻辑删除设计 | **PASS** | CASCADE 白名单（仅 1 条） |
+| 安全审查无高危未解决项 | **PASS** | 见 §16.11 |
+
+### 16.9 关于"并发"这一项的诚实边界
+
+本阶段的并发用例证明的是**保护机制存在且生效**
+（`rotate_tokens` 的 CAS 条件更新使第二个写入者匹配 0 行；
+`record_retired_refresh_token` 的 `ON CONFLICT DO NOTHING` 让并发下必然
+重复的留档不再抛错），而**不是**在多线程/多连接下做竞态压测 ——
+`db_session` 夹具把每个用例包在一个事务里并在结束时回滚，
+两任务的"并发"会共用同一条连接从而被串行化，
+那样跑出来的"并发测试"是假的。真正的竞态压测需要独立连接池与已提交的数据，
+属压测环境范畴，**不在此伪造**。
+
+此外，整体替换型端点（`PUT .../permissions/pages`）上的
+last-write-wins 是**安全的**：请求体是完整集合，
+后到者覆盖先到者时结果仍是某个请求者的完整意图，
+而不是两者各半的混合体。这是"此处不需要乐观锁"的依据，已由测试钉住。
+
+### 16.10 关于"Migration 可重复部署"的验证边界
+
+已验证：
+
+- **正向幂等**：`alembic upgrade head` 在已迁移的库上是 no-op（版本表追踪）；
+- **无漂移**：`alembic check` → `No new upgrade operations detected.`；
+- **回滚路径存在**：每个 `upgrade()` 有操作的迁移，其 `downgrade()` 也必须
+  有操作（空实现会让 `alembic downgrade` 静默成功却什么也没撤）。
+  baseline 迁移两者皆空（`upgrade()` 什么也不建），属合法例外。
+
+**未**执行完整的 `downgrade base → upgrade head` 循环：
+远端 PostgreSQL 是共享实例，跑降级会**抹掉全部数据**。
+该循环应在独立的临时库上验证，不在此冒险。
+
+### 16.11 安全审查结论
+
+本阶段修复了 2 个真实缺陷（FINDING-9-01 密钥脱敏漏掉 JSON 形状、
+FINDING-9-02 部分更新被当成清空），关闭了 1 个交付缺口（FINDING-8-01）。
+未发现新的 P0 / 高危未解决项。RISK-004（SUPER_ADMIN 判定口径）
+仍为已登记未冻结项，不属本阶段范围。

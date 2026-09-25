@@ -59,15 +59,18 @@ from app.db.session import get_db
 from app.services.audit_guard import AuditGuard
 from app.services.auth import AuthService
 from app.services.authorization import AuthorizationService
+from app.services.department import DepartmentService
 from app.services.dict import DictService
 from app.services.mfa_management import MfaManagementService
 from app.services.permission_contract import PermissionContractService
 from app.services.permission_resource import PermissionResourceService
+from app.services.role import RoleService
 from app.services.role_data_scope import RoleDataScopeService
 from app.services.role_permission import RolePermissionService
 from app.services.session import AuthenticatedSession, SessionService
 from app.services.session_management import SessionManagementService
 from app.services.system_param import SystemParameterService, resolve_mfa_required_default
+from app.services.user import UserService
 
 _UNAUTHENTICATED_MESSAGE = "认证失败或登录状态已失效"
 
@@ -181,6 +184,27 @@ async def get_authorization_service(
 ) -> AuthorizationService:
     """提供集中式授权服务（路由级 API 权限绑定的判定入口）。"""
     return AuthorizationService(session)
+
+
+async def get_user_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> UserService:
+    """提供用户服务（FINDING-8-01：`08 §4` 端点的补交付）。"""
+    return UserService(session, audit=BufferingAuditRecorder())
+
+
+async def get_role_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> RoleService:
+    """提供角色服务（FINDING-8-01：`08 §7` 实体 CRUD 的补交付）。"""
+    return RoleService(session, audit=BufferingAuditRecorder())
+
+
+async def get_department_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DepartmentService:
+    """提供部门服务（FINDING-8-01：`08 §6` 端点的补交付）。"""
+    return DepartmentService(session, audit=BufferingAuditRecorder())
 
 
 async def get_permission_resource_service(
@@ -352,6 +376,9 @@ PermissionContractServiceDep = Annotated[
     PermissionContractService, Depends(get_permission_contract_service)
 ]
 AuthorizationServiceDep = Annotated[AuthorizationService, Depends(get_authorization_service)]
+UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
+DepartmentServiceDep = Annotated[DepartmentService, Depends(get_department_service)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -363,14 +390,17 @@ __all__ = [
     "CurrentActorAllowPasswordChangeDep",
     "CurrentActorDep",
     "DbSessionDep",
+    "DepartmentServiceDep",
     "DictServiceDep",
     "MfaManagementServiceDep",
     "PermissionContractServiceDep",
     "PermissionResourceServiceDep",
     "RoleDataScopeServiceDep",
     "RolePermissionServiceDep",
+    "RoleServiceDep",
     "SessionManagementServiceDep",
     "SystemParamServiceDep",
+    "UserServiceDep",
     "client_ip",
     "client_user_agent",
     "get_auth_service",
@@ -379,14 +409,17 @@ __all__ = [
     "get_bearer_token",
     "get_current_actor",
     "get_current_actor_allow_password_change",
+    "get_department_service",
     "get_dict_service",
     "get_mfa_management_service",
     "get_permission_contract_service",
     "get_permission_resource_service",
     "get_role_data_scope_service",
     "get_role_permission_service",
+    "get_role_service",
     "get_session_management_service",
     "get_session_service",
     "get_system_param_service",
+    "get_user_service",
     "require_api_permission",
 ]

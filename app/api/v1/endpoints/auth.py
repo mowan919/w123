@@ -68,6 +68,13 @@ from app.api.deps import (
     client_ip,
     client_user_agent,
 )
+from app.core.config import settings
+from app.core.errors import TooManyRequestsError
+from app.core.rate_limit import (
+    RateLimitDecision,
+    get_rate_limiter,
+    rate_limit_headers,
+)
 from app.core.response import success_response
 from app.core.scope import ResolvedScope
 from app.core.security.password import is_password_expired
@@ -122,6 +129,61 @@ def _me_response(user: AdminUser) -> MeResponse:
     )
 
 
+#: `request.client` 缺失时（Unix socket、某些代理链路）用于限流计数的占位。
+#:
+#: 刻意**不是**"IP 未知就不限流" —— 那等于给"能隐藏自己来源"的调用方
+#: 开一条绕过 IP 维度的通道，而这条通道恰好是攻击者最容易走的那条。
+#: 代价是所有未知来源共用一个桶（可能互相牵连），
+#: 相比"直接放行"这仍然是更严的选择。
+UNKNOWN_CLIENT_IP = "unknown"
+
+
+async def _enforce_login_rate_limit(*, username: str, ip: str) -> RateLimitDecision:
+    """登录限流：**按用户名**与**按来源 IP** 各判一次。
+
+    为什么必须两个维度（详见 `app/core/rate_limit.py`）：
+    `04 §2` 的账号锁定只按账号计数，挡不住"每个账号只试一次"的撞库，
+    也挡不住"反复输错把别人账号锁死"的锁定 DoS —— 两者都只有 IP
+    维度能缓解；而 IP 维度挡不住分布式，所以账号维度也不能省。
+
+    任一个超限即拒绝，且**不告诉调用方是哪个维度超限**（理由见
+    `TooManyRequestsError` 的 docstring）。
+
+    Returns:
+        通过时返回该次判定的剩余配额，供响应头使用。
+    """
+    if not settings.rate_limit_enabled:
+        return RateLimitDecision(
+            allowed=True,
+            limit=settings.rate_limit_login_per_subject,
+            remaining=settings.rate_limit_login_per_subject,
+            retry_after=0,
+        )
+    limiter = get_rate_limiter()
+    window = settings.rate_limit_login_window_seconds
+    remainings: list[int] = []
+
+    for subject, limit in (
+        (username, settings.rate_limit_login_per_subject),
+        (ip, settings.rate_limit_login_per_ip),
+    ):
+        decision = await limiter.check(
+            scope="login", subject=subject, limit=limit, window_seconds=window
+        )
+        if not decision.allowed:
+            raise TooManyRequestsError(retry_after=decision.retry_after)
+        remainings.append(decision.remaining)
+
+    # 两个维度都通过：回显**更严格**的那个剩余量，
+    # 否则客户端会以为自己还能继续撞另一个维度的墙。
+    return RateLimitDecision(
+        allowed=True,
+        limit=settings.rate_limit_login_per_subject,
+        remaining=min(remainings),
+        retry_after=0,
+    )
+
+
 @router.post("/login", summary="登录")
 async def login(
     payload: LoginRequest,
@@ -137,10 +199,16 @@ async def login(
     （DD-23 方案 A）。此时**没有**创建会话，客户端必须调用
     `POST /auth/mfa/verify` 续完登录。
     """
+    ip = client_ip(request) or UNKNOWN_CLIENT_IP
+
+    # 限流必须在**校验凭据之前**：否则它只挡住了"已经失败的请求"，
+    # 对真正的攻击者没有任何成本 —— 那不叫限流，叫统计。
+    quota = await _enforce_login_rate_limit(username=payload.username, ip=ip)
+
     result = await service.login(
         username=payload.username,
         password=payload.password.get_secret_value(),
-        ip=client_ip(request),
+        ip=ip,
         user_agent=client_user_agent(request),
     )
     await session.commit()
@@ -152,7 +220,8 @@ async def login(
                 mfa_token=result.mfa_token,
                 expires_at=result.expires_at,
                 provider=result.provider,
-            )
+            ),
+            headers=dict(rate_limit_headers(quota)),
         )
 
     return success_response(
@@ -163,7 +232,8 @@ async def login(
             refresh_expires_at=result.tokens.refresh_expires_at,
             must_change_password=result.must_change_password,
             user=_user_response(result.user),
-        )
+        ),
+        headers=dict(rate_limit_headers(quota)),
     )
 
 
@@ -183,10 +253,25 @@ async def mfa_verify(
     客户端不必为"有没有 MFA"准备两套处理逻辑，
     "登录"的最终形态始终只有一个。
     """
+    ip = client_ip(request) or UNKNOWN_CLIENT_IP
+
+    # 按来源 IP 限流。每**用户**的约束由挑战自身的尝试次数上限承担
+    # （DD-23），此处不重复计数 —— 重复会让"限流"与"挑战耗尽"
+    # 两个不同的语义互相干扰，出问题时分不清是哪一层拦的。
+    if settings.rate_limit_enabled:
+        decision = await get_rate_limiter().check(
+            scope="mfa",
+            subject=ip,
+            limit=settings.rate_limit_mfa_per_ip,
+            window_seconds=settings.rate_limit_mfa_window_seconds,
+        )
+        if not decision.allowed:
+            raise TooManyRequestsError(retry_after=decision.retry_after)
+
     result = await service.complete_mfa_login(
         mfa_token=payload.mfa_token,
         code=payload.code,
-        ip=client_ip(request),
+        ip=ip,
         user_agent=client_user_agent(request),
     )
     await session.commit()

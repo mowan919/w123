@@ -73,7 +73,7 @@
 | INTERIM-8-06 | 六条显式路由而非 `/permissions/{kind}` | 已登记 |
 | JUDGMENT-8-01 | SUPER_ADMIN 契约表达（全部资源；字段权限**不** bypass） | 已登记 |
 | JUDGMENT-8-02 | `/auth/permissions` 不需 API 权限位，但要求已认证且用严格依赖 | 已登记 |
-| **FINDING-8-01** | 组织实体（users / departments / roles）CRUD 的 **HTTP 面至今未交付** | **未关闭 → Phase 10 前必须关闭** |
+| **FINDING-8-01** | 组织实体（users / departments / roles）CRUD 的 **HTTP 面未交付** | ✅ **已于 Phase 9 关闭**（`009-hardening-result.md §6`） |
 
 > **FINDING-8-01 说明**：`08 §4/§6/§7` 冻结了这些端点清单，但仓库只有服务层。
 > 根因是 `001` / `002` 裁判项全是服务层判定，不含端点存在性，
@@ -132,4 +132,4 @@
 
 `docs/verification/008-dynamic-permission.md` 的 **11 项全部 PASS**，0 项 BLOCKED。
 
-一处交付缺口（FINDING-8-01）**未被静默处理**，已登记并指定关闭时点。
+一处交付缺口（FINDING-8-01）**未被静默处理**：先登记，后在 Phase 9 关闭。

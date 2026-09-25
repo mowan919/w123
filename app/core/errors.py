@@ -178,6 +178,35 @@ class DependencyUnavailableError(AppError):
     message = "service unavailable"
 
 
+class TooManyRequestsError(AppError):
+    """请求频次超过上限（Phase 9 / `009`）。
+
+    ## 为什么文案必须"不带任何信息"
+
+    这是**唯一一个在未认证路径上、且专门用来拒绝攻击者**的错误。
+    它必须遵守与 `10 §5`（登录失败不泄露用户是否存在）**同一条**纪律：
+
+    - 不说是哪个维度超限（用户名？IP？）—— 说了就等于告诉攻击者
+      "换个 IP 还能继续"或"换个账号还能继续"，直接把绕行路线画出来；
+    - 不回显剩余配额之外的主体信息（`RateLimit-*` 头里只有数字）；
+    - 真实原因只进入日志与审计，不进入响应体。
+    """
+
+    code = int(ErrorCode.TOO_MANY_REQUESTS)
+    http_status = 429
+    message = "too many requests"
+
+    def __init__(self, *, retry_after: int = 0) -> None:
+        super().__init__(self.message)
+        self.retry_after = max(0, retry_after)
+
+    def to_response(self) -> JSONResponse:
+        response = super().to_response()
+        if self.retry_after:
+            response.headers["Retry-After"] = str(self.retry_after)
+        return response
+
+
 class InternalError(AppError):
     code = int(ErrorCode.INTERNAL_ERROR)
     http_status = 500

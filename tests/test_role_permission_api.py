@@ -69,7 +69,7 @@ BUTTON_ID = 62204
 API_ID = 62205
 FIELD_PHONE = 62206
 
-#: `08 §7` 中与权限相关的端点（角色实体 CRUD 不属本 Phase，见 FINDING-8-01）。
+#: `08 §7` 中与权限相关的端点。
 FROZEN_ROLE_PATHS = {
     f"{ADMIN_PREFIX}/roles/{{role_id}}/permissions",
     f"{ADMIN_PREFIX}/roles/{{role_id}}/permissions/pages",
@@ -78,6 +78,18 @@ FROZEN_ROLE_PATHS = {
     f"{ADMIN_PREFIX}/roles/{{role_id}}/permissions/apis",
     f"{ADMIN_PREFIX}/roles/{{role_id}}/permissions/fields",
     f"{ADMIN_PREFIX}/roles/{{role_id}}/data-scope",
+}
+
+#: 角色**实体** CRUD（`08 §7` 的另一半，FINDING-8-01 于 Phase 9 补交付）。
+#:
+#: 这两组分开是必要的：本文件的主题是"权限配置面"，
+#: 实体 CRUD 的存在性由 `tests/test_organization_api.py` 负责钉住。
+#: 但路由面断言 `{path for path in paths if "/roles/" in path}` 会同时
+#: 命中两组，因此这里必须把它们合并后再比对 —— 否则每新增一条实体端点
+#: 就会让"路由面不符"失败一次，而那不是缺陷，是断言写窄了。
+FROZEN_ROLE_ENTITY_PATHS = {
+    f"{ADMIN_PREFIX}/roles/{{role_id}}",
+    f"{ADMIN_PREFIX}/roles/{{role_id}}/delete",
 }
 
 #: 全部 8 条端点（含 GET 与 PUT 共用的三条路径）。
@@ -268,9 +280,10 @@ async def _contract(api: AsyncClient, token: str) -> dict[str, Any]:
 class TestRouteSurface:
     def test_role_permission_paths_match_spec(self, app: FastAPI) -> None:
         paths = set(app.openapi()["paths"])
-        assert paths >= FROZEN_ROLE_PATHS, f"缺少端点：{FROZEN_ROLE_PATHS - paths}"
+        expected = FROZEN_ROLE_PATHS | FROZEN_ROLE_ENTITY_PATHS
+        assert paths >= expected, f"缺少端点：{expected - paths}"
         actual = {path for path in paths if "/roles/" in path}
-        assert actual == FROZEN_ROLE_PATHS, f"路由面与 `08 §7` 不符：{actual}"
+        assert actual == expected, f"路由面与 `08 §7` 不符：{actual ^ expected}"
 
 
 class TestAccessControl:

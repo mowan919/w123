@@ -35,6 +35,7 @@ from app.core.logging import configure_logging
 from app.core.response import success_response
 from app.db.redis import check_redis, close_redis
 from app.db.session import check_database, dispose_engine
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.trace import TraceMiddleware
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,11 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(application)
     application.add_middleware(TraceMiddleware)
+    # 安全响应头：最后 add 的中间件**最外层**，因此它看到的
+    # `http.response.start` 是最终发出的那一版 —— 包括 TraceMiddleware
+    # 补的 trace/request id。顺序反了也不会出错（各自补缺），
+    # 但保持"外层做全局属性"更符合直觉。
+    application.add_middleware(SecurityHeadersMiddleware)
     application.include_router(api_router, prefix=settings.api_v1_prefix)
     # 认证域独立前缀：登录时尚不存在"操作者"，不属于 admin 资源域。
     application.include_router(auth_router, prefix=settings.auth_v1_prefix)

@@ -61,6 +61,14 @@ class _Unset:
 
 _UNSET: Final = _Unset()
 
+#: 公开的"未提供"哨兵。
+#:
+#: HTTP 层需要它来区分"客户端没传这个字段"与"客户端显式传了 null" ——
+#: 后者在业务上是**明确意图**（把用户移出部门 / 把部门移到根），
+#: 前者是"不要动它"。若端点把两者都折叠成 `None`，
+#: 那么"只想改个显示名"就会顺带把用户踢出部门（真实后果：403 或越权移动）。
+UNSET: Final = _UNSET
+
 
 @dataclass(frozen=True, slots=True)
 class UserPage:

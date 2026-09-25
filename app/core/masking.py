@@ -212,14 +212,26 @@ _AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^\r\n,;]*")
 #: `Bearer xxx` / `Basic xxx`（缺少 `authorization` 关键字时的兜底）。
 _BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{6,}")
 
-#: 密钥类键值对。`\S+` 取到空白为止，足以覆盖典型写法。
+#: 密钥类键值对。
+#:
+#: ## 为什么必须容忍键名与值两侧的**引号**（FINDING-9-01）
+#:
+#: 最早的写法是 `键\s*[:=]\s*\S+`，它只能命中 `password=hunter2`
+#: 与 `password: hunter2` 这类"裸"写法。但结构化日志**最常出现的形状是
+#: JSON**：`{"password": "hunter2"}` —— 键名后面紧跟一个 `"` 才是冒号，
+#: 于是 `\s*[:=]` 匹配不上，**整条密码原样落库**。
+#: 那不是"少脱敏了一种格式"，而是漏掉了最常见的那一种。
+#:
+#: 因此在键名与冒号之间、冒号与值之间都允许可选引号，
+#: 并让值取到引号 / 空白 / 分隔符为止（而不是贪婪的 `\S+`，
+#: 否则会把值后面的 `"` 也吃掉，破坏输出的可读性）。
 _SECRET_PAIR_RE = re.compile(
     r"(?i)\b("
     r"password|passwd|pwd|new_password|old_password|confirm_password|password_hash|"
     r"mfa_secret|totp_secret|otp_secret|secret|client_secret|signing_secret|"
     r"encryption_key|mfa_encryption_key|private_key|secret_key|"
     r"access_token|refresh_token|id_token|session_token|token|api_key"
-    r")\b\s*[:=]\s*\S+"
+    r")\b\s*[\"']?\s*[:=]\s*[\"']?[^'\"\s,;}\]]+"
 )
 
 #: JWT（三段 base64url）。它是最容易在自由文本里出现形态的令牌。

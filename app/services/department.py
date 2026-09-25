@@ -47,6 +47,9 @@ class _Unset:
 
 _UNSET: Final = _Unset()
 
+#: 公开的"未提供"哨兵（用途与 `UserService.UNSET` 相同，见那里的说明）。
+UNSET: Final = _UNSET
+
 
 @dataclass
 class DepartmentTreeNode:

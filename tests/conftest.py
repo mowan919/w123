@@ -17,8 +17,18 @@ import base64
 import hashlib
 import os
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
-from typing import Any
+from contextlib import asynccontextmanager, suppress
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # 不得在模块级导入应用模块，理由见下方 `_inject` 区块的说明
+    from app.core.rate_limit import InMemoryRateLimitBackend
+
+# ⚠️ 本文件在 `_inject(...)` 之前**不得**导入任何应用模块：
+# `app.core.config.settings` 是导入期构造的单例，一旦被提前导入，
+# 它读到的是 `.env` 的真实值而不是下面的测试注入值
+# （后果之一：`MFA_ENCRYPTION_KEY` 为空 → 所有涉 Secret 用例以
+# `ConfigurationError` 失败）。因此 `app.core.rate_limit` 的导入
+# 放在 `isolate_rate_limiter` 夹具**内部**。
 
 # 必须在导入应用模块之前设置，保证 settings 单例读取到测试值
 # 记录"由本文件注入"的键，供数据库夹具精确还原（见 _real_database_url）
@@ -55,6 +65,7 @@ _inject(
 )
 
 import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -95,6 +106,37 @@ async def _null_session_provider() -> AsyncIterator[_NullSession]:
 
 
 @pytest.fixture(autouse=True)
+def isolate_rate_limiter() -> Iterator[InMemoryRateLimitBackend]:
+    """把限流后端换成**进程内**实现，并让每个用例从零开始。
+
+    为什么必须全局替换
+    ------------------
+    Phase 9 起 `POST /auth/login` 与 `POST /auth/mfa/verify` 每次调用都会
+    消耗真实 Redis 的配额。测试里登录相关的用例有几十条、且共用同一个
+    客户端 IP，若走真实 Redis，会撞上"每 IP 每分钟 N 次"的上限 ——
+    症状是**第 N 个用例突然 429**，而它失败与否取决于同一分钟内
+    跑过多少其它用例。那是典型的测试间耦合：单独跑能过、整套跑就红，
+    而且红的位置每次都可能不同。
+
+    换成内存后端后计数既真实（同一用例内会累加、超限会 429）
+    又彻底隔离（用例之间归零）。需要验证 **Redis 后端本身**的用例
+    自行构造 `RedisRateLimitBackend`（见 `tests/test_rate_limit.py`）。
+
+    Returns:
+        内存后端，用例可调用 `.reset()` 手动清零。
+    """
+    from app.core import rate_limit as rate_limit_module
+
+    backend = rate_limit_module.InMemoryRateLimitBackend()
+    previous = rate_limit_module._limiter
+    rate_limit_module.set_rate_limiter(rate_limit_module.RateLimiter(backend, fail_open=True))
+    try:
+        yield backend
+    finally:
+        rate_limit_module.set_rate_limiter(previous)
+
+
+@pytest.fixture(autouse=True)
 def isolate_log_flush() -> Iterator[None]:
     """把日志落库限制在测试进程内（不连数据库、不跨用例残留）。
 
@@ -129,6 +171,52 @@ def isolate_log_flush() -> Iterator[None]:
     finally:
         _reset()
         log_buffer.set_session_provider(None)
+
+
+@pytest_asyncio.fixture
+async def real_redis_client() -> AsyncIterator[object]:
+    """提供一个**真实 Redis** 客户端（指向 `.env` 的实例）。
+
+    为什么需要它
+    -----------
+    本文件把 `REDIS_HOST/PORT` 注入成不可达端口，于是任何"打真实 Redis"
+    的用例都会失败 —— 合理地失败，但也就**永远无法被验证**。
+    Phase 9 的限流后端正属于这一类：内存后端再正确，也证明不了
+    `INCR` + `EXPIRE` 的 pipeline 与 TTL 语义在 Redis 上成立，
+    而"TTL 没设上"的后果是永久封禁某个主体。
+
+    做法与 `_real_database_url()` 同口径：临时移除本文件注入的
+    `REDIS_*`，构造一个全新的客户端，用完关闭并还原。
+
+    用例应当在 Redis 不可达时 **skip** 而不是 fail —— 那是环境问题，
+    不是代码缺陷（两种结果在验收报告里必须区分开）。
+    """
+    saved: dict[str, str] = {}
+    for key in list(_INJECTED):
+        if key.startswith("REDIS"):
+            saved[key] = os.environ.pop(key)
+    client = None
+    try:
+        from redis.asyncio import Redis
+
+        from app.core.config import Settings
+
+        fresh = Settings()
+        client = Redis.from_url(
+            fresh.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_timeout=fresh.redis_socket_timeout,
+            socket_connect_timeout=fresh.redis_socket_timeout,
+        )
+        yield client
+    finally:
+        if client is not None:
+            # 关闭失败不得掩盖用例结论（连接可能已经断开）；
+            # 用 suppress 而不是 try/except/pass，避免 lint 把它当成"吞异常"。
+            with suppress(Exception):
+                await client.aclose()
+        os.environ.update(saved)
 
 
 def _real_database_url() -> str | None:

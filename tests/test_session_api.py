@@ -328,11 +328,19 @@ class TestRouteSurface:
         }
         assert extra_session_paths == set()
 
-        # 用户 CRUD 属后续 Phase，不得预实现
+        # 用户 CRUD 已由 FINDING-8-01 的补救交付补齐（`08 §4`）。
+        # 断言从"不得存在"改为"必须恰为冻结清单" ——
+        # 这不是放宽：清单仍然逐条固定，多一条少一条都会失败。
         user_crud_paths = {
             path for path in paths if path.startswith(f"{PREFIX}/users") and "sessions" not in path
         }
-        assert user_crud_paths == set()
+        assert user_crud_paths == {
+            f"{PREFIX}/users",
+            f"{PREFIX}/users/{{user_id}}",
+            f"{PREFIX}/users/{{user_id}}/disable",
+            f"{PREFIX}/users/{{user_id}}/enable",
+            f"{PREFIX}/users/{{user_id}}/reset-password",
+        }, user_crud_paths
 
     async def test_mfa_endpoints_are_confined_to_auth_domain(self, app: FastAPI) -> None:
         """MFA 端点不得混入 admin 资源域。
