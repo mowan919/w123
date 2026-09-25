@@ -9,18 +9,21 @@
 import { onMounted, ref } from 'vue'
 import { usePageQuery } from '@/composables/usePageQuery'
 import * as api from '@/api/endpoints/organization'
-import type { DepartmentTreeNode, User } from '@/types'
+import type { User } from '@/types'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import SearchForm from '@/components/data/SearchForm.vue'
 import DataTable from '@/components/data/DataTable.vue'
 import Pagination from '@/components/data/Pagination.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
+import PermissionField from '@/components/permission/PermissionField.vue'
 import { useAppStore } from '@/stores/app'
 import { useDictionaryStore } from '@/stores/dictionaries'
+import { useOrganizationStore } from '@/stores/organization'
 
 const appStore = useAppStore()
 const dictionaryStore = useDictionaryStore()
+const organizationStore = useOrganizationStore()
 
 const filters = ref<{ keyword: string; status: string; department_id: string }>({
   keyword: '',
@@ -32,7 +35,6 @@ const { rows, total, pageNum, pageSize, loading, error, reload, onPageChange } =
   (query) => api.listUsers(query),
 )
 
-const departmentOptions = ref<Array<{ id: string; label: string }>>([])
 const disableTarget = ref<User | null>(null)
 const resetTarget = ref<User | null>(null)
 
@@ -81,36 +83,14 @@ async function confirmReset(): Promise<void> {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   void reload()
   void dictionaryStore.ensure('user_status')
   // 部门树是唯一的部门数据来源（后端没有扁平列表端点）。
-  void api
-    .getDepartmentTree()
-    .then(collectDepartments)
-    .catch(() => undefined)
+  // 取回失败不弹错误弹窗：部门筛选器空着不影响列表本身，列表走的是
+  // 后端的数据范围下推，不依赖这份下拉。
+  await organizationStore.ensure()
 })
-
-/**
- * 把部门树压平为下拉选项。
- *
- * 递归函数的参数类型要**显式写出来**：用 `Parameters<typeof collectNode>`
- * 做自引用会让 TS 在推断时陷入"children 在自己的类型标注里被引用"的循环，
- * 直接报 TS2502。
- */
-function collectDepartments(nodes: DepartmentTreeNode[]): void {
-  for (const node of nodes) {
-    departmentOptions.value.push({ id: node.id, label: node.department_name })
-    collectNode(node.children)
-  }
-}
-
-function collectNode(children: DepartmentTreeNode[]): void {
-  for (const child of children) {
-    departmentOptions.value.push({ id: child.id, label: child.department_name })
-    collectNode(child.children)
-  }
-}
 </script>
 
 <template>
@@ -133,7 +113,11 @@ function collectNode(children: DepartmentTreeNode[]): void {
         <span class="field__label">部门</span>
         <select v-model="filters.department_id" class="field__control">
           <option value="">全部</option>
-          <option v-for="option in departmentOptions" :key="option.id" :value="option.id">
+          <option
+            v-for="option in organizationStore.options"
+            :key="option.id"
+            :value="option.id"
+          >
             {{ option.label }}
           </option>
         </select>

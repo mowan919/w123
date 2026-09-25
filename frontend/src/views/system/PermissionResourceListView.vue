@@ -22,14 +22,11 @@ import Pagination from '@/components/data/Pagination.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { useResourcesStore } from '@/stores/resources'
 import {
-  createResource,
-  deleteResource,
   getMenuPages,
   getResourceTree,
-  listResources,
   setMenuPages,
-  updateResource,
 } from '@/api/endpoints/resources'
 import type { DataTableColumn } from '@/components/data/types'
 import type {
@@ -41,6 +38,7 @@ import type {
 import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
+const resourcesStore = useResourcesStore()
 
 const columns: Array<DataTableColumn<PermissionResource>> = [
   { key: 'resource_name', title: '名称' },
@@ -69,16 +67,10 @@ interface FlatTreeNode {
   depth: number
 }
 
-const rows = ref<PermissionResource[]>([])
-const total = ref(0)
-const pageNum = ref(1)
-const pageSize = ref(20)
-const loading = ref(false)
-const error = ref<string | null>(null)
-
+/** 筛选输入留在页面里（受控于 SearchForm），筛选结果归 store。 */
 const keyword = ref('')
-const kindFilter = ref<ResourceType | null>(null)
-const statusFilter = ref<PermissionStatus | null>(null)
+const kindFilter = ref<'' | ResourceType>('')
+const statusFilter = ref<'' | 'ACTIVE' | 'DISABLED'>('')
 
 const mode = ref<'list' | 'tree'>('list')
 const treeNodes = ref<PermissionResourceTreeNode[]>([])
@@ -109,75 +101,54 @@ function notice(cause: unknown, fallback: string): void {
   appStore.showNotice('error', cause instanceof Error ? cause.message : fallback)
 }
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = null
-  try {
-    const result = await listResources({
-      pageNum: pageNum.value,
-      pageSize: pageSize.value,
-      resourceType: kindFilter.value,
-      status: statusFilter.value,
-      keyword: keyword.value,
-    })
-    rows.value = result.list
-    total.value = result.total
-    pageNum.value = result.pageNum
-    pageSize.value = result.pageSize
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '资源加载失败'
-    rows.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
-  }
+/** 分页列表由 store 持有；树是这一页独有的视图形态，留在页面里。 */
+function load(): Promise<void> {
+  return resourcesStore.load()
 }
 
+/** 树的加载态与错误信息归 store：它和分页列表共用那两个字段，避免两份。 */
 async function loadTree(): Promise<void> {
-  loading.value = true
-  error.value = null
+  resourcesStore.loading = true
+  resourcesStore.error = null
   try {
     treeNodes.value = await getResourceTree({
-      resourceType: kindFilter.value,
-      status: statusFilter.value,
+      resourceType: kindFilter.value === '' ? null : kindFilter.value,
+      status: statusFilter.value === '' ? null : (statusFilter.value as PermissionStatus),
       keyword: keyword.value,
     })
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '资源树加载失败'
+    resourcesStore.error = cause instanceof Error ? cause.message : '资源树加载失败'
     treeNodes.value = []
   } finally {
-    loading.value = false
+    resourcesStore.loading = false
   }
 }
 
-function reload(): void {
-  if (mode.value === 'list') void load()
-  else void loadTree()
+async function search(): Promise<void> {
+  await resourcesStore.setFilters({
+    keyword: keyword.value,
+    kind: kindFilter.value === '' ? null : kindFilter.value,
+    status: statusFilter.value === '' ? null : (statusFilter.value as PermissionStatus),
+  })
+  if (mode.value === 'tree') await loadTree()
 }
 
-function search(): void {
-  pageNum.value = 1
-  reload()
-}
-
-function resetFilters(): void {
+async function resetFilters(): Promise<void> {
   keyword.value = ''
-  kindFilter.value = null
-  statusFilter.value = null
-  pageNum.value = 1
-  reload()
+  kindFilter.value = ''
+  statusFilter.value = ''
+  await search()
 }
 
+/** 用命名函数而不是模板内联箭头：内联里同时读写 ref 容易踩类型推断。 */
 function onPageChange(next: { pageNum: number; pageSize: number }): void {
-  pageNum.value = next.pageNum
-  pageSize.value = next.pageSize
-  void load()
+  void resourcesStore.goToPage(next.pageNum, next.pageSize)
 }
 
-function switchMode(next: 'list' | 'tree'): void {
+async function switchMode(next: 'list' | 'tree'): Promise<void> {
   mode.value = next
-  pageNum.value = 1
-  reload()
+  if (next === 'list') await load()
+  else await loadTree()
 }
 
 function startCreate(kind: ResourceType): void {
@@ -215,7 +186,7 @@ function submit(): void {
   void (async () => {
     try {
       if (current.id === null) {
-        await createResource({
+        await resourcesStore.create({
           resource_type: current.resource_type,
           resource_code: current.resource_code,
           resource_name: current.resource_name,
@@ -226,7 +197,7 @@ function submit(): void {
           field_key: current.field_key || null,
         })
       } else {
-        await updateResource(current.id, {
+        await resourcesStore.update(current.id, {
           resource_name: current.resource_name,
           route_path: current.route_path || null,
           component_path: current.component_path || null,
@@ -236,7 +207,8 @@ function submit(): void {
         })
       }
       draft.value = null
-      reload()
+      // 列表 / 树由 store 负责失效后重拉，这里只还原编辑区。
+      if (mode.value === 'tree') await loadTree()
     } catch (cause) {
       notice(cause, '保存失败')
     } finally {
@@ -250,9 +222,9 @@ async function confirmDelete(): Promise<void> {
   if (target === null) return
   deleting.value = true
   try {
-    await deleteResource(target.id)
+    await resourcesStore.remove(target.id)
     pendingDelete.value = null
-    reload()
+    if (mode.value === 'tree') await loadTree()
   } catch (cause) {
     notice(cause, '删除失败')
   } finally {
@@ -286,7 +258,8 @@ async function saveMenuPages(): Promise<void> {
   try {
     await setMenuPages(current.menu_id, menuPageSelection.value)
     menuPages.value = null
-    reload()
+    // 菜单挂的页面变了，列表里的 MENU 行要跟着变。
+    await load()
   } catch (cause) {
     notice(cause, '页面保存失败')
   } finally {
@@ -340,14 +313,14 @@ onMounted(() => {
       </PermissionButton>
     </div>
 
-    <div v-if="error" class="alert alert--error">{{ error }}</div>
+    <div v-if="resourcesStore.error" class="alert alert--error">{{ resourcesStore.error }}</div>
 
-    <div v-else-if="loading" class="state"><span class="spinner" aria-hidden="true" /><span>加载中…</span></div>
+    <div v-else-if="resourcesStore.loading" class="state"><span class="spinner" aria-hidden="true" /><span>加载中…</span></div>
 
     <template v-else-if="mode === 'list'">
       <DataTable
         :columns="columns"
-        :rows="rows"
+        :rows="resourcesStore.rows"
         :row-key="(row: PermissionResource) => row.id"
         empty-text="没有符合条件的资源"
       >
@@ -381,10 +354,10 @@ onMounted(() => {
       </DataTable>
 
       <Pagination
-        :total="total"
-        :page-num="pageNum"
-        :page-size="pageSize"
-        :disabled="loading"
+        :total="resourcesStore.total"
+        :page-num="resourcesStore.pageNum"
+        :page-size="resourcesStore.pageSize"
+        :disabled="resourcesStore.loading"
         @change="onPageChange"
       />
     </template>

@@ -8,21 +8,17 @@
  * 2. 部门维度的数据范围由**后端下推到 SQL**，前端不参与判权（FE-05 §4）。
  *    页面上不出现"按数据范围过滤"的开关，那是重复实现后端职责。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
-import {
-  createDepartment,
-  disableDepartment,
-  getDepartmentTree,
-  updateDepartment,
-} from '@/api/endpoints/organization'
+import { useOrganizationStore } from '@/stores/organization'
 import type { DepartmentTreeNode } from '@/types'
 import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
+const organizationStore = useOrganizationStore()
 
 interface DepartmentDraft {
   id: ID | null
@@ -46,9 +42,6 @@ function draftFrom(node: DepartmentTreeNode): DepartmentDraft {
   }
 }
 
-const tree = ref<DepartmentTreeNode[]>([])
-const loading = ref(false)
-const error = ref<string | null>(null)
 const expanded = ref<Set<ID>>(new Set())
 const draft = ref<DepartmentDraft | null>(null)
 const saving = ref(false)
@@ -63,34 +56,39 @@ const rows = computed<FlatRow[]>(() => {
       if (node.children.length > 0 && expanded.value.has(node.id)) walk(node.children, depth + 1)
     }
   }
-  walk(tree.value, 0)
+  walk(organizationStore.tree, 0)
   return out
 })
+
+/**
+ * 展开状态跟随树的内容。
+ *
+ * 任何一次成功写入（新建 / 禁用）都会让 store 重拉整棵树，而新出现的分支
+ * 默认是折叠的 —— 用户会把"我新建的部门怎么看不见"当成数据丢了。这里在
+ * 树换掉时统一重新展开，与重拉树的时机保持一致。
+ */
+watch(
+  () => organizationStore.tree,
+  (tree) => {
+    if (tree.length > 0) expandAll()
+  },
+)
 
 function flatten(nodes: DepartmentTreeNode[]): DepartmentTreeNode[] {
   return nodes.flatMap((node) => [node, ...flatten(node.children)])
 }
 
 function expandAll(): void {
-  expanded.value = new Set(flatten(tree.value).map((node) => node.id))
+  expanded.value = new Set(flatten(organizationStore.tree).map((node) => node.id))
 }
 
 function collapseAll(): void {
   expanded.value = new Set()
 }
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = null
-  try {
-    tree.value = await getDepartmentTree()
-    expandAll()
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '部门树加载失败'
-    tree.value = []
-  } finally {
-    loading.value = false
-  }
+/** 首次进入：走 store 的缓存（同一会话里别的页面已经取过就不重复发请求）。 */
+function boot(): void {
+  void organizationStore.ensure()
 }
 
 function startCreate(parentId: ID | null): void {
@@ -107,19 +105,19 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     if (current.id === null) {
-      await createDepartment({
+      await organizationStore.create({
         department_code: current.department_code,
         department_name: current.department_name,
         parent_id: current.parent_id,
       })
     } else {
-      await updateDepartment(current.id, {
+      await organizationStore.update(current.id, {
         department_code: current.department_code,
         department_name: current.department_name,
       })
     }
     draft.value = null
-    await load()
+    // 树已由 store 重拉，这里只还原编辑区。
   } catch (cause) {
     // 原样回显后端错误 —— 后端会拒绝"禁用最后一个 SUPER_ADMIN"这类安全不变量
     // （RISK-002），改写一句"操作失败"会把真实的拒绝原因丢掉。
@@ -134,9 +132,8 @@ async function confirmDisable(): Promise<void> {
   if (target === null) return
   disabling.value = true
   try {
-    await disableDepartment(target.id)
+    await organizationStore.disable(target.id)
     pendingDisable.value = null
-    await load()
   } catch (cause) {
     appStore.showNotice('error', cause instanceof Error ? cause.message : '禁用失败')
   } finally {
@@ -144,9 +141,7 @@ async function confirmDisable(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void load()
-})
+boot()
 </script>
 
 <template>
@@ -157,12 +152,18 @@ onMounted(() => {
       </PermissionButton>
       <PermissionButton code="department:create" @click="expandAll">展开全部</PermissionButton>
       <PermissionButton code="department:create" @click="collapseAll">收起全部</PermissionButton>
-      <PermissionButton code="department:edit" mode="disable" @click="load">刷新</PermissionButton>
+      <PermissionButton code="department:edit" mode="disable" @click="organizationStore.reload()">
+        刷新
+      </PermissionButton>
     </div>
 
-    <div v-if="error" class="alert alert--error">{{ error }}</div>
+    <div v-if="organizationStore.error" class="alert alert--error">
+      {{ organizationStore.error }}
+    </div>
 
-    <div v-else-if="loading" class="state"><span class="spinner" aria-hidden="true" /><span>加载中…</span></div>
+    <div v-else-if="organizationStore.loading" class="state">
+      <span class="spinner" aria-hidden="true" /><span>加载中…</span>
+    </div>
 
     <div v-else-if="rows.length === 0" class="state"><span class="state__item">暂无部门</span></div>
 

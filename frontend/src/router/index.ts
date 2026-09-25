@@ -3,6 +3,10 @@ import type { RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissionStore } from '@/stores/permission'
 import { useAppStore } from '@/stores/app'
+import { useOrganizationStore } from '@/stores/organization'
+import { useRolesStore } from '@/stores/roles'
+import { useResourcesStore } from '@/stores/resources'
+import { useParamsStore } from '@/stores/params'
 import { setSessionCleanupHook } from '@/stores/auth'
 import { configureClient } from '@/api/client'
 import {
@@ -114,10 +118,16 @@ let inSessionReset = false
 /**
  * 会话级清理（FE-02 §5 / FE-04 §5）。
  *
- * 四处状态必须一起清：动态路由、认证、权限、全局提示。
- * 少清一个是"看起来登出了但菜单还在"这类幽灵状态的经典来源 —— 实测
- * `authStore.logout()` 只清认证时，路由表里仍留着上一个账号的全部页面，
- * 绕过菜单直接改 URL 照样进得去。
+ * 七类状态必须一起清：动态路由、认证、权限、全局提示，以及四个业务域的
+ * 参考数据缓存。少清一个是"看起来登出了但菜单还在"这类幽灵状态的经典
+ * 来源 —— 实测 `authStore.logout()` 只清认证时，路由表里仍留着上一个
+ * 账号的全部页面，绕过菜单直接改 URL 照样进得去。
+ *
+ * ⚠️ 业务域缓存这一项是**安全**要求，不只是"免得显示旧数据"：
+ * 部门树是数据范围的骨架，超管拿到的树比部门管理员**宽**。这份树一旦被
+ * 缓存留到换账号之后，下一个账号的用户（哪怕只是同一个浏览器开了另一个
+ * 账号）就能看到上一个账号可见、而自己无权看到的部门清单 —— 一次实打实
+ * 的越权信息泄露，且不会有任何报错。
  */
 export function resetAllSessionState(): void {
   if (inSessionReset) return
@@ -128,6 +138,10 @@ export function resetAllSessionState(): void {
     usePermissionStore().reset()
     useAppStore().clearNotice()
     useAppStore().setBusy(false)
+    useOrganizationStore().reset()
+    useRolesStore().reset()
+    useResourcesStore().reset()
+    useParamsStore().reset()
   } finally {
     inSessionReset = false
   }

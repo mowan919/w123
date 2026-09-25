@@ -19,17 +19,13 @@ import Pagination from '@/components/data/Pagination.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
-import {
-  createSystemParam,
-  deleteSystemParam,
-  listSystemParams,
-  updateSystemParam,
-} from '@/api/endpoints/params'
+import { useParamsStore } from '@/stores/params'
 import type { DataTableColumn } from '@/components/data/types'
 import type { SystemParam } from '@/types'
 import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
+const paramsStore = useParamsStore()
 
 const columns: Array<DataTableColumn<SystemParam>> = [
   { key: 'param_key', title: '参数键' },
@@ -53,15 +49,9 @@ interface ParamDraft {
   status: 'ACTIVE' | 'DISABLED'
 }
 
-const rows = ref<SystemParam[]>([])
-const total = ref(0)
-const pageNum = ref(1)
-const pageSize = ref(20)
-const loading = ref(false)
-const error = ref<string | null>(null)
-
+/** 筛选输入留在页面里；分页与结果归 store。 */
 const keyword = ref('')
-const statusFilter = ref<'ACTIVE' | 'DISABLED' | null>(null)
+const statusFilter = ref<'' | 'ACTIVE' | 'DISABLED'>('')
 
 const draft = ref<ParamDraft | null>(null)
 const saving = ref(false)
@@ -74,40 +64,19 @@ function notice(cause: unknown, fallback: string): void {
   appStore.showNotice('error', cause instanceof Error ? cause.message : fallback)
 }
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = null
-  try {
-    const result = await listSystemParams({ pageNum: pageNum.value, pageSize: pageSize.value, keyword: keyword.value, status: statusFilter.value })
-    rows.value = result.list
-    total.value = result.total
-    pageNum.value = result.pageNum
-    pageSize.value = result.pageSize
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '参数加载失败'
-    rows.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
-  }
-}
-
 function search(): void {
-  pageNum.value = 1
-  void load()
+  void paramsStore.setFilters({ keyword: keyword.value })
 }
 
-function resetFilters(): void {
+async function resetFilters(): Promise<void> {
   keyword.value = ''
-  statusFilter.value = null
-  pageNum.value = 1
-  void load()
+  statusFilter.value = ''
+  await paramsStore.setFilters({ keyword: '', status: '' })
 }
 
+/** 用命名函数而不是模板内联箭头：内联里同时读写 ref 容易踩类型推断。 */
 function onPageChange(next: { pageNum: number; pageSize: number }): void {
-  pageNum.value = next.pageNum
-  pageSize.value = next.pageSize
-  void load()
+  void paramsStore.goToPage(next.pageNum, next.pageSize)
 }
 
 function startCreate(): void {
@@ -142,7 +111,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     if (current.id === null) {
-      await createSystemParam({
+      await paramsStore.create({
         param_key: current.param_key,
         param_name: current.param_name,
         param_type: current.param_type,
@@ -152,7 +121,7 @@ async function save(): Promise<void> {
         status: current.status,
       })
     } else {
-      await updateSystemParam(current.id, {
+      await paramsStore.update(current.id, {
         param_name: current.param_name,
         description: current.description || null,
         status: current.status,
@@ -161,7 +130,6 @@ async function save(): Promise<void> {
       })
     }
     draft.value = null
-    await load()
   } catch (cause) {
     notice(cause, '保存失败')
   } finally {
@@ -175,14 +143,12 @@ async function clearValue(): Promise<void> {
   if (current === null || current.id === null) return
   clearing.value = true
   try {
-    await updateSystemParam(current.id, {
-      clear_value: true,
+    await paramsStore.clearValue(current.id, {
       param_name: current.param_name,
-      status: current.status,
       description: current.description || null,
+      status: current.status,
     })
     draft.value = null
-    await load()
   } catch (cause) {
     notice(cause, '清空失败')
   } finally {
@@ -195,9 +161,8 @@ async function confirmDelete(): Promise<void> {
   if (target === null) return
   deleting.value = true
   try {
-    await deleteSystemParam(target.id)
+    await paramsStore.remove(target.id)
     pendingDelete.value = null
-    await load()
   } catch (cause) {
     notice(cause, '删除失败')
   } finally {
@@ -206,7 +171,7 @@ async function confirmDelete(): Promise<void> {
 }
 
 onMounted(() => {
-  void load()
+  void paramsStore.goToPage(1, paramsStore.pageSize)
 })
 </script>
 
@@ -232,13 +197,13 @@ onMounted(() => {
       <span class="muted">参数键变更等价于换一个开关，历史审计仍会记录"改了哪个键"</span>
     </div>
 
-    <div v-if="error" class="alert alert--error">{{ error }}</div>
+    <div v-if="paramsStore.error" class="alert alert--error">{{ paramsStore.error }}</div>
 
     <DataTable
       v-else
       :columns="columns"
-      :rows="rows"
-      :loading="loading"
+      :rows="paramsStore.rows"
+      :loading="paramsStore.loading"
       :row-key="(row: SystemParam) => row.id"
       empty-text="没有符合条件的参数"
     >
@@ -262,10 +227,10 @@ onMounted(() => {
     </DataTable>
 
     <Pagination
-      :total="total"
-      :page-num="pageNum"
-      :page-size="pageSize"
-      :disabled="loading"
+      :total="paramsStore.total"
+      :page-num="paramsStore.pageNum"
+      :page-size="paramsStore.pageSize"
+      :disabled="paramsStore.loading"
       @change="onPageChange"
     />
 

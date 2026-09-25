@@ -18,12 +18,13 @@ import Pagination from '@/components/data/Pagination.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
-import { createRole, deleteRole, listRoles, updateRole } from '@/api/endpoints/roles'
+import { useRolesStore } from '@/stores/roles'
 import type { DataTableColumn } from '@/components/data/types'
 import type { Role } from '@/types'
 import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
+const rolesStore = useRolesStore()
 
 interface RoleDraft {
   id: ID | null
@@ -49,55 +50,28 @@ const DATA_SCOPE_LABEL: Record<string, string> = {
   CUSTOM: '自定义（见权限配置）',
 }
 
-const rows = ref<Role[]>([])
-const total = ref(0)
-const pageNum = ref(1)
-const pageSize = ref(20)
-const loading = ref(false)
-const error = ref<string | null>(null)
+/** 筛选输入只留在页面里（受控于 SearchForm）；分页与结果归 store。 */
 const keyword = ref('')
-const statusFilter = ref<'ACTIVE' | 'DISABLED' | null>(null)
+const statusFilter = ref<'' | 'ACTIVE' | 'DISABLED'>('')
 
 const draft = ref<RoleDraft | null>(null)
 const saving = ref(false)
 const pendingDelete = ref<Role | null>(null)
 const deleting = ref(false)
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = null
-  try {
-    const result = await listRoles({ pageNum: pageNum.value, pageSize: pageSize.value, keyword: keyword.value, status: statusFilter.value })
-    rows.value = result.list
-    total.value = result.total
-    pageNum.value = result.pageNum
-    pageSize.value = result.pageSize
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '角色加载失败'
-    rows.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
-  }
-}
-
 function search(): void {
-  pageNum.value = 1
-  void load()
+  void rolesStore.setFilters({ keyword: keyword.value })
 }
 
 /** 用命名函数而不是模板内联箭头：内联里同时读写 ref 容易踩类型推断。 */
 function onPageChange(next: { pageNum: number; pageSize: number }): void {
-  pageNum.value = next.pageNum
-  pageSize.value = next.pageSize
-  void load()
+  void rolesStore.goToPage(next.pageNum, next.pageSize)
 }
 
-function resetFilters(): void {
+async function resetFilters(): Promise<void> {
   keyword.value = ''
-  statusFilter.value = null
-  pageNum.value = 1
-  void load()
+  statusFilter.value = ''
+  await rolesStore.setFilters({ keyword: '', status: '' })
 }
 
 function startCreate(): void {
@@ -114,7 +88,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     if (current.id === null) {
-      await createRole({
+      await rolesStore.create({
         role_code: current.role_code,
         role_name: current.role_name,
         description: current.description,
@@ -122,15 +96,14 @@ async function save(): Promise<void> {
       })
     } else {
       // 只发真正改动的字段：后端按 `model_fields_set` 分派，
-      // 把没改的字段也塞进去会被当成"显式清空"。
-      await updateRole(current.id, {
+      // 把没改的字段也塞进去会被当成"显式清空"（角色编码只读）。
+      await rolesStore.update(current.id, {
         role_name: current.role_name,
         description: current.description,
         status: current.status,
       })
     }
     draft.value = null
-    await load()
   } catch (cause) {
     appStore.showNotice('error', cause instanceof Error ? cause.message : '保存失败')
   } finally {
@@ -143,9 +116,8 @@ async function confirmDelete(): Promise<void> {
   if (target === null) return
   deleting.value = true
   try {
-    await deleteRole(target.id)
+    await rolesStore.remove(target.id)
     pendingDelete.value = null
-    await load()
   } catch (cause) {
     appStore.showNotice('error', cause instanceof Error ? cause.message : '删除失败')
   } finally {
@@ -154,7 +126,7 @@ async function confirmDelete(): Promise<void> {
 }
 
 onMounted(() => {
-  void load()
+  void rolesStore.goToPage(rolesStore.pageNum, rolesStore.pageSize)
 })
 </script>
 
@@ -182,9 +154,9 @@ onMounted(() => {
 
     <DataTable
       :columns="columns"
-      :rows="rows"
-      :loading="loading"
-      :error="error"
+      :rows="rolesStore.rows"
+      :loading="rolesStore.loading"
+      :error="rolesStore.error"
       :row-key="(row: Role) => row.id"
       empty-text="没有符合条件的角色"
     >
@@ -206,10 +178,10 @@ onMounted(() => {
     </DataTable>
 
     <Pagination
-      :total="total"
-      :page-num="pageNum"
-      :page-size="pageSize"
-      :disabled="loading"
+      :total="rolesStore.total"
+      :page-num="rolesStore.pageNum"
+      :page-size="rolesStore.pageSize"
+      :disabled="rolesStore.loading"
       @change="onPageChange"
     />
 

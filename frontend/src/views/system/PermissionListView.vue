@@ -24,11 +24,12 @@ import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { usePermissionStore } from '@/stores/permission'
-import { getDepartmentTree } from '@/api/endpoints/organization'
+import { useOrganizationStore } from '@/stores/organization'
+import { useRolesStore } from '@/stores/roles'
+import { useResourcesStore } from '@/stores/resources'
 import {
   getRoleDataScope,
   getRolePermissions,
-  listRoles,
   setRoleApiPermissions,
   setRoleButtonPermissions,
   setRoleDataScope,
@@ -36,7 +37,6 @@ import {
   setRoleMenuPermissions,
   setRolePagePermissions,
 } from '@/api/endpoints/roles'
-import { listResources } from '@/api/endpoints/resources'
 import type {
   DataScopePolicy,
   FieldAccessLevel,
@@ -48,6 +48,9 @@ import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
 const permissionStore = usePermissionStore()
+const organizationStore = useOrganizationStore()
+const rolesStore = useRolesStore()
+const resourcesStore = useResourcesStore()
 
 type ResourceKind = 'PAGE' | 'MENU' | 'BUTTON' | 'API'
 
@@ -61,15 +64,8 @@ const DATA_SCOPE_OPTIONS: Array<{ value: DataScopePolicy; label: string }> = [
 
 const FIELD_LEVELS: FieldAccessLevel[] = ['VISIBLE', 'HIDDEN', 'READ_ONLY', 'EDITABLE']
 
-const roles = ref<Role[]>([])
 const selectedRoleId = ref<ID | null>(null)
 
-const options = ref<Record<ResourceKind, PermissionResource[]>>({
-  PAGE: [],
-  MENU: [],
-  BUTTON: [],
-  API: [],
-})
 const checked = ref<Record<ResourceKind, Set<ID>>>({
   PAGE: new Set(),
   MENU: new Set(),
@@ -77,50 +73,48 @@ const checked = ref<Record<ResourceKind, Set<ID>>>({
   API: new Set(),
 })
 
-const fieldResources = ref<PermissionResource[]>([])
 const fieldLevels = ref<Record<ID, FieldAccessLevel>>({})
 
 const dataScope = ref<DataScopePolicy>('ALL')
 const customDepartments = ref<ID[]>([])
 
-const loadingRoles = ref(false)
 const loadingConfig = ref(false)
 const saving = ref<ResourceKind | 'FIELDS' | 'DATA_SCOPE' | null>(null)
 const pendingReset = ref(false)
 const confirmText = ref('')
 
-/** 部门树在这里只是"选择 CUSTOM 集合"的候选来源，不参与任何判权。 */
-const flatDepartments = ref<Array<{ id: ID; name: string; depth: number }>>([])
+/**
+ * 授权用的候选清单来自 store，不是当前用户的权限契约。
+ *
+ * 原因写在 resourcesStore 里：被授权的角色可能持有当前管理员看不到的资源，
+ * 拿契约当候选来源会静默丢掉它们。
+ */
+const options = computed<Record<ResourceKind, PermissionResource[]>>(() => ({
+  PAGE: resourcesStore.grantable?.PAGE ?? [],
+  MENU: resourcesStore.grantable?.MENU ?? [],
+  BUTTON: resourcesStore.grantable?.BUTTON ?? [],
+  API: resourcesStore.grantable?.API ?? [],
+}))
+
+/** 字段权限的四个选项定义在 store 之外是因为它同时被下拉框复用。 */
+const grantable = computed<PermissionResource[]>(() => resourcesStore.grantable?.FIELD ?? [])
 
 function notice(cause: unknown, fallback: string): void {
   appStore.showNotice('error', cause instanceof Error ? cause.message : fallback)
 }
 
+/** 角色清单来自 store：它与角色管理页共享同一份缓存，不各自发请求。 */
+const roles = computed<Role[]>(() => rolesStore.picker)
+
 async function loadRoles(): Promise<void> {
-  loadingRoles.value = true
-  try {
-    const result = await listRoles({ pageNum: 1, pageSize: 100 })
-    roles.value = result.list
-    if (selectedRoleId.value === null && roles.value.length > 0) selectedRoleId.value = roles.value[0]?.id ?? null
-  } catch (cause) {
-    notice(cause, '角色加载失败')
-  } finally {
-    loadingRoles.value = false
+  await rolesStore.ensurePicker()
+  if (selectedRoleId.value === null && roles.value.length > 0) {
+    selectedRoleId.value = roles.value[0]?.id ?? null
   }
 }
 
 async function loadResources(): Promise<void> {
-  const kinds: ResourceKind[] = ['PAGE', 'MENU', 'BUTTON', 'API']
-  const entries = await Promise.all(
-    kinds.map((kind) => listResources({ pageNum: 1, pageSize: 100, resourceType: kind })),
-  )
-  const next: Record<ResourceKind, PermissionResource[]> = { PAGE: [], MENU: [], BUTTON: [], API: [] }
-  kinds.forEach((kind, index) => {
-    next[kind] = entries[index]?.list ?? []
-  })
-  options.value = next
-  const field = await listResources({ pageNum: 1, pageSize: 100, resourceType: 'FIELD' })
-  fieldResources.value = field.list
+  await resourcesStore.ensureGrantable()
 }
 
 function toIdSet(ids: ID[]): Set<ID> {
@@ -156,22 +150,14 @@ async function loadConfig(roleId: ID): Promise<void> {
   }
 }
 
+/**
+ * 部门树在这里只是"选择 CUSTOM 集合"的候选来源，不参与任何判权。
+ *
+ * 数据与部门管理页共用同一份缓存（`organizationStore`），因此这里失败时
+ * 页面也不会崩 —— 顶多是 CUSTOM 那一组的复选框列不出来。
+ */
 async function loadDepartments(): Promise<void> {
-  try {
-    const tree = await getDepartmentTree()
-    const flat: Array<{ id: ID; name: string; depth: number }> = []
-    const walk = (nodes: typeof tree, depth: number): void => {
-      for (const node of nodes) {
-        flat.push({ id: node.id, name: node.department_name, depth })
-        walk(node.children, depth + 1)
-      }
-    }
-    walk(tree, 0)
-    flatDepartments.value = flat
-  } catch (cause) {
-    notice(cause, '部门加载失败')
-    flatDepartments.value = []
-  }
+  await organizationStore.ensure()
 }
 
 /** 切换角色前先确认：当前批次的勾选还没保存。 */
@@ -326,6 +312,9 @@ void boot()
         重新加载
       </PermissionButton>
     </div>
+    <p v-if="rolesStore.pickerMightBeTruncated" class="hint">
+      角色较多时这份清单可能未取全；找不到目标角色请到「角色管理」页按关键字筛选。
+    </p>
 
     <div v-if="loadingConfig" class="state"><span class="spinner" aria-hidden="true" /><span>加载配置…</span></div>
 
@@ -357,6 +346,9 @@ void boot()
           </div>
         </div>
         <p class="hint">空数组提交表示清空该类别的全部授权；其余类别不受影响。</p>
+        <p v-if="resourcesStore.grantableMightBeTruncated" class="hint">
+          资源较多时这份清单可能未取全；找不到目标资源请到「权限资源」页按类型筛选。
+        </p>
       </section>
 
       <section class="panel">
@@ -370,7 +362,7 @@ void boot()
             </tr>
           </thead>
           <tbody>
-            <tr v-for="field in fieldResources" :key="field.id">
+            <tr v-for="field in grantable" :key="field.id">
               <td>{{ field.resource_name }}</td>
               <td><code>{{ field.field_key }}</code></td>
               <td>
@@ -408,7 +400,12 @@ void boot()
         </div>
 
         <div v-if="dataScope === 'CUSTOM'" class="depts">
-          <label v-for="dept in flatDepartments" :key="dept.id" class="check" :style="{ paddingLeft: `${dept.depth * 18}px` }">
+          <label
+            v-for="dept in organizationStore.flat"
+            :key="dept.id"
+            class="check"
+            :style="{ paddingLeft: `${dept.depth * 18}px` }"
+          >
             <input
               type="checkbox"
               :checked="customDepartments.includes(dept.id)"
@@ -416,7 +413,7 @@ void boot()
             />
             <span>{{ dept.name }}</span>
           </label>
-          <p v-if="flatDepartments.length === 0" class="muted">部门树加载失败，无法配置 CUSTOM 集合</p>
+          <p v-if="organizationStore.flat.length === 0" class="muted">部门树加载失败，无法配置 CUSTOM 集合</p>
         </div>
 
         <PermissionButton code="role:config-data-scope" :loading="saving === 'DATA_SCOPE'" @click="saveDataScope">

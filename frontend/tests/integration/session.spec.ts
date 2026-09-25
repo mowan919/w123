@@ -3,8 +3,13 @@ import { router, installDynamicRoutes, installHttpClient, resetAllSessionState }
 import { useAuthStore } from '@/stores/auth'
 import { usePermissionStore } from '@/stores/permission'
 import { useAppStore } from '@/stores/app'
+import { useOrganizationStore } from '@/stores/organization'
+import { useRolesStore } from '@/stores/roles'
+import { useResourcesStore } from '@/stores/resources'
+import { useParamsStore } from '@/stores/params'
 import { ForbiddenError, UnauthorizedError } from '@/api/errors'
 import { http } from '@/api/client'
+import type { DepartmentTreeNode, PermissionResource, Role, SystemParam } from '@/types'
 import { fail, forbidden, headerOf, ok, stubFetch, unauthorized } from '../helpers/fetchMock'
 import { buildContract, FULL_PAGE_SPECS, makeTokenPair, pageSpec } from '../helpers/fixtures'
 
@@ -23,6 +28,73 @@ const ME_PATH = '/api/v1/auth/me'
 const PERMISSIONS_PATH = '/api/v1/auth/permissions'
 const REFRESH_PATH = '/api/v1/auth/refresh'
 const LOGOUT_PATH = '/api/v1/auth/logout'
+
+/**
+ * 造一条业务域缓存行。
+ *
+ * 这些替身只要" type 对得上、能被塞进 store 的 state"即可 —— 这里要验的是
+ * 缓存**有没有被清掉**，与字段内容无关，因此不去凑完整的真实实体。
+ */
+function treeNode(id: string): DepartmentTreeNode {
+  return {
+    id,
+    parent_id: null,
+    department_code: `D-${id}`,
+    department_name: `部门${id}`,
+    status: 'ACTIVE',
+    children: [],
+  }
+}
+
+function role(id: string): Role {
+  return {
+    id,
+    role_code: `R-${id}`,
+    role_name: `角色${id}`,
+    description: null,
+    status: 'ACTIVE',
+    data_scope: 'ALL',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+function resource(id: string): PermissionResource {
+  return {
+    id,
+    resource_type: 'PAGE',
+    resource_code: `C-${id}`,
+    resource_name: `资源${id}`,
+    parent_id: null,
+    sort_order: 1,
+    status: 'ACTIVE',
+    route_path: null,
+    component_path: null,
+    icon: null,
+    api_method: null,
+    api_path: null,
+    field_key: null,
+    owner_resource_id: null,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+function param(id: string): SystemParam {
+  return {
+    id,
+    param_key: `P-${id}`,
+    param_name: `参数${id}`,
+    param_type: 'STRING',
+    param_value: 'v',
+    default_value: 'd',
+    effective_value: 'v',
+    description: null,
+    status: 'ACTIVE',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  }
+}
 
 /** 假后端。用一个可变开关模拟"登录前 / 令牌失效后"两个阶段。 */
 interface FakeBackend {
@@ -207,18 +279,46 @@ describe('Logout → 路由与状态清理', () => {
     expect(pathExists('/system/users')).toBe(false)
   })
 
-  it('resetAllSessionState 把三处状态一起清掉', () => {
+  it('resetAllSessionState 把全部会话状态一起清掉', () => {
     const authStore = useAuthStore()
     authStore.setTokens(makeTokenPair())
     const permissionStore = usePermissionStore()
     permissionStore.apply(buildContract())
     useAppStore().showNotice('info', 'x')
+    useOrganizationStore().tree = [treeNode('1')]
+    useRolesStore().rows = [role('9001')]
+    useResourcesStore().rows = [resource('8001')]
+    useParamsStore().rows = [param('1')]
 
     resetAllSessionState()
 
     expect(authStore.isAuthenticated).toBe(false)
     expect(permissionStore.isLoaded).toBe(false)
     expect(useAppStore().notice).toBeNull()
+  })
+
+  it('业务域缓存必须随会话清掉，否则换账号会看到上一个账号的部门树', () => {
+    // 这不是"显示旧数据"的洁癖，是**越权信息泄露**：部门树是数据范围的骨架，
+    // 超管拿到的树比部门管理员宽。缓存若跨账号留存， narrower-scope 的用户
+    // 就能看到 broader-scope 用户可见、而自己无权看到的部门清单，
+    // 而且全程不会有任何报错。
+    useOrganizationStore().tree = [treeNode('1')]
+    useRolesStore().rows = [role('9001')]
+    useResourcesStore().rows = [resource('8001')]
+    useParamsStore().rows = [param('1')]
+
+    resetAllSessionState()
+
+    const departments = useOrganizationStore()
+    expect(departments.tree).toEqual([])
+    expect(departments.loaded).toBe(false)
+    // `flat` / `options` 必须随 tree 一起变成空，否则下拉框会继续渲染旧数据。
+    expect(departments.flat).toEqual([])
+    expect(departments.options).toEqual([])
+
+    expect(useRolesStore().rows).toEqual([])
+    expect(useResourcesStore().rows).toEqual([])
+    expect(useParamsStore().rows).toEqual([])
   })
 })
 

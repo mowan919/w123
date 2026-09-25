@@ -62,9 +62,13 @@
 | 登出只清了一半 | 登出后旧账号的动态路由仍在 | `authStore.clearSession()` 只清认证，权限与路由表留在内存里 | 新增 `setSessionCleanupHook` + 带防重入的 `resetAllSessionState()` |
 | 三层菜单塌成平级 | 侧边栏层级全乱 | `resolve(parent)` 返回的是"父的挂载点"而非"父节点本身"，父是根时子节点跟着升根 | `permission.ts` 挂点落到**父节点**上；自指则退化为根 |
 | 菜单点进去没反应 | path 解出来是 `''` | 菜单夹具 `page_ids` 硬编码 `'1000'`，页面夹具补上 `id` 后静默失配 | 新增 `pageIdOf(code)` 反查，不再写死 id |
+| 字段权限的 UI 门控整体不存在 | 用户列表的手机号 / 邮箱栏**永远可编辑**，无 `console.error`、无测试失败 | `UserListView` 模板写了 `<PermissionField>`，却漏了 import；`<script setup>` 没有 `components` 选项可补，漏掉就退化成未知原生元素、静默渲染为空 | 补上 import；新增 `tests/components/resolution.spec.ts` **静态扫描全部 `*.vue` 的模板标签与 import 集合**，把整类缺陷钉死 |
 
-后两条都属于**夹具自身失真**而不是实现问题，但正因为它们只在"菜单能点进去"
-这种端到端语义上才会暴露，才必须写在集成层而非只靠类型检查。
+后三条都属于**夹具自身失真 / 静默失效**而不是实现问题，但正因为它们只在
+"菜单能点进去"、"字段栏能不能编辑"这种端到端语义上才会暴露，才必须写在集成层
+而非只靠类型检查。第三条尤其值得记住：**它让一条已冻结的权限防线（字段级
+`READ_ONLY` / `HIDDEN`）在 UI 上完全失效，而全套件当时 124 个用例一个都没红。**
+静态扫描的引入即源于此。
 
 ---
 
@@ -303,8 +307,20 @@ Playwright 未安装任何浏览器（`~/.cache/ms-playwright` 不存在），
 
 | # | 遗留 | 说明 |
 |---|---|---|
-| 1 | 业务 store 覆盖不全 | 仅 `stores/dictionaries.ts` 抽出 store，其余页面直接在组件里调 endpoint。功能不受影响（无业务逻辑在组件里），属可维护性债务 |
+| ~~1~~ | ~~业务 store 覆盖不全~~ | ✅ **已关闭（2026-09-25 批次）**。原状：仅 `stores/dictionaries.ts` 抽出 store，其余页面在组件里各调一次 endpoint、各写一份压平 / 分页逻辑。现补齐 **4 个业务 store** —— `organization`（部门树，**三个页面共享的唯一来源**）、`roles`（分页 + 选择器两份）、`resources`（分页 + 分组清单两份）、`params`。5 个视图改为消费 store，各自的本地 `load()` / `collectDepartments()` 等重复实现全部删除。验收：`tests/stores/organization|roles|resources|params.spec.ts`（41 例）+ `tests/views/businessStores.spec.ts`（7 例冒烟）+ `tests/integration/session.spec.ts` 新增「业务域缓存必须随会话清掉」一条（该条已做变异验证：撤掉 `reset()` 后确实变红）。全套件 **14 files / 175 tests 全绿**。 |
 | 2 | 浏览器级 E2E | 见 §5.1，环境阻塞 |
+
+### §8-1 关闭说明（不只是"把代码挪进 store"）
+
+这次补 store 顺带修掉的两类问题，值得单独记一笔，因为它们都不是"重构"会自动带来的：
+
+1. **会话切换时的越权信息泄露**：部门树是数据范围的骨架，`resetAllSessionState()`
+   原先只清动态路由 / 认证 / 权限 / 全局提示四个 store，业务域缓存**没清**。
+   超管的树一定比部门管理员宽，缓存留到换账号之后就是实打实的越权信息泄露，
+   且全程不报任何错。四个 `*.reset()` 已补进 `router/index.ts` 的清理链。
+2. **清单静默截断**：角色选择器 / 授权候选资源各取 100 条封顶，取满时页面
+   不会提示 —— 管理员会以为"这个角色存在，但下拉框里就是没有"。
+   现在显式暴露 `pickerMightBeTruncated` / `grantableMightBeTruncated`。
 
 ---
 
