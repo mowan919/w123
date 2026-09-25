@@ -5,14 +5,17 @@
  * 布局只做**外壳**。权限判断不在这里 —— 菜单来自后端权限结果
  * （FE-03 §7），越权访问由路由守卫拦到 /403。
  */
+import { useAppStore } from '@/stores/app'
 import AppSidebar from './AppSidebar.vue'
 import AppHeader from './AppHeader.vue'
 import AppBreadcrumb from './AppBreadcrumb.vue'
 import NotificationHost from '@/components/feedback/NotificationHost.vue'
+
+const appStore = useAppStore()
 </script>
 
 <template>
-  <div class="app-layout" :class="{ 'is-collapsed': false }">
+  <div class="app-layout" :class="{ 'is-collapsed': appStore.sidebarCollapsed }">
     <AppSidebar />
     <div class="app-layout__main">
       <AppHeader />

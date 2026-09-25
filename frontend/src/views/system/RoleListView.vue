@@ -229,40 +229,10 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
 .cell {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.editor {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-end;
-  margin-top: 12px;
-  padding: 14px;
-  background: var(--vctn-surface);
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-}
-
-.editor__title {
-  width: 100%;
-  font-size: 15px;
-}
-
-.editor__actions {
-  display: flex;
-  gap: 8px;
 }
 </style>

@@ -121,7 +121,7 @@ onMounted(() => {
       @change="onPageChange"
     />
 
-    <div v-if="detail !== null" class="drawer">
+    <div v-if="detail !== null" class="drawer drawer--wide">
       <div class="drawer__panel">
         <h3 class="drawer__title">
           链路明细
@@ -160,73 +160,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.alert {
-  padding: 10px 14px;
-  border-radius: var(--vctn-radius);
-  margin-bottom: 12px;
-  background: #fdeceb;
-  color: var(--vctn-danger);
-}
-
-.drawer {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  z-index: 120;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.drawer__panel {
-  width: min(760px, 100vw);
-  background: var(--vctn-surface);
-  padding: 18px;
-  overflow: auto;
-  height: 100%;
-}
-
-.drawer__title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 16px;
-  margin-bottom: 12px;
-}
-
-.mini-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.mini-table th,
-.mini-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--vctn-border);
-  text-align: left;
-  font-weight: 500;
-  vertical-align: top;
-}
-
-.nowrap {
-  white-space: nowrap;
-}
-
-.json {
-  margin: 0;
-  background: #f7f8fa;
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-  padding: 8px;
-  font-size: 11px;
-  max-height: 180px;
-  overflow: auto;
-}
-
-.link {
-  border: none;
-  background: none;
-  color: var(--vctn-primary);
-  cursor: pointer;
-  font: inherit;
+/* 链路详情列多、JSON 长，抽屉要比默认宽；宽度走 `--drawer-width` 局部变量，
+   不要再重写整个 `.drawer__panel`（那会让 base.css 里的统一外观失效一半）。 */
+.drawer--wide {
+  --drawer-width: 760px;
 }
 </style>

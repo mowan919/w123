@@ -7,6 +7,7 @@
  * "第几页从 0 开始""每页多少条"的本地概念，避免与后端错位一格。
  */
 import { computed } from 'vue'
+import { NButton, NSelect } from 'naive-ui'
 
 const props = withDefaults(
   defineProps<{
@@ -33,9 +34,17 @@ function go(page: number): void {
   emit('change', { pageNum: target, pageSize: props.pageSize })
 }
 
-function changeSize(event: Event): void {
-  if (props.disabled) return
-  const size = Number((event.target as HTMLSelectElement).value)
+/** 每页条数下拉的备选项；顺序按使用频率排，不是按数字大小。 */
+const sizeOptions = computed(() =>
+  props.pageSizes.map((size) => ({ label: `${size} 条/页`, value: size })),
+)
+
+/**
+ * NSelect 的 `update:value` 与原生 `<select>` 的 `change` 语义不同：
+ * 它只在值**真的变了**时触发。这里保留首页数归 1 的行为。
+ */
+function changeSize(size: number | null): void {
+  if (props.disabled || size === null || size === props.pageSize) return
   emit('change', { pageNum: 1, pageSize: size })
 }
 
@@ -64,33 +73,45 @@ const rangeText = computed(() => {
 <template>
   <div class="pagination" :class="{ 'is-disabled': props.disabled }">
     <span class="pagination__range">{{ rangeText }}</span>
-    <select
+    <NSelect
       class="pagination__size"
       :value="props.pageSize"
+      :options="sizeOptions"
       :disabled="props.disabled"
+      size="small"
       aria-label="每页条数"
-      @change="changeSize"
+      @update:value="changeSize"
+    />
+    <NButton
+      size="small"
+      secondary
+      :disabled="props.disabled || props.pageNum <= 1"
+      @click="go(props.pageNum - 1)"
     >
-      <option v-for="size in props.pageSizes" :key="size" :value="size">{{ size }} 条/页</option>
-    </select>
-    <button class="pagination__btn" :disabled="props.disabled || props.pageNum <= 1" @click="go(props.pageNum - 1)">
       上一页
-    </button>
+    </NButton>
     <template v-for="(item, index) in pages" :key="`${item}-${index}`">
       <span v-if="item === -1" class="pagination__gap">…</span>
-      <button
+      <NButton
         v-else
+        size="small"
         class="pagination__btn pagination__btn--page"
-        :class="{ 'is-active': item === props.pageNum }"
+        :type="item === props.pageNum ? 'primary' : 'default'"
+        :secondary="item !== props.pageNum"
         :aria-current="item === props.pageNum ? 'page' : undefined"
         :disabled="props.disabled"
         @click="go(item)"
       >
         {{ item }}
-      </button>
+      </NButton>
     </template>
-    <button class="pagination__btn" :disabled="props.disabled || props.pageNum >= pageCount" @click="go(props.pageNum + 1)">
+    <NButton
+      size="small"
+      secondary
+      :disabled="props.disabled || props.pageNum >= pageCount"
+      @click="go(props.pageNum + 1)"
+    >
       下一页
-    </button>
+    </NButton>
   </div>
 </template>

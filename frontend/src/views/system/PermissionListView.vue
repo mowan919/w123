@@ -450,25 +450,6 @@ void boot()
   margin-bottom: 12px;
 }
 
-.panel {
-  padding: 14px;
-  margin-bottom: 12px;
-  background: var(--vctn-surface);
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-}
-
-.panel__title {
-  font-size: 15px;
-  margin-bottom: 10px;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-}
-
 .group {
   border: 1px solid var(--vctn-border);
   border-radius: var(--vctn-radius);
@@ -483,27 +464,6 @@ void boot()
   font-weight: 600;
 }
 
-.check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-  cursor: pointer;
-}
-
-.hint {
-  margin: 10px 0 0;
-  color: var(--vctn-text-weak);
-  font-size: 12px;
-}
-
-.radios {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-bottom: 10px;
-}
-
 .depts {
   max-height: 240px;
   overflow: auto;
@@ -511,27 +471,5 @@ void boot()
   border-radius: var(--vctn-radius);
   padding: 6px 10px;
   margin-bottom: 10px;
-}
-
-.mini-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 10px;
-}
-
-.mini-table th,
-.mini-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--vctn-border);
-  text-align: left;
-  font-weight: 500;
-}
-
-.mini-table select {
-  padding: 4px 8px;
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-  background: var(--vctn-surface);
-  font: inherit;
 }
 </style>

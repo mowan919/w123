@@ -5,6 +5,11 @@ import { router, installHttpClient } from './router'
 import { useAuthStore } from './stores/auth'
 import { usePermissionStore } from './stores/permission'
 import './styles/base.css'
+import { applyCssTokens } from './styles/theme'
+
+// token 必须在 mount 之前落到 DOM 上：它是**内联到 `:root` 的**，优先级高于
+// 任何 CSS 选择器，因此"TS 是唯一色值来源"这条在运行时也成立。
+applyCssTokens()
 
 const app = createApp(App)
 app.use(createPinia())

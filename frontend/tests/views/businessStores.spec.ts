@@ -193,11 +193,15 @@ describe('部门管理页', () => {
     expect(disable.length).toBeGreaterThan(0)
     await disable[0]?.trigger('click')
 
-    const dialog = wrapper.find('[role="dialog"]')
-    expect(dialog.exists()).toBe(true)
+    const dialog = document.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
     // 确认框的"确认"按钮：点它就是走禁用流程（危险操作必须二次确认）。
-    const confirmButton = dialog.findAll('button').at(-1)
-    await confirmButton?.trigger('click')
+    //
+    // ⚠️ 弹窗不在 wrapper 里：naive 的 Modal 会传送到 `body`（避免被父级
+    // 的 transform / overflow 裁切），所以这里必须查真实文档，而不是
+    // `wrapper.find`。`role="dialog"` 仍在，无障碍语义没有退化。
+    const buttons = Array.from(dialog?.querySelectorAll('button') ?? [])
+    buttons.at(-1)?.click()
     await flushPromises()
 
     expect(org.disableDepartment).toHaveBeenCalledTimes(1)

@@ -10,6 +10,8 @@
  * 用户以为筛选没清掉，其实是面板藏起来了。
  */
 import { ref } from 'vue'
+import { NButton } from 'naive-ui'
+import { ChevronDownOutline, ChevronUpOutline, RefreshOutline, SearchOutline } from '@vicons/ionicons5'
 
 const props = withDefaults(defineProps<{ collapsible?: boolean }>(), { collapsible: true })
 
@@ -31,11 +33,24 @@ function toggle(): void {
       <slot />
     </div>
     <div class="search-form__actions">
-      <button class="btn btn--primary" type="button" @click="emit('search')">查询</button>
-      <button class="btn" type="button" @click="emit('reset')">重置</button>
-      <button v-if="props.collapsible" class="btn btn--text" type="button" @click="toggle">
+      <NButton type="primary" @click="emit('search')">
+        <template #icon>
+          <SearchOutline />
+        </template>
+        查询
+      </NButton>
+      <NButton @click="emit('reset')">
+        <template #icon>
+          <RefreshOutline />
+        </template>
+        重置
+      </NButton>
+      <NButton v-if="props.collapsible" text @click="toggle">
         {{ collapsed ? '展开' : '收起' }}
-      </button>
+        <template #icon>
+          <component :is="collapsed ? ChevronDownOutline : ChevronUpOutline" />
+        </template>
+      </NButton>
     </div>
   </section>
 </template>

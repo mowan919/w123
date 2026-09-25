@@ -1417,3 +1417,72 @@ Phase 8 / Phase 10 的验收也是按这个路径判定的。
 | 台账指向不存在的端点 | `GET /admin/departments` 404（真实只有 `/departments/tree`） | API 路径口径写错，漏算 `settings.api_v1_prefix` 已含 `/api/v1/admin` |
 | 幂等用例空过 | 第二遍断言"0 新建"恒真 | `autoflush=False` 下计数查询不触发 flush，重复写入从未落库 |
 | 授权清单漂移风险 | 两个脚本各写一份清单 | 已拆为 `seed_data.py` 唯一来源 |
+
+## 20. 前端 UI 组件库 —— **已裁定：naive-ui**
+
+`docs/frontend-spec/FE-00-前端总体需求.md §6` 原把「UI 组件库」列为未冻结项，
+Agent 不得擅自决定。**2026-09-26 由用户显式要求引入** —— 该未冻结项就此关闭。
+
+### 20.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `DD-22 UI 组件库` | 选定 naive-ui 作为交互件底座，CSS 框架仍不引入 | **已冻结**（用户裁定） |
+| `OPERATION-20-01` | 全站色值只在 `frontend/src/styles/theme.ts` 定义一次 | 操作约定，**必须遵守** |
+
+### 20.2 选型理由
+
+候选：Element Plus / Ant Design Vue / Arco / naive-ui。
+
+选 **naive-ui**：
+
+1. **完全用 TypeScript 编写**，`themeOverrides` 有完整类型，选本项目
+   （`vue-tsc` 严格模式）最看重这一点；
+2. **主题重写作用在 JS 侧**，能与本项目的 CSS 变量体系对齐成一套，
+   而不是"组件库一套色、手写 CSS 另一套色"；
+3. 自带 `zhCN` 语言包与 `dateZhCN`，不需要另接 i18n；
+4. 组件尺寸（`size="small|medium|large"`）与"后台密集型界面"契合。
+
+**仍然不引入 CSS 框架**（Tailwind 等）：布局与容器类样式保持手写，
+以便精确控制观感，也避免为第三方类名再写一遍设计 token。
+
+### 20.3 OPERATION-20-01 —— token 唯一来源
+
+`applyCssTokens()` 把这批值**内联写到 `:root`**，`base.css` 里不再有
+`:root` 色值块。内联样式优先级高于任何 CSS 选择器，因此"TS 是唯一真值"
+在运行时也成立。
+
+驱动这一次的具体事故不在 CSS，而在 19.2 的种子清单：两份同源内容各写各的，
+改一处另一处静默失效。色值同属"看起来无害但实际会漂"的那一类。
+
+### 20.4 引入组件库时必须同时改的三件事
+
+1. **测试若按 DOM 位置断言，必须重新核对**：
+   naive 的 `NModal` 会 teleport 到 `body`，`wrapper.find('[role="dialog"]')`
+   会落空 —— 但 `role="dialog"` 语义**没有丢**，所以要改的是查询位置，
+   不是放弃这条断言。
+2. **teleport 容器必须清理**：Modal / Message / Drawer 的容器不会随
+   `wrapper.unmount()` 消失，会污染后续用例。已在 `tests/setup.ts` 的
+   `afterEach` 里统一移除。
+3. **别给已经换成组件的元素继续写外观**：曾经给 `.pagination__btn`
+   写了边框和背景，换 `NButton` 后两层样式互相抢优先级，
+   表现是"hover 只有一半生效"。这类类现在只保留布局职责。
+
+### 20.5 本批次实测记录
+
+- `npm run typecheck` / `lint` / `vitest`（175 例）/ `vite build` 全绿；
+  产物 `index-*.js` 326.84 kB（gzip 108.10 kB）。
+- 变异验证：撤掉确认弹窗的 `emit('confirm')` →
+  「写操作之后树被重拉」用例确实变红（`expected spy to be called 1 times, but got 0`）。
+- 视图层重复样式**已清理**：`mini-table` 10 份、`editor` 7 份、`toolbar` 6 份
+  `alert` 6 份等 scoped 定义已删除，统一由 `base.css` 的共享类承担；
+  system 视图的 scoped 样式从约 618 行降到 49 行（只剩各自独有类：
+  `picker` / `group` / `depts` / `cell` / `cell-actions`）。
+  差异靠**变量与修饰符**表达而不是靠重抄一遍：链路详情抽屉原本重写整个
+  `.drawer__panel` 只为改宽 760px，现在只设 `--drawer-width`。
+- 清理时踩到两件事，记在这里防再犯：
+  1. 脚本化删除必须**按选择器清单白名单**做。这次误把仍在使用的 `.depts`
+     当成全局类删了（模板第 402 行还在用）—— **CSS 删错不会让测试变红**，
+     只有回头核对剩余 style 段才能发现；
+  2. 跨行合并选择器（`.tree,\n.sub-panel {…}`）用简单的按行解析会漏判，
+     第二轮才删干净。删完要逐个文件看余下的 style 段，不能只看脚本日志。

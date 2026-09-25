@@ -23,4 +23,17 @@ beforeEach(() => {
 afterEach(() => {
   window.localStorage.clear()
   vi.unstubAllGlobals()
+
+  // 清理被传送到 body 上的组件容器（naive 的 Modal / Message / Drawer）。
+  // teleport 出来的节点**不会**随 wrapper.unmount() 消失，留着就会在下一个
+  // 用例里继续响应 "[role=dialog]" 这类文档级查询 —— 表现为"单独跑绿、
+  // 全套跑就偶尔多出一个弹窗"，是最难复现的一类污染。
+  for (const selector of [
+    '.n-modal-container',
+    '.n-message-container',
+    '.n-notification-container',
+    '.n-drawer-container',
+  ]) {
+    document.body.querySelectorAll(selector).forEach((node) => node.remove())
+  }
 })

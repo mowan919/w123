@@ -1,22 +1,17 @@
-/* 基础样式。未冻结的 CSS 方案：手写原生 CSS + CSS 变量，不引入 UI 组件库
-   （FE-00 §6 把 UI 组件库列为未冻结项，Agent 不得擅自决定）。
-   若日后引入组件库，只需替换 components/ 下对应实现，页面层不受影响。 */
+/* 基础样式与共享 UI 原子。
+ *
+ * 色值来源：**不在这里**。
+ * `:root` 上的 `--vctn-*` 由 `src/styles/theme.ts` 的 `applyCssTokens()`
+ * 在运行时写入（inline style），那里是全站唯一的 token 定义点。
+ * 这里若再写一份 `:root`，就会出现"改了 TS 颜色不生效"的幽灵问题。
+ *
+ * 为什么不用 UI 组件库：FE-00 §6 原把 UI 组件库列为未冻结项。
+ * 该决策已由用户在 2026-09-26 裁定 —— 选用 naive-ui 作为交互件底座
+ * （见 `docs/DESIGN-DECISIONS.md §20`），本项目仍**不引入 CSS 框架**，
+ * 布局与容器类样式保持手写，以便精确控制观感。
+ */
 
-:root {
-  --vctn-bg: #f5f6f8;
-  --vctn-surface: #ffffff;
-  --vctn-border: #e3e6ea;
-  --vctn-text: #1f2329;
-  --vctn-text-weak: #7a828e;
-  --vctn-primary: #2f6feb;
-  --vctn-primary-weak: #eaf1ff;
-  --vctn-danger: #d93026;
-  --vctn-warn: #d4860a;
-  --vctn-success: #16a34a;
-  --vctn-sidebar-bg: #1f2430;
-  --vctn-sidebar-text: #c9cfdb;
-  --vctn-radius: 6px;
-}
+/* ---------------------------------------------------------------- 重置 */
 
 * {
   box-sizing: border-box;
@@ -28,9 +23,10 @@ body {
   padding: 0;
   background: var(--vctn-bg);
   color: var(--vctn-text);
-  font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--vctn-font-family);
   font-size: 14px;
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -45,11 +41,79 @@ h3 {
   font-weight: 600;
 }
 
+/* 滚动条：窄条、无边框、hover 才显形。Windows 下默认滚动条会把卡片
+   右侧挤出一道灰边，视觉上很脏。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--vctn-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--vctn-border);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--vctn-border-hover);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 裸控件现代化：视图里仍有大量原生 input / select，它们不该因为
+   没换成组件就显得像上个十年。这里统一给到与 naive 一致的观感。 */
+input[type='text']:not([class*='n-']),
+input[type='password']:not([class*='n-']),
+input[type='number']:not([class*='n-']),
+input[type='search']:not([class*='n-']),
+input[type='email']:not([class*='n-']),
+select:not([class*='n-']),
+textarea:not([class*='n-']) {
+  padding: 6px 10px;
+  border: 1px solid var(--vctn-border);
+  border-radius: var(--vctn-radius);
+  background: var(--vctn-surface);
+  color: inherit;
+  font: inherit;
+  transition:
+    border-color var(--vctn-motion),
+    box-shadow var(--vctn-motion);
+}
+
+input:not([class*='n-']):hover,
+select:not([class*='n-']):hover,
+textarea:not([class*='n-']):hover {
+  border-color: var(--vctn-border-hover);
+}
+
+input:not([class*='n-']):focus,
+select:not([class*='n-']):focus,
+textarea:not([class*='n-']):focus {
+  outline: none;
+  border-color: var(--vctn-primary);
+  box-shadow: 0 0 0 3px rgba(59, 110, 246, 0.14);
+}
+
+input[type='checkbox']:not([class*='n-']),
+input[type='radio']:not([class*='n-']) {
+  accent-color: var(--vctn-primary);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
 /* ---------------------------------------------------------------- 按钮 */
 
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 6px 14px;
   border: 1px solid var(--vctn-border);
@@ -57,13 +121,22 @@ h3 {
   background: var(--vctn-surface);
   color: var(--vctn-text);
   font: inherit;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition:
+    background var(--vctn-motion),
+    border-color var(--vctn-motion),
+    color var(--vctn-motion),
+    box-shadow var(--vctn-motion);
 }
 
 .btn:hover:not(.is-disabled) {
   border-color: var(--vctn-primary);
   color: var(--vctn-primary);
+}
+
+.btn:active:not(.is-disabled) {
+  transform: translateY(1px);
 }
 
 .btn:focus-visible {
@@ -75,10 +148,12 @@ h3 {
   background: var(--vctn-primary);
   border-color: var(--vctn-primary);
   color: #fff;
+  box-shadow: var(--vctn-shadow-sm);
 }
 
 .btn--primary:hover:not(.is-disabled) {
-  background: #2a62d0;
+  background: var(--vctn-primary-hover);
+  border-color: var(--vctn-primary-hover);
   color: #fff;
 }
 
@@ -89,7 +164,7 @@ h3 {
 }
 
 .btn--danger:hover:not(.is-disabled) {
-  background: #bd271e;
+  background: #cd3b40;
   color: #fff;
 }
 
@@ -99,10 +174,46 @@ h3 {
   color: var(--vctn-text-weak);
 }
 
+.btn--text:hover:not(.is-disabled) {
+  background: var(--vctn-fill-subtle);
+  border-color: transparent;
+}
+
 .btn.is-disabled,
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------- 卡片 */
+
+.card {
+  padding: 16px;
+  background: var(--vctn-surface);
+  border: 1px solid var(--vctn-border);
+  border-radius: var(--vctn-radius);
+  box-shadow: var(--vctn-shadow-sm);
+}
+
+.card + .card {
+  margin-top: 12px;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: var(--vctn-text-weak);
+  font-size: 12px;
+}
+
+/* 行内编辑区里的说明文字要占满一行，否则会挤在第一个字段旁边。
+   （这条原本只在“系统参数”页的 scoped 里有，抽到这里后所有 editor 一致。） */
+.editor .hint {
+  width: 100%;
+  margin: 0;
+}
+
+.nowrap {
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------- 表格 */
@@ -111,31 +222,47 @@ h3 {
   background: var(--vctn-surface);
   border: 1px solid var(--vctn-border);
   border-radius: var(--vctn-radius);
-  overflow: hidden;
+  box-shadow: var(--vctn-shadow-sm);
+  /* 横向滚动必须落在**容器**上：放在 table 上会让圆角外的溢出部分
+     露出直角，且 sticky 表头失效。 */
+  overflow-x: auto;
 }
 
 .data-table__table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 .data-table__table th,
 .data-table__table td {
-  padding: 10px 14px;
+  padding: 11px 14px;
   border-bottom: 1px solid var(--vctn-border);
   text-align: left;
   vertical-align: middle;
 }
 
 .data-table__table th {
-  background: #fafbfc;
+  /* 长列表滚动时表头不跑 —— 这是窄屏 + 多列场景唯一还能看清列名的方式。 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--vctn-fill-muted);
   color: var(--vctn-text-weak);
   font-weight: 500;
   white-space: nowrap;
 }
 
+.data-table__table tbody tr {
+  transition: background var(--vctn-motion);
+}
+
 .data-table__table tbody tr:hover {
-  background: #fafbfc;
+  background: var(--vctn-fill-subtle);
+}
+
+.data-table__table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .data-table__table td.is-right,
@@ -155,7 +282,11 @@ h3 {
 }
 
 .data-table__state {
-  padding: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 20px;
   text-align: center;
   color: var(--vctn-text-weak);
 }
@@ -164,12 +295,57 @@ h3 {
   color: var(--vctn-danger);
 }
 
+/* NSpin 需要一个非空默认插槽才有高度。 */
+.data-table__state-box {
+  display: block;
+  height: 96px;
+}
+
+/* 表格内的错误条贴着容器边缘，圆角由外层容器给出。 */
+.data-table__state-alert {
+  margin: 0;
+  border-radius: 0;
+}
+
+/* ---------------------------------------------------------------- 紧凑表格
+   复制自 10 个视图里各写一遍的 `.mini-table`：抽屉 / 面板里的次级表格，
+   比主表格更轻，不抢主内容的视觉重心。 */
+
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+
+.mini-table th,
+.mini-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vctn-border);
+  text-align: left;
+  font-weight: 500;
+  vertical-align: top;
+}
+
+.mini-table th {
+  white-space: nowrap;
+  color: var(--vctn-text-weak);
+}
+
+.mini-table select {
+  padding: 4px 8px;
+  border: 1px solid var(--vctn-border);
+  border-radius: var(--vctn-radius);
+  background: var(--vctn-surface);
+  font: inherit;
+}
+
 /* ---------------------------------------------------------------- 状态 */
 
 .state {
   background: var(--vctn-surface);
   border: 1px solid var(--vctn-border);
   border-radius: var(--vctn-radius);
+  box-shadow: var(--vctn-shadow-sm);
   padding: 40px;
 }
 
@@ -223,48 +399,22 @@ h3 {
   color: var(--vctn-text-weak);
 }
 
-.pagination__btn {
-  min-width: 32px;
-  padding: 5px 10px;
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-  background: var(--vctn-surface);
-  cursor: pointer;
-  font: inherit;
-}
-
-.pagination__btn:hover:not(:disabled) {
-  border-color: var(--vctn-primary);
-}
-
-.pagination__btn.is-active {
-  background: var(--vctn-primary);
-  border-color: var(--vctn-primary);
-  color: #fff;
-}
-
-.pagination__btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.pagination__size {
-  padding: 5px 8px;
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-  background: var(--vctn-surface);
-  font: inherit;
-}
-
 .pagination__gap {
   color: var(--vctn-text-weak);
 }
 
-/* ---------------------------------------------------------------- 布局 */
+/* ⚠️ 这里**故意不给** `.pagination__btn` / `.pagination__size` 任何外观：
+   分页已经换用 naive 的 Button / Select，再写一层边框和背景只会跟组件库的
+   内联样式抢优先级（表现为 hover 态一半生效一半不生效）。这里只管布局。 */
+.pagination__size {
+  min-width: 110px;
+}
+
+/* ---------------------------------------------------------------- 侧边栏 */
 
 .sidebar {
-  width: 220px;
-  flex: 0 0 220px;
+  width: 232px;
+  flex: 0 0 232px;
   background: var(--vctn-sidebar-bg);
   color: var(--vctn-sidebar-text);
   display: flex;
@@ -275,31 +425,65 @@ h3 {
 .sidebar__brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 10px;
+  padding: 18px 16px;
+  border-bottom: 1px solid var(--vctn-sidebar-border);
 }
 
 .sidebar__logo {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background: var(--vctn-primary);
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--vctn-primary) 0%, var(--vctn-primary-hover) 100%);
   color: #fff;
   font-weight: 700;
+  font-size: 15px;
+  box-shadow: 0 4px 12px rgba(59, 110, 246, 0.35);
 }
 
 .sidebar__name {
   font-weight: 600;
-  color: #fff;
+  color: var(--vctn-sidebar-text-active);
+  letter-spacing: 0.3px;
 }
 
 .sidebar__nav {
   padding: 12px 0;
   overflow-y: auto;
+}
+
+/* 手动折叠（`AppHeader` 里的开关）：与窄屏自动收起共用同一套收窄尺寸，
+   差别只是这里还会保留顶栏的行数。写成同一份，避免两处各自维护宽度。 */
+.app-layout.is-collapsed .sidebar {
+  width: 64px;
+  flex: 0 0 64px;
+}
+
+.app-layout.is-collapsed .sidebar__name,
+.app-layout.is-collapsed .sidebar__group-title span:not(.sidebar__icon),
+.app-layout.is-collapsed .sidebar__item span:not(.sidebar__icon) {
+  display: none;
+}
+
+.app-layout.is-collapsed .sidebar__item,
+.app-layout.is-collapsed .sidebar__group-title {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.app-layout.is-collapsed .sidebar__brand {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sidebar,
+.app-layout.is-collapsed .sidebar {
+  transition: width var(--vctn-motion), flex-basis var(--vctn-motion);
 }
 
 .sidebar__item,
@@ -309,16 +493,22 @@ h3 {
   gap: 8px;
   padding: 9px 16px;
   color: inherit;
+  border-left: 3px solid transparent;
+  transition:
+    background var(--vctn-motion),
+    color var(--vctn-motion);
 }
 
 .sidebar__item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  background: var(--vctn-sidebar-bg-sub);
+  color: var(--vctn-sidebar-text-active);
 }
 
 .sidebar__item.is-active {
-  background: var(--vctn-primary);
-  color: #fff;
+  background: var(--vctn-sidebar-bg-sub);
+  border-left-color: var(--vctn-primary);
+  color: var(--vctn-sidebar-text-active);
+  font-weight: 500;
 }
 
 .sidebar__item.is-static {
@@ -327,14 +517,15 @@ h3 {
 }
 
 .sidebar__item--child {
-  padding-left: 32px;
+  padding-left: 34px;
   font-size: 13px;
 }
 
 .sidebar__group-title {
-  color: #fff;
+  color: var(--vctn-sidebar-text-active);
   font-weight: 600;
   font-size: 13px;
+  opacity: 0.75;
 }
 
 .sidebar__icon {
@@ -348,14 +539,21 @@ h3 {
   opacity: 0.6;
 }
 
+/* ---------------------------------------------------------------- 顶栏 / 面包屑 */
+
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 12px 24px;
-  background: var(--vctn-surface);
+  background: rgba(255, 255, 255, 0.85);
+  /* 顶栏压在内容上方一层：滚动时有轻微的分离感，但不像硬阴影那么重。 */
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--vctn-border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .app-header__name {
@@ -369,18 +567,18 @@ h3 {
 }
 
 .app-header__badge {
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 2px 10px;
+  border-radius: 999px;
   font-size: 12px;
 }
 
 .app-header__badge--warn {
-  background: #fdf3e2;
+  background: var(--vctn-warn-weak);
   color: var(--vctn-warn);
 }
 
 .breadcrumb {
-  padding: 10px 24px 0;
+  padding: 12px 24px 0;
   color: var(--vctn-text-weak);
   font-size: 13px;
 }
@@ -389,20 +587,20 @@ h3 {
   margin: 0 6px;
 }
 
-.permission-field.is-readonly :deep(input),
-.permission-field.is-readonly :deep(select),
-.permission-field.is-readonly :deep(textarea) {
-  background: #f7f8fa;
-}
-
 /* ---------------------------------------------------------------- 页面容器 */
 
 .page-container__head {
-  margin-bottom: 12px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
 .page-container__title {
-  font-size: 18px;
+  font-size: 20px;
+  letter-spacing: 0.2px;
 }
 
 .page-container__desc {
@@ -410,7 +608,7 @@ h3 {
   color: var(--vctn-text-weak);
 }
 
-/* ---------------------------------------------------------------- 搜索 */
+/* ---------------------------------------------------------------- 搜索表单 */
 
 .search-form {
   display: flex;
@@ -422,6 +620,7 @@ h3 {
   background: var(--vctn-surface);
   border: 1px solid var(--vctn-border);
   border-radius: var(--vctn-radius);
+  box-shadow: var(--vctn-shadow-sm);
 }
 
 .search-form__body {
@@ -466,6 +665,326 @@ h3 {
   outline-offset: 1px;
 }
 
+/* ---------------------------------------------------------------- 工具栏 / 面板 / 编辑器
+   以下六个原本在最多 10 个视图里各写一遍，观感却互相打架
+   （`.tree__row` 的 padding 一处 6px 一处 8px、`.link` 一处有 padding 一处没有）。
+   统一到这里后，差异由修饰符表达，而不是靠"哪个页面抄得比较新"。 */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.panel,
+.sub-panel,
+.editor,
+.tree {
+  background: var(--vctn-surface);
+  border: 1px solid var(--vctn-border);
+  border-radius: var(--vctn-radius);
+  box-shadow: var(--vctn-shadow-sm);
+}
+
+.panel {
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.panel__title,
+.sub-panel__title,
+.editor__title {
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+
+.panel__title,
+.sub-panel__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sub-panel,
+.editor {
+  margin-top: 12px;
+  padding: 14px;
+}
+
+/* 行内编辑区：横向铺开、窄屏自动折行。 */
+.editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.editor__title {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor__actions,
+.tree__actions,
+.row-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tree__actions,
+.row-actions {
+  margin-left: auto;
+  gap: 4px;
+}
+
+/* ---------------------------------------------------------------- 树 */
+
+.tree {
+  padding: 6px 0;
+  overflow: hidden;
+}
+
+.tree__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--vctn-border);
+  transition: background var(--vctn-motion);
+}
+
+.tree__row:hover {
+  background: var(--vctn-fill-subtle);
+}
+
+.tree__row:last-child {
+  border-bottom: none;
+}
+
+.tree__twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--vctn-border);
+  border-radius: var(--vctn-radius-sm);
+  background: var(--vctn-surface);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  transition:
+    border-color var(--vctn-motion),
+    color var(--vctn-motion);
+}
+
+.tree__twisty:hover:not(.tree__twisty--leaf) {
+  border-color: var(--vctn-primary);
+  color: var(--vctn-primary);
+}
+
+.tree__twisty--leaf {
+  border-color: transparent;
+  background: none;
+  cursor: default;
+}
+
+.tree__name {
+  font-weight: 500;
+}
+
+.tree__code {
+  color: var(--vctn-text-weak);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- 选择组 */
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+  border-radius: var(--vctn-radius-sm);
+  transition: color var(--vctn-motion);
+}
+
+.check:hover {
+  color: var(--vctn-primary);
+}
+
+.radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+/* ---------------------------------------------------------------- 提示条 */
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--vctn-radius);
+  margin-bottom: 12px;
+  border: 1px solid transparent;
+  font-size: 13px;
+}
+
+/* 默认（无修饰符）是**中性**提示：曾经 `.alert` 本身就带红色，
+   结果"这是一条普通说明"和"出错了"看起来一模一样。 */
+.alert {
+  background: var(--vctn-fill-subtle);
+  color: var(--vctn-text-weak);
+}
+
+.alert--error {
+  background: var(--vctn-danger-weak);
+  border-color: rgba(229, 72, 77, 0.28);
+  color: var(--vctn-danger);
+}
+
+.alert--warn {
+  background: var(--vctn-warn-weak);
+  border-color: rgba(217, 119, 6, 0.28);
+  color: var(--vctn-warn);
+}
+
+.alert--success {
+  background: var(--vctn-success-weak);
+  border-color: rgba(18, 161, 80, 0.28);
+  color: var(--vctn-success);
+}
+
+.alert--info {
+  background: var(--vctn-info-weak);
+  border-color: rgba(59, 110, 246, 0.28);
+  color: var(--vctn-info);
+}
+
+/* ---------------------------------------------------------------- 抽屉 */
+
+.drawer {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 120;
+  display: flex;
+  justify-content: flex-end;
+  /* 抽屉面板宽度按内容需要各不相同（560 / 760px），用局部变量覆盖，
+     默认值放这里。 */
+  --drawer-width: 560px;
+}
+
+.drawer__panel {
+  width: min(var(--drawer-width), 100vw);
+  background: var(--vctn-surface);
+  padding: 18px;
+  overflow: auto;
+  height: 100%;
+  box-shadow: var(--vctn-shadow-lg);
+  animation: vctn-slide-in var(--vctn-motion);
+}
+
+@keyframes vctn-slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.drawer__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+
+.drawer__sub {
+  font-size: 13px;
+  margin: 14px 0 4px;
+  color: var(--vctn-text-weak);
+}
+
+/* ---------------------------------------------------------------- 键值 / JSON */
+
+.kv {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--vctn-text-weak);
+}
+
+.kv dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.json {
+  margin: 0;
+  background: var(--vctn-fill-muted);
+  border: 1px solid var(--vctn-border);
+  border-radius: var(--vctn-radius);
+  padding: 10px;
+  overflow: auto;
+  font-size: 12px;
+  max-height: 240px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--vctn-primary);
+  cursor: pointer;
+  font: inherit;
+  transition: opacity var(--vctn-motion);
+}
+
+.link:hover {
+  opacity: 0.8;
+}
+
+.link:focus-visible {
+  outline: 2px solid var(--vctn-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.sub-list {
+  list-style: none;
+  margin: 8px 0 12px;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+
 /* ---------------------------------------------------------------- 弹窗 */
 
 .dialog-mask {
@@ -474,7 +993,8 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(16, 24, 40, 0.45);
+  backdrop-filter: blur(2px);
   z-index: 100;
 }
 
@@ -482,7 +1002,8 @@ h3 {
   width: min(420px, calc(100vw - 32px));
   padding: 20px;
   background: var(--vctn-surface);
-  border-radius: 8px;
+  border-radius: var(--vctn-radius-lg);
+  box-shadow: var(--vctn-shadow-lg);
 }
 
 .dialog__title {
@@ -506,7 +1027,7 @@ h3 {
   gap: 8px;
 }
 
-/* ---------------------------------------------------------------- 提示 */
+/* ---------------------------------------------------------------- 提示条（全局通知） */
 
 .notice {
   position: fixed;
@@ -520,7 +1041,7 @@ h3 {
   border-radius: var(--vctn-radius);
   background: var(--vctn-surface);
   border: 1px solid var(--vctn-border);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--vctn-shadow-md);
   z-index: 200;
 }
 
@@ -548,32 +1069,98 @@ h3 {
   line-height: 1;
 }
 
-/* ---------------------------------------------------------------- 杂项 */
+/* ---------------------------------------------------------------- 标签 */
 
 .tag {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 10px;
+  border-radius: 999px;
   font-size: 12px;
-  background: #f0f2f5;
+  background: var(--vctn-fill-subtle);
   color: var(--vctn-text-weak);
 }
 
 .tag--active {
-  background: #e8f7ee;
+  background: var(--vctn-success-weak);
   color: var(--vctn-success);
 }
 
 .tag--disabled {
-  background: #fdf3e2;
+  background: var(--vctn-warn-weak);
   color: var(--vctn-warn);
 }
 
 .tag--locked {
-  background: #fdeceb;
+  background: var(--vctn-danger-weak);
   color: var(--vctn-danger);
+}
+
+.tag--primary {
+  background: var(--vctn-primary-weak);
+  color: var(--vctn-primary);
 }
 
 .muted {
   color: var(--vctn-text-weak);
+}
+
+/* ---------------------------------------------------------------- 权限字段 */
+
+.permission-field.is-readonly :deep(input),
+.permission-field.is-readonly :deep(select),
+.permission-field.is-readonly :deep(textarea) {
+  background: var(--vctn-fill-muted);
+}
+
+/* ---------------------------------------------------------------- 响应式
+   后台系统以桌面为主，但"窗口拖窄就直接崩"是不能用业务理由搪塞的：
+   这里只保证**不崩**（横向滚动 / 折叠），不做移动端适配。 */
+
+@media (max-width: 1080px) {
+  .sidebar {
+    width: 64px;
+    flex: 0 0 64px;
+  }
+
+  /* 文字收起时，图标必须留地标，否则只剩一堆不明意义的方块。 */
+  .sidebar__name,
+  .sidebar__group-title span:not(.sidebar__icon),
+  .sidebar__item span:not(.sidebar__icon) {
+    display: none;
+  }
+
+  .sidebar__item,
+  .sidebar__group-title {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .sidebar__brand {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .app-header,
+  .breadcrumb {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .app-layout__content {
+    padding: 16px;
+  }
+}
+
+/* 尊重系统的"减弱动态效果"设置：转圈之外的一切位移都不该出现。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

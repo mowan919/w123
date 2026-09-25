@@ -7,6 +7,7 @@
  * 字段名是冻结契约 —— 走 key 取值能让类型错误在编译期暴露。
  */
 import { computed } from 'vue'
+import { NAlert, NCheckbox, NEmpty, NSpin } from 'naive-ui'
 import type { DataTableColumn } from './types'
 
 const props = withDefaults(
@@ -40,33 +41,29 @@ function cellText(row: T, key: keyof T & string): string {
 
 <template>
   <div class="data-table">
-    <div v-if="props.loading" class="data-table__state">
-      <span class="spinner" aria-hidden="true" />
-      <span>加载中…</span>
-    </div>
+    <NSpin v-if="props.loading" size="medium" class="data-table__state" description="加载中…">
+      <template #default>
+        <div class="data-table__state-box" />
+      </template>
+    </NSpin>
 
-    <div v-else-if="props.error" class="data-table__state data-table__state--error">
-      <span>{{ props.error }}</span>
-    </div>
+    <NAlert v-else-if="props.error" type="error" :bordered="false" class="data-table__state-alert">
+      {{ props.error }}
+    </NAlert>
 
-    <div v-else-if="!hasRows" class="data-table__state data-table__state--empty">
-      <span>{{ props.emptyText }}</span>
-    </div>
+    <NEmpty v-else-if="!hasRows" :description="props.emptyText" size="medium" class="data-table__state" />
 
     <table v-else class="data-table__table">
       <thead>
         <tr>
           <th v-if="props.selectable" class="col-select">
-            <input
-              type="checkbox"
+            <NCheckbox
               aria-label="全选"
               :checked="props.selected.length === props.rows.length && props.rows.length > 0"
               :disabled="props.rows.length === 0"
-              @change="
-                emit(
-                  'selection-change',
-                  ($event.target as HTMLInputElement).checked ? props.rows.map(props.rowKey) : [],
-                )
+              @update:checked="
+                (checked: boolean) =>
+                  emit('selection-change', checked ? props.rows.map(props.rowKey) : [])
               "
             />
           </th>
@@ -83,18 +80,18 @@ function cellText(row: T, key: keyof T & string): string {
       <tbody>
         <tr v-for="row in props.rows" :key="props.rowKey(row)" @click="emit('row-click', row)">
           <td v-if="props.selectable" class="col-select">
-            <input
-              type="checkbox"
+            <NCheckbox
               :aria-label="`选择 ${props.rowKey(row)}`"
               :checked="props.selected.includes(props.rowKey(row))"
               @click.stop
-              @change="
-                emit(
-                  'selection-change',
-                  props.selected.includes(props.rowKey(row))
-                    ? props.selected.filter((k) => k !== props.rowKey(row))
-                    : [...props.selected, props.rowKey(row)],
-                )
+              @update:checked="
+                (checked: boolean) =>
+                  emit(
+                    'selection-change',
+                    checked
+                      ? [...props.selected, props.rowKey(row)]
+                      : props.selected.filter((k) => k !== props.rowKey(row)),
+                  )
               "
             />
           </td>

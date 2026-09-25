@@ -439,85 +439,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.toolbar {
-  margin-bottom: 12px;
-}
-
 .cell-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.link {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--vctn-primary);
-  cursor: pointer;
-  font: inherit;
-}
-
-.sub-panel,
-.editor {
-  margin-top: 12px;
-  padding: 14px;
-  background: var(--vctn-surface);
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-}
-
-.sub-panel__title,
-.editor__title {
-  font-size: 15px;
-  margin-bottom: 10px;
-}
-
-.editor {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-end;
-}
-
-.editor__title {
-  width: 100%;
-}
-
-.editor__actions {
-  display: flex;
-  gap: 8px;
-}
-
-.mini-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 10px 0;
-}
-
-.mini-table th,
-.mini-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--vctn-border);
-  text-align: left;
-  font-weight: 500;
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
-
-.alert {
-  padding: 10px 14px;
-  border-radius: var(--vctn-radius);
-  margin-bottom: 12px;
-}
-
-.alert--error {
-  background: #fdeceb;
-  color: var(--vctn-danger);
 }
 </style>
