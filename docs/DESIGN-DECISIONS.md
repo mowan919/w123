@@ -749,3 +749,103 @@ AttributeError: 'function' object at app.audit.classify has no attribute 'SECURI
 > 修复过程记录在 `docs/verification/006-logging-audit-result.md §5.1`
 > （FAIL → 定位根因 → 修复 → 重新测试 → 重新执行完整 Verification）。
 
+
+---
+
+## 14. Phase 7 字典 / 系统参数 —— 实际落地口径（2026-09-25）
+
+> 执行依据：人类指令"继续执行不再问我完成整个项目"。
+> 裁判：`docs/verification/007-dictionary.md`（字典类型 5 项 / 字典项 9 项 / 规则 4 项）。
+> 执行计划：`PHASES.md` **Phase 7 — Dictionary / System Parameter**。
+
+Phase 7 与 Phase 1~6 的区别：**本次 Spec 明确缺了两样东西** ——
+系统参数的表名与端点路径（`05 §5` 只有一句"必须有类型/默认值/状态/描述和审计"，
+`08 §9` 的 Endpoint 清单里也只有 Dictionary）。因此本 Phase 的登记项
+集中在"把 Spec 未写的部分补成最小推导，并说明改动面"。
+
+### 14.1 Phase 7 新增的 INTERIM 取值与技术默认
+
+| 位置 | 取值 | 说明 |
+|---|---|---|
+| `app/models/param.py::SysParam.__tablename__` | `sys_params` | **INTERIM-7-01**。`05 §5` 未给表名，而同一份 Spec 的 §2 把字典表命名为 `sys_dict_type` / `sys_dict_item`。取同一前缀是最小推导。改动面：一次 migration + 一处 `__tablename__` |
+| `app/services/system_param.py::_resolve` | `status=DISABLED` → `ConfigurationError` | **INTERIM-7-02**（`app/models/enums.py` 中的注释亦标记为 JUDGMENT-7-02，同一条取舍）。`05 §5` 要求参数"必须有状态"，但未定义状态语义。两种宽容读法都会制造**静默的安全降级**："停用⇒按默认值生效"让治理字段失效；"停用⇒当作未配置"让"有人故意关掉 MFA 要求"与"没人配过这个参数"不可区分。故只有 fail-closed |
+| `app/models/dict.py` 的 partial unique index | `uq_sys_dict_item_type_default_active` | **INTERIM-7-03**。Spec 要求有 `is_default` 字段但未规定"几个默认项"。服务层取"后者胜"（可预期），数据库用 partial unique index 兜底（"服务层不是唯一写入路径"）。若人类裁定允许多默认项，改动面只是一条索引 |
+| `app/api/v1/endpoints/params.py` + `app/core/config.py::public_v1_prefix` | `/api/v1/admin/params`（GET/POST/GET id/PUT/DELETE） | **INTERIM-7-04**。`08 §9` 没有系统参数端点，而 `05 §5` 要求"审计"——没有可调用接口就只能直接改库，落不进审计。路径按 `08 §1` 的 admin Base + 与 `/dicts` 对称的资源名推导。附带新增 `settings.public_v1_prefix`（`/api/v1`）：公开字典查询**不在** admin 域，需要一个与 `api_v1_prefix`（`/api/v1/admin`）并列的前缀，而不是字符串拼接 |
+| `app/services/dict.py::get_public` | 公开查询**不写审计** | **INTERIM-7-05**。它是每个登录用户每次加载页面都会调的读操作，逐次审计会把审计表变成访问日志并稀释 FAILURE 信号。管理侧读（`/admin/dicts*`）仍逐次审计 —— 两者口径不同是有意的（`06 §1` 的审计对象是"高价值业务变更与管理员行为"） |
+| `app/audit/classify.py` | `PARAM_CREATE/UPDATE/DELETE` → `SECURITY_ACTIONS` | **INTERIM-7-06**。Spec 未枚举"动作 → 类别"。系统参数承载的正是运行时安全策略（本 Phase 落地的 `mfa.required_default` 就是 MFA 的策略最低层），因此其变更按安全日志留存 |
+| `app/services/dict.py::delete_item` | 允许删除默认项 | **INTERIM-7-07**。Spec 未规定该场景。禁止删除会要求"先把默认项挪走"，让管理员卡在中间状态；允许删除的后果只是"该字典暂时没有默认项"，调用方可自行决定兜底 |
+| `app/services/system_param.py::_param_snapshot` | 审计**不记录参数值** | **INTERIM-7-08**。参数可能承载密钥类配置（`13 §2` 只说"不得硬编码"，参数表是自然落点），而脱敏规则按**键名**匹配，`param_value` 不在其中；审计表 append-only 且保留 2 年 —— 写进去就是一条**不可撤回的泄漏通道**。只记 `value_is_set` / `value_length` / `effective_source`，代价（答不出"改前是什么值"）明确登记 |
+| `app/services/system_param.py::_assert_key_format` | `param_key` 不允许空白字符 | **INTERIM-7-09**。Spec 未规定键格式。含空格的键在配置面板里肉眼不可分辨，而"键写错"的表现是读取方**静默走 fallback** —— 最难发现的故障 |
+| `app/services/system_param.py::update_param` | `param_key` / `param_type` 不可修改 | **INTERIM-7-10**。与 `dict_code`/`role_code` 同口径；且类型是参数与读取代码的契约，允许改类型会把不一致**推迟到读取时**才暴露（那通常正是登录路径）。落在端口形状上（DTO `extra="forbid"` + Service 无该形参），有测试钉住 |
+| `app/api/v1/endpoints/dicts.py::get_public` | 必须**已认证**，不要求 `DICT_MANAGE` | **JUDGMENT-7-03**。Spec 称其为"公开查询"且刻意不放在 `/admin` 下，但**没有一句**说它无需认证。不采用匿名读法的理由：Spec 未授权匿名访问，而"把数据端点设为匿名"是**安全面的扩张**；反向（已认证即可读）不构成对需求的削弱。改动面只有一处依赖（`get_current_actor`） |
+
+> 上表按代码内注释的编号原样登记；编号不连续处保持原样，以便与代码注释**一一对应**。
+
+### 14.2 FINDING-7-01 登录路径此前不使用仓储级 MFA 策略解析器（已修复）
+
+**现象**：Phase 5 的 `AuthService.__init__` 用 `MfaService(resolver=None)`，
+即 `MfaPolicyResolver` 的默认构造 —— 其 user / role 两层是
+`UnsetUserMfaPolicySource` / `UnsetRoleMfaPolicySource`（**永远返回"未表态"**）。
+
+**后果**：登录时"角色级策略要求 MFA"**不会生效**，会直接落到 system 层；
+更关键的是，Phase 5 的 fail-closed 分支（"策略要求但无可用 Provider"）
+在这条路径上**永远不会触发** —— 一个配了角色级 MFA 要求的系统可以正常登录。
+
+**为什么直到 Phase 7 才暴露**：Phase 5 的测试全部直接构造 `MfaService` /
+`MfaManagementService` 并注入自己的 resolver，**没有一条用例走
+`get_auth_service` 这条依赖装配路径**。Phase 7 因为要把 system 层默认值
+从环境变量换成参数表，第一次真正读了这个工厂函数，才看见它构造的是默认解析器。
+
+**修复**：`AuthService` 与 `MfaManagementService` 统一经
+`build_policy_resolver(MfaRepository(session), RoleRepository(session), system_default=...)`
+装配；`system_default` 由依赖层 `await resolve_mfa_required_default(session)` 解析
+（`MfaPolicyResolver` 的 `system_default` 是**构造期入参**，解析需要 IO，
+而构造是同步的，因此必须在异步的装配点完成）。
+
+**这是一次收紧（方向只允许更严）**：修复后，配了角色级 MFA 要求
+却没有 Provider 的系统**会**在登录时 fail-closed。这不是验收标准的放宽，
+而是把一个此前失效的安全分支接了回去。
+
+### 14.3 两处实现缺陷（测试暴露 → 已修复）
+
+| # | 缺陷 | 触发用例 | 根因与修复 |
+|---|---|---|---|
+| 1 | `create_item(is_default=True)` 遇同字典已有默认项时**撞数据库约束**（500 级） | `tests/test_dict_service.py::TestOneDefaultPerType::test_second_default_replaces_the_first` | `DictItemRepository.add()` 会 flush，而新行在**构造时就带 `is_default=True`** —— 旧默认项还在时插入即违反 `uq_sys_dict_item_type_default_active`。修复：把"清同字典默认项"提前到 `add()` **之前**（`update_item` 早已按此顺序写，并留有注释说明顺序为何重要，`create_item` 漏了） |
+| 2 | `soft_delete_items` / `clear_default` 用 Core `update()`，**不维护身份映射** | `tests/test_dict_service.py::TestDictTypeCrud::test_delete_is_soft_and_cascades_items` | 实测发现 `synchronize_session` 的各种取值下，`status` 被同步而 `deleted_at` 不会（`RETURNING` 只取回主键时，SQLAlchemy 无法回填被改列的新值）→ 同一事务内 `session.get()` 返回 `deleted_at is None` 的**幽灵对象**，而库里那一行已经删了，且**响应体与审计有可能取自这个幽灵状态**。修复：改为 ORM 变更（按行加载后逐行赋值 + 显式 `flush()`）。字典项规模有界（`05 §3` 的唯一性本身就限制项数），代价可接受；同时删掉因此不再使用的 `count_items` / `list_item_ids` |
+
+**通用规则（本 Phase 起适用）**：删除 / 批量写入路径**不得**用 Core `update()`
+而不处理会话状态。要么用 ORM 变更，要么显式列出被改列并验证同步结果 ——
+"库改了但会话没改"会让同一次请求里出现两个互相矛盾的事实。
+
+### 14.4 公开字典查询的安全边界（细节）
+
+`get_public` 的三个"不"（不写审计、不查数据范围、不接受 `actor`）
+以及"`DISABLED` 与已删除一律 404"，理由逐条写在
+`app/services/dict.py::get_public` 的 docstring 中。要点：
+
+- 字典是**全局配置**，没有可限定的数据范围维度；
+- 端点必须给出具体 `dictCode`，**无法**用来枚举"系统里有哪些字典"，
+  因此不构成配置面泄漏；
+- `DISABLED` 与"不存在"返回**同一个** 404：不把停用状态变成可探测信号。
+
+### 14.5 MFA system 级默认值的迁移（`§12.1` 的兑现）
+
+`docs/DESIGN-DECISIONS.md §12.1` 已裁定：Phase 5 保持环境变量
+`MFA_REQUIRED_DEFAULT`，**Phase 7 迁入系统参数表**。本 Phase 的落地：
+
+```text
+参数键    mfa.required_default      （常量 MFA_REQUIRED_DEFAULT_KEY）
+Seed 行   700001 / BOOL / ACTIVE / param_value=NULL / default_value='false'
+取值      行存在 → 当前值 ?? 默认值
+          行缺失 → 环境变量 MFA_REQUIRED_DEFAULT（= 迁移前口径，不制造可用性事故）
+          行缺失会写一次 WARNING（进程内按键去重）
+          行停用 / 类型不符 → ConfigurationError（fail-closed）
+```
+
+迁移前口径**完全保留**（行缺失即回退环境变量），因此"迁移脚本尚未执行"
+不会变成"全员无法登录"；同时"删掉参数行"这一动作是有权限、有审计的
+（`PARAM_DELETE`），"谁把安全开关删掉了"可追查。
+
+代码常量、迁移 Seed 字面量与 Seed 主键三者的一致性由测试钉住
+（`tests/test_param_mfa_binding.py::TestMigrationConsistency`）：改了常量
+忘了 Seed 会让读取方**永远**走 fallback，且运行时几乎无法定位。

@@ -101,6 +101,19 @@ class ApiPermissionCode(StrEnum):
     #: 拆细只会增加待冻结项，不会改变本阶段任何安全性质 ——
     #: 真正的越权防护由数据范围（`10 §10`）与 SUPER_ADMIN 保护（`10 §3`）承担。
     SESSION_MANAGE = "SESSION_MANAGE"
+    #: 管理字典（字典类型 / 字典项的 CRUD）。
+    #:
+    #: 查看与管理共用同一个权限位，理由与会话管理同：`03` / `05` 都未给出
+    #: 字典相关的资源编码表，把"能看"与"能改"拆成两个位等于发明未要求的
+    #: 权限粒度；而字典清单本身是**配置面**（暴露系统有哪些枚举），
+    #: 因此读也应当受管理权限约束（与 `ROLE_READ` 同口径）。
+    #:
+    #: 注意：**公开查询**（`GET /api/v1/dicts/{dictCode}`）不经过本权限位，
+    #: 原因与边界见 `app/api/v1/endpoints/dicts.py` 的模块文档（JUDGMENT-7-03）。
+    DICT_MANAGE = "DICT_MANAGE"
+    #: 管理系统参数（`05 §5`）。与字典**分开**：参数承载运行时安全策略
+    #: （如 system 级 MFA 默认值），其管理权限不应由"能改字典"隐含获得。
+    PARAM_MANAGE = "PARAM_MANAGE"
 
 
 class AuthorizationService:
@@ -258,6 +271,27 @@ class AuthorizationService:
         await self.assert_api_permission(
             actor=actor, api_code=ApiPermissionCode.PERMISSION_RESOURCE_MANAGE
         )
+
+    # ------------------------------------------------------------------
+    # 配置类资源（Phase 7）
+    # ------------------------------------------------------------------
+    async def assert_can_manage_dicts(self, *, actor: CurrentActor) -> None:
+        """校验操作者是否有权管理字典（类型与项，含读取）。
+
+        `08 §10` 要求每个受保护 API 经过后端 API Permission 校验；
+        字典管理端点在 admin 资源域下，因此必须走本方法 ——
+        而不能依赖"前端没展示这个菜单"。
+        """
+        await self.assert_api_permission(actor=actor, api_code=ApiPermissionCode.DICT_MANAGE)
+
+    async def assert_can_manage_params(self, *, actor: CurrentActor) -> None:
+        """校验操作者是否有权管理系统参数（`05 §5`）。
+
+        与字典权限位**分开**：参数能改变运行时安全策略
+        （例如把 system 级 MFA 默认值改为要求二次验证），
+        因此它不是"字典管理"的一个子权限。
+        """
+        await self.assert_api_permission(actor=actor, api_code=ApiPermissionCode.PARAM_MANAGE)
 
 
 __all__ = ["ApiPermissionCode", "AuthorizationService"]

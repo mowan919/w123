@@ -34,7 +34,7 @@
 | 004 | Session | **PASS** | `004-session-result.md`（2026-09-24，15/15，0 BLOCKED） |
 | 005 | MFA | **PASS**（13/13，0 BLOCKED） | `005-mfa-result.md`（2026-09-25） |
 | 006 | Logging / Audit / Trace | **PASS**（35/35，0 BLOCKED） | `006-logging-audit-result.md`（2026-09-25） |
-| 007 | Dictionary | NOT RUN | — |
+| 007 | Dictionary | **PASS**（18/18，0 BLOCKED） | `007-dictionary-result.md`（2026-09-25） |
 | 008 | Dynamic Permission | NOT RUN | — |
 | 009 | Hardening | NOT RUN | — |
 | 010 | Final Acceptance | NOT RUN | — |
@@ -72,3 +72,29 @@
 > ⚠️ 本 Phase 顺带关闭了一个此前**无裁判项命中**的真实缺口：Phase 2~5 的
 > `app/api/deps.py` 用 `NullAuditRecorder` 构造全部服务，**所有审计事件
 > 止步于内存**，从未落库（详见 `docs/DESIGN-DECISIONS.md §13.5`）。
+
+> ✅ **007 已判定 PASS（18/18，0 BLOCKED）**：`05 §2` / `05 §3` 的字段逐项落地，
+> `05 §3` 的"同字典 `item_value` 软删除感知唯一"由 **partial unique index**
+> 在数据库层保证（服务层预校验只负责给出友好的 409），删除一律逻辑删除，
+> `05 §4` 的 9 条管理端点 + 1 条公开查询端点以 `openapi()` **正向钉住**，
+> `05 §5` 的 System Parameter 以"分表 / 分服务 / 分端点 / 分权限位"落地并与
+> Dictionary 分离（含 AST 级"禁止互相导入"护栏）。
+>
+> ⚠️ Spec 缺了两项：系统参数**表名**与**端点路径**（`05 §5` 只有一句"必须有
+> 类型/默认值/状态/描述和审计"，`08 §9` 的 Endpoint 清单里也只有 Dictionary）。
+> 本 Phase 按最小推导补齐并逐条登记为 `INTERIM-7-01` / `INTERIM-7-04`
+> （`docs/DESIGN-DECISIONS.md §14.1`），**不构成阻塞** ——
+> 改动面分别是"一次 migration + 一处 `__tablename__`"与"一处 `include_router` 前缀"。
+>
+> ⚠️ 本 Phase 发现并修复三处缺陷（`§14.2` / `§14.3`）：其中
+> **FINDING-7-01** 是**安全分支失效** —— `get_auth_service` 构造的 `MfaService`
+> 一直使用默认（空）策略解析器，导致角色级 MFA 策略在登录路径上完全不生效，
+> Phase 5 的"策略要求但无 Provider 即 fail-closed"分支**永远不会触发**。
+> Phase 5 的测试全部直接构造服务并注入 resolver，因此没有一条用例覆盖
+> 依赖装配路径 —— 这也说明"工厂函数返回什么"必须有测试。
+> 修复后该分支已恢复（方向：收紧）。
+>
+> ⚠️ `docs/DESIGN-DECISIONS.md §12.1` 的既定安排已兑现：
+> MFA 的 system 级默认值由**系统参数表**提供（Seed 行 `700001`），
+> 行缺失时回退环境变量（= 迁移前口径，不制造可用性事故），
+> 行停用或类型不符则 fail-closed。端到端用例覆盖三种取值下的登录行为。

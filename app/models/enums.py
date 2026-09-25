@@ -46,6 +46,60 @@ class RoleStatus(StrEnum):
     DISABLED = "DISABLED"
 
 
+class DictStatus(StrEnum):
+    """字典类型 / 字典项的状态（Spec `05 §2` / `05 §3` 均含 `status`）。
+
+    Spec 未给定取值域，沿用本项目各实体统一的 ACTIVE / DISABLED 语义
+    （与 `DepartmentStatus` / `RoleStatus` / `PermissionStatus` 一致）。
+    `DISABLED` 的字典类型不参与公开查询；`DISABLED` 的字典项不下发。
+
+    为什么不与 `RoleStatus` 复用一个枚举：本项目既有约定是**每个实体拥有
+    自己的状态枚举**（部门 / 用户 / 角色 / 权限资源各自一个），
+    这样"某实体的状态新增一个取值"不会波及其他实体的取值域。
+    """
+
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
+class SystemParamType(StrEnum):
+    """系统参数的类型（Spec `05 §5`："参数必须有类型"）。
+
+    Spec **未枚举**具体类型，因此本取值域属 INTERIM 技术取值。取值依据是
+    `05 §5` 自己给出的四个示例参数所需的**最小**类型集合：
+
+    | 示例参数 | 需要类型 |
+    |---|---|
+    | session timeout | `INT`（秒） |
+    | login max attempts | `INT` |
+    | password minimum length | `INT` |
+    | MFA default policy | `BOOL` |
+    | （通用文本配置） | `STRING` |
+
+    刻意**不**引入 JSON / FLOAT / 列表等类型：Spec 没有任何示例需要它们，
+    增加类型等于发明未被要求的表达能力；而每个新类型都要定义
+    "解析失败怎么办"，是纯粹的待冻结项增量。
+    """
+
+    STRING = "STRING"
+    INT = "INT"
+    BOOL = "BOOL"
+
+
+class SystemParamStatus(StrEnum):
+    """系统参数的状态（Spec `05 §5`："参数必须有…状态…"）。
+
+    语义（**已登记 INTERIM/JUDGMENT-7-02**，Spec 未规定）：
+    读取方遇到 `DISABLED` 的参数必须 **fail-closed**，而不是"按默认值生效"
+    或"当作未配置"。理由见 `app/services/system_param.py` 的模块文档：
+    静默按默认值生效会让"停用"变成无操作；静默当作未配置会让
+    "停用"与"缺失"不可区分 —— 两者都是**静默的安全降级**。
+    """
+
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
 class PermissionResourceType(StrEnum):
     """权限资源类型（Phase 3 / DD-20 已冻结）。
 
@@ -207,6 +261,7 @@ __all__ = [
     "FIELD_ACCESS_READABLE",
     "FIELD_ACCESS_WRITABLE",
     "DepartmentStatus",
+    "DictStatus",
     "FieldAccessLevel",
     "HttpMethod",
     "MfaPolicySubject",
@@ -216,6 +271,8 @@ __all__ = [
     "RefreshTokenRetirement",
     "RoleStatus",
     "SessionRevokeReason",
+    "SystemParamStatus",
+    "SystemParamType",
     "UserStatus",
     "most_permissive_field_level",
 ]

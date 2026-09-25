@@ -46,9 +46,11 @@ from app.core.errors import AuthenticationError, PermissionDeniedError
 from app.core.security.token import extract_bearer_token
 from app.db.session import get_db
 from app.services.auth import AuthService
+from app.services.dict import DictService
 from app.services.mfa_management import MfaManagementService
 from app.services.session import AuthenticatedSession, SessionService
 from app.services.session_management import SessionManagementService
+from app.services.system_param import SystemParameterService, resolve_mfa_required_default
 
 _UNAUTHENTICATED_MESSAGE = "认证失败或登录状态已失效"
 
@@ -106,8 +108,18 @@ async def get_auth_service(
     由中间件在同一请求结束前用独立事务落库。
     在此之前这里是 `NullAuditRecorder` —— 也就是说 Phase 2~5 产生的审计事件
     全部止步于内存，只有测试断言看得见；这正是 Phase 6 要补的口子。
+
+    Phase 7 起 `system_default` 来自**系统参数表**（§12.1 的既定安排）：
+    `resolve_mfa_required_default` 读 `mfa.required_default`，
+    行缺失时回退环境变量 `MFA_REQUIRED_DEFAULT`（与迁移前口径一致）。
+    在这里（异步的装配点）解析，是因为 `MfaPolicyResolver` 的
+    `system_default` 是构造期入参 —— 解析需要 IO，构造是同步的。
     """
-    return AuthService(session, audit=BufferingAuditRecorder())
+    return AuthService(
+        session,
+        audit=BufferingAuditRecorder(),
+        system_default=await resolve_mfa_required_default(session),
+    )
 
 
 async def get_session_management_service(
@@ -120,8 +132,31 @@ async def get_session_management_service(
 async def get_mfa_management_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> MfaManagementService:
-    """提供 MFA 管理服务（状态 / 绑定 / 启用 / 禁用 / 挑战核销）。"""
-    return MfaManagementService(session, audit=BufferingAuditRecorder())
+    """提供 MFA 管理服务（状态 / 绑定 / 启用 / 禁用 / 挑战核销）。
+
+    `system_default` 与 `get_auth_service` 取**同一个来源**：
+    `GET /auth/mfa` 报告的"是否要求二次验证"必须与登录时的判定一致，
+    否则"这个要求是谁提的"会出现两个答案。
+    """
+    return MfaManagementService(
+        session,
+        audit=BufferingAuditRecorder(),
+        system_default=await resolve_mfa_required_default(session),
+    )
+
+
+async def get_dict_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DictService:
+    """提供字典服务（Phase 7：字典类型 / 字典项）。"""
+    return DictService(session, audit=BufferingAuditRecorder())
+
+
+async def get_system_param_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> SystemParameterService:
+    """提供系统参数服务（Phase 7：类型化配置）。"""
+    return SystemParameterService(session, audit=BufferingAuditRecorder())
 
 
 async def get_authenticated_session(
@@ -185,6 +220,8 @@ SessionManagementServiceDep = Annotated[
     SessionManagementService, Depends(get_session_management_service)
 ]
 MfaManagementServiceDep = Annotated[MfaManagementService, Depends(get_mfa_management_service)]
+DictServiceDep = Annotated[DictService, Depends(get_dict_service)]
+SystemParamServiceDep = Annotated[SystemParameterService, Depends(get_system_param_service)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -194,8 +231,10 @@ __all__ = [
     "CurrentActorAllowPasswordChangeDep",
     "CurrentActorDep",
     "DbSessionDep",
+    "DictServiceDep",
     "MfaManagementServiceDep",
     "SessionManagementServiceDep",
+    "SystemParamServiceDep",
     "client_ip",
     "client_user_agent",
     "get_auth_service",
@@ -203,7 +242,9 @@ __all__ = [
     "get_bearer_token",
     "get_current_actor",
     "get_current_actor_allow_password_change",
+    "get_dict_service",
     "get_mfa_management_service",
     "get_session_management_service",
     "get_session_service",
+    "get_system_param_service",
 ]

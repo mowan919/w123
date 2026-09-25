@@ -25,6 +25,7 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.api.v1.endpoints.auth import router as auth_router
+from app.api.v1.endpoints.dicts import public_router as public_dict_router
 from app.api.v1.endpoints.mfa import router as mfa_router
 from app.api.v1.router import api_router
 from app.audit.buffer import flush_logs
@@ -107,6 +108,11 @@ def create_app() -> FastAPI:
     # `POST /auth/mfa/verify` 例外地挂在 auth_router 里（它是登录流程的续完），
     # 理由见 `app/api/v1/endpoints/mfa.py` 的模块文档。
     application.include_router(mfa_router, prefix=settings.auth_v1_prefix)
+    # 公开字典查询（Phase 7 / Spec `05 §4`）：路径是 `/api/v1/dicts/{dictCode}`，
+    # **不在** admin 域下，因此单独以 public 前缀挂载。
+    # 注意"公开"不等于"匿名"：端点仍要求已认证（JUDGMENT-7-03，
+    # 理由见 `app/api/v1/endpoints/dicts.py` 的模块文档）。
+    application.include_router(public_dict_router, prefix=settings.public_v1_prefix)
 
     @application.get("/health", include_in_schema=False, tags=["Health"])
     async def root_liveness() -> object:

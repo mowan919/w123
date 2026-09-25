@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     # 该取值记录在 `docs/DESIGN-DECISIONS.md`，Spec 冻结后只需改此一处。
     auth_v1_prefix: str = "/api/v1/auth"
 
+    # 公开查询前缀（Phase 7）。
+    #
+    # Spec `05 §4` / `08 §9` 把公开字典查询写成 `/api/v1/dicts/{dictCode}`，
+    # 即**不在** admin 资源域下。这里显式给出前缀而不是复用 admin 前缀：
+    # 把"公开域"与"资源域"写在同一处配置里，边界才看得见（`08 §1` 的 Base 是
+    # `/api/v1/admin`，任何不落在它下面的路径都必须有明确出处）。
+    #
+    # 注意：`05 §4`/`08 §9` 只规定路径，**未**规定认证要求 → 本端点仍要求
+    # 已认证（JUDGMENT-7-03，理由见 `app/api/v1/endpoints/dicts.py`）。
+    public_v1_prefix: str = "/api/v1"
+
     # Spec 06 §4 / 13 §5 Logging
     log_level: LogLevel = "INFO"
     log_json: bool = True
@@ -130,12 +141,12 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("api_v1_prefix", "auth_v1_prefix")
+    @field_validator("api_v1_prefix", "auth_v1_prefix", "public_v1_prefix")
     @classmethod
     def _normalize_prefix(cls, value: str) -> str:
         if not value.startswith("/"):
             raise ValueError("api_v1_prefix 必须以 / 开头")
-        return value.rstrip("/")
+        return value.rstrip("/") or "/"
 
     @model_validator(mode="after")
     def _guard_production_secrets(self) -> Settings:

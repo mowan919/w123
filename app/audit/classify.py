@@ -26,6 +26,8 @@
 `operation_logs` 变成读日志，与 `06 §1` 的措辞不符。
 
 登记为 INTERIM：Spec 未枚举动作与类别的对应关系，本表是技术默认。
+Phase 7 追加 **INTERIM-7-06**：系统参数的写操作归入安全类
+（理由与反方向风险见 `SECURITY_ACTIONS` 内注释）。
 """
 
 from __future__ import annotations
@@ -69,6 +71,21 @@ SECURITY_ACTIONS: frozenset[AuditAction] = frozenset(
         # `04 §8` 的 "Session"：会话元数据（IP / UA）属敏感读取面，
         # 与"谁被踢下线"必须能对称回答（Phase 5 已据此登记该动作）。
         AuditAction.SESSION_READ,
+        # ---- Phase 7：系统参数 ----
+        #
+        # 为什么参数的**写操作**进安全日志（INTERIM-7-06，Spec 未枚举）：
+        # `06 §1` 的安全日志定义是"登录、锁定、MFA、密码、Session、安全事件"。
+        # 系统参数承载的正是运行时安全策略 —— 本 Phase 落地的
+        # `mfa.required_default` 直接决定"系统是否要求二次验证"，
+        # 把它从 true 改成 false 会**全局放宽**认证要求。
+        # 这类变更放进安全日志，使"谁在什么时候放宽了安全策略"
+        # 与登录/MFA 事件出现在同一条检索流里（保留期同为 180 天）。
+        #
+        # 反方向的风险已记录：若人类认为参数变更属"普通业务操作"
+        # （`06 §1` Operation Log），改动是把这四个动作在两个集合间搬一次。
+        AuditAction.PARAM_CREATE,
+        AuditAction.PARAM_UPDATE,
+        AuditAction.PARAM_DELETE,
     }
 )
 
@@ -82,6 +99,11 @@ READ_ONLY_ACTIONS: frozenset[AuditAction] = frozenset(
         AuditAction.ROLE_PERMISSION_READ,
         AuditAction.PERMISSION_RESOURCE_READ,
         AuditAction.PERMISSION_PREVIEW,
+        # Phase 7：字典与参数的读操作。参数的读操作也属只读
+        # —— 只有"改变配置"才是 `06 §1` 意义上的安全事件。
+        AuditAction.DICT_TYPE_READ,
+        AuditAction.DICT_ITEM_READ,
+        AuditAction.PARAM_READ,
     }
 )
 
@@ -108,6 +130,14 @@ OPERATION_ACTIONS: frozenset[AuditAction] = frozenset(
         AuditAction.PERMISSION_RESOURCE_CREATE,
         AuditAction.PERMISSION_RESOURCE_UPDATE,
         AuditAction.PERMISSION_RESOURCE_DELETE,
+        # Phase 7：字典是"枚举展示数据"，其变更属普通业务操作；
+        # 参数不在此集合（见 SECURITY_ACTIONS 的说明）。
+        AuditAction.DICT_TYPE_CREATE,
+        AuditAction.DICT_TYPE_UPDATE,
+        AuditAction.DICT_TYPE_DELETE,
+        AuditAction.DICT_ITEM_CREATE,
+        AuditAction.DICT_ITEM_UPDATE,
+        AuditAction.DICT_ITEM_DELETE,
     }
 )
 

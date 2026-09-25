@@ -34,15 +34,25 @@ Phase 6 追加（DD-08 日志分区仍**未冻结**，故采用技术默认并�
       分区与归档延后到日志量真正需要时（`06 §5` 只要求"**提供**后续归档/清理能力"）。
     - 五张表一律只保留 `created_at`（**无 `updated_at`**），
       并由迁移中的 `BEFORE UPDATE` 触发器强制拒绝更新 —— `10 §8` append-only。
+
+Phase 7 追加（Spec `05 §1`~`§3` 冻结字典模型；系统参数表名与端点**未冻结**）：
+    - `sys_dict_type` / `sys_dict_item`：两个冻结表名来自 `05 §2` / `05 §3`，
+      含 `05 §3` 要求的"同字典 `item_value` 软删除感知唯一"。
+    - `sys_params`：`05 §5` 只规定"参数必须有类型 / 默认值 / 状态 / 描述"，
+      **未命名表**。表名 `sys_params` 属 INTERIM-7-01（对 `05 §2` 命名惯例的
+      最小推导），端点属 INTERIM-7-04。字典与系统参数**分表、分服务、分端点**
+      （`05 §5` 第一句 + `PHASE-007-DICTIONARY.md`）。
 """
 
 from __future__ import annotations
 
 from app.models.department import Department
+from app.models.dict import SysDictItem, SysDictType
 from app.models.enums import (
     FIELD_ACCESS_READABLE,
     FIELD_ACCESS_WRITABLE,
     DepartmentStatus,
+    DictStatus,
     FieldAccessLevel,
     HttpMethod,
     MfaPolicySubject,
@@ -52,6 +62,8 @@ from app.models.enums import (
     RefreshTokenRetirement,
     RoleStatus,
     SessionRevokeReason,
+    SystemParamStatus,
+    SystemParamType,
     UserStatus,
     most_permissive_field_level,
 )
@@ -65,6 +77,7 @@ from app.models.logs import (
     SecurityLog,
 )
 from app.models.mfa import MfaChallenge, MfaPolicy, UserMfa
+from app.models.param import SysParam
 from app.models.password_history import AdminUserPasswordHistory
 from app.models.permission import (
     MenuPage,
@@ -88,6 +101,7 @@ __all__ = [
     "AuditLog",
     "Department",
     "DepartmentStatus",
+    "DictStatus",
     "FieldAccessLevel",
     "HttpMethod",
     "LogModel",
@@ -111,6 +125,11 @@ __all__ = [
     "SecurityLog",
     "SessionRefreshTokenHistory",
     "SessionRevokeReason",
+    "SysDictItem",
+    "SysDictType",
+    "SysParam",
+    "SystemParamStatus",
+    "SystemParamType",
     "UserMfa",
     "UserRole",
     "UserSession",

@@ -66,10 +66,12 @@ from app.db.base import utc_now
 from app.models.enums import UserStatus
 from app.models.session import UserSession
 from app.models.user import AdminUser
+from app.repositories.mfa import MfaRepository
+from app.repositories.role import RoleRepository
 from app.repositories.user import UserRepository
 from app.services.auth_audit import AuthAudit, AuthOperator
 from app.services.mfa import MfaService
-from app.services.mfa_management import MfaManagementService
+from app.services.mfa_management import MfaManagementService, build_policy_resolver
 from app.services.session import IssuedTokens, SessionService
 from app.services.user import UserService
 
@@ -127,14 +129,50 @@ class AuthService:
         audit: AuditRecorder | None = None,
         mfa: MfaService | None = None,
         mfa_management: MfaManagementService | None = None,
+        system_default: bool | None = None,
     ) -> None:
+        """
+        Args:
+            system_default: `04 §7` 策略链 system 层的默认值。
+                Phase 7 起由**系统参数表**提供（§12.1 的既定安排），
+                由装配方解析后注入；`None` 表示沿用环境变量口径。
+
+        Phase 7 的一处行为变更（**FINDING-7-01，收紧而非放宽**）
+        -----------------------------------------------------
+        `login` 第 6 步的 `MfaService` 此前使用**默认解析器**
+        （user / role 两级恒为"未表态"，只有 system 层生效），
+        于是"某个**角色**要求二次验证、但系统没有可用 Provider"
+        这种配置**不会**让登录 fail-closed —— 用户仍会拿到正常令牌，
+        只是结果里多一个 `mfa_setup_required=True` 标记，
+        而绑定本身会因为缺 Provider 直接失败。
+
+        这里把解析器换成**仓储级**来源（`build_policy_resolver`），
+        使第 6 步与第 6c 步（`MfaManagementService.requirement_for`）
+        使用**同一份**三层策略 `user > role > system`：
+
+        - 第 6 步据此做 fail-closed 判定（缺 Provider 即拒绝登录）；
+        - 第 6c 步据此如实标记 `mfa_setup_required`。
+
+        这不是新增需求，而是让 `04 §7` 冻结的优先级链在**登录路径**上
+        真正生效；策略解析逻辑本身（`MfaPolicyResolver`）一字未改。
+        """
         self._session = session
         self._recorder: AuditRecorder = audit or NullAuditRecorder()
         self._audit = AuthAudit(self._recorder)
         self._users = UserRepository(session)
         self._sessions = SessionService(session, audit=self._recorder)
-        self._mfa = mfa or MfaService()
-        self._mfa_management = mfa_management or MfaManagementService(session, audit=self._recorder)
+        # 登录判定与自我状态查询共用**同一份**三层策略解析器，
+        # 避免"同一个要求在不同端点上得出不同答案"。
+        self._mfa = mfa or MfaService(
+            resolver=build_policy_resolver(
+                MfaRepository(session),
+                RoleRepository(session),
+                system_default=system_default,
+            )
+        )
+        self._mfa_management = mfa_management or MfaManagementService(
+            session, audit=self._recorder, system_default=system_default
+        )
         # 本人改密复用 Phase 2 的实现（口令策略、历史 5 条、审计口径都只此一份）。
         self._user_service = UserService(session, audit=self._recorder)
 

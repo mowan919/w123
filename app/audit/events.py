@@ -115,6 +115,32 @@ class AuditAction(StrEnum):
     #: 只有写操作留痕时，无法回答"踢之前谁查过这个账号"）。
     SESSION_READ = "SESSION_READ"
 
+    # ---- Phase 7：字典与系统参数 ----
+    #
+    # 字典与参数是**两套动作**，刻意不合并成一个 `CONFIG_*` 家族：
+    # 两者的权限位、读取方式、审计关注点都不同（`05 §5` 要求两者分离）。
+    # 合并后"谁改了枚举"与"谁改了安全策略"会落在同一个动作名上，
+    # 审计检索必须再去翻 `resource_type` 才能区分 —— 那是把信息藏起来。
+    #
+    # *_READ 动作覆盖列表与详情：本项目没有为字典项单独开详情端点
+    # （`05 §4` 的端点清单里没有 `GET .../items/{itemId}`），
+    # 因此"读字典项"就是"读某字典的项列表"，一个动作足够。
+    DICT_TYPE_CREATE = "DICT_TYPE_CREATE"
+    DICT_TYPE_READ = "DICT_TYPE_READ"
+    DICT_TYPE_UPDATE = "DICT_TYPE_UPDATE"
+    #: 逻辑删除字典类型。级联清理的项数量写入 `after_data`（见 `DictService.delete_type`）。
+    DICT_TYPE_DELETE = "DICT_TYPE_DELETE"
+    DICT_ITEM_CREATE = "DICT_ITEM_CREATE"
+    DICT_ITEM_READ = "DICT_ITEM_READ"
+    DICT_ITEM_UPDATE = "DICT_ITEM_UPDATE"
+    DICT_ITEM_DELETE = "DICT_ITEM_DELETE"
+    #: 系统参数的写操作归入**安全**类别（见 `app/audit/classify.py`），
+    #: 因为参数承载的是运行时安全策略（例如 system 级 MFA 默认值）。
+    PARAM_CREATE = "PARAM_CREATE"
+    PARAM_READ = "PARAM_READ"
+    PARAM_UPDATE = "PARAM_UPDATE"
+    PARAM_DELETE = "PARAM_DELETE"
+
 
 class AuditResult(StrEnum):
     """审计结果。"""

@@ -170,7 +170,7 @@ def build_policy_resolver(
 class MfaManagementService:
     """MFA 凭据生命周期与二次验证。"""
 
-    __slots__ = ("_audit", "_mfa", "_registry", "_roles", "_session")
+    __slots__ = ("_audit", "_mfa", "_registry", "_roles", "_session", "_system_default")
 
     def __init__(
         self,
@@ -178,12 +178,29 @@ class MfaManagementService:
         *,
         audit: AuditRecorder | None = None,
         registry: MfaProviderRegistry | None = None,
+        system_default: bool | None = None,
     ) -> None:
+        """
+        Args:
+            system_default: `04 §7` 策略链 **system 层**的默认值。
+                `None`（默认）表示沿用 `MfaPolicyResolver` 的内置口径
+                （环境变量 `MFA_REQUIRED_DEFAULT`）。
+
+                Phase 7 起，该值由**系统参数表**提供
+                （`docs/DESIGN-DECISIONS.md` §12.1 的既定安排）：
+                装配方（`app/api/deps.py`）解析参数后从这里注入。
+                **策略解析逻辑一字未改** —— 只是把"哪来的默认值"
+                变成一个显式入参，因为同一个默认值必须同时作用于
+                `requirement_for`（登录判定）与 `describe_status`
+                （`GET /auth/mfa` 如实报告），两处若各取各的来源，
+                "这个要求是谁提的"就会出现两个答案。
+        """
         self._session = session
         self._audit = AuthAudit(audit or NullAuditRecorder())
         self._mfa = MfaRepository(session)
         self._roles = RoleRepository(session)
         self._registry = registry or get_mfa_provider_registry()
+        self._system_default = system_default
 
     # ------------------------------------------------------------------
     # 内部工具
@@ -225,7 +242,9 @@ class MfaManagementService:
 
     async def describe_status(self, *, actor: CurrentActor) -> MfaStatusView:
         """返回当前用户的 MFA 状态（不含任何凭据材料）。"""
-        resolver = build_policy_resolver(self._mfa, self._roles)
+        resolver = build_policy_resolver(
+            self._mfa, self._roles, system_default=self._system_default
+        )
         requirement: MfaRequirement = await resolver.resolve(user_id=actor.user_id)
         name = self.active_provider_name()
         row = await self._mfa.get_credential(user_id=actor.user_id, provider=name) if name else None
@@ -414,7 +433,9 @@ class MfaManagementService:
 
     async def requirement_for(self, *, user_id: int) -> MfaRequirement:
         """该用户是否被策略要求二次验证（`04 §7`）。"""
-        resolver = build_policy_resolver(self._mfa, self._roles)
+        resolver = build_policy_resolver(
+            self._mfa, self._roles, system_default=self._system_default
+        )
         return await resolver.resolve(user_id=user_id)
 
     async def enabled_credential(self, *, user_id: int) -> UserMfa | None:
