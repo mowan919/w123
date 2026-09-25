@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -38,6 +40,18 @@ _inject("POSTGRES_HOST", "127.0.0.1")
 _inject("POSTGRES_PORT", "1")
 _inject("REDIS_HOST", "127.0.0.1")
 _inject("REDIS_PORT", "1")
+
+# MFA Secret 的 AEAD 密钥（DD-22）：测试需要一条**确定**的 32 字节 base64 密钥。
+# 为什么必须注入而不是依赖 `.env`：`.env.example` 刻意把它留空
+# （真实部署由环境/密钥管理注入，Spec `13 §2`），若测试沿用该空值，
+# 所有涉及 Secret 的用例都会以 `ConfigurationError` 失败 ——
+# 那会让"加密保存"这条验收项**永远无法被验证**。
+# 用 sha256 摘要构造是为了得到长度确定（32 字节）且可复现的密钥；
+# 它只是测试夹具，不含任何真实部署密钥。
+_inject(
+    "MFA_ENCRYPTION_KEY",
+    base64.b64encode(hashlib.sha256(b"vctn-test-mfa-encryption-key").digest()).decode(),
+)
 
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402

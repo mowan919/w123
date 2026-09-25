@@ -571,3 +571,73 @@
 `git status` 干净；`app/` 下无 MFA 模型、无加解密模块、无 `/auth/mfa*` 端点。
 已冻结且已在 **Phase 4** 交付的部分（`MfaProvider` 抽象、`MfaStatus` 枚举、
 `MfaPolicyResolver`、脱敏规则、`AuditAction.MFA_*` 枚举）**未被改动**。
+
+> ⚠️ 以下 §12 记录的是**同一 Phase 的后续执行**：在人类下达
+> "不要询问我，完成所有任务"之后，Agent 依据 §11 已写明的**草案 A**
+> 继续落地。§11 的阻塞登记**保留**（不改写历史），§12 记录实际采用的选项
+> 与其中的每一处取舍。
+
+---
+
+## 12. Phase 5 MFA —— 实际落地口径（2026-09-24 / 2026-09-25）
+
+> 执行依据：人类指令"不要询问我，完成所有任务"。
+> 原则：**只在草案 A 中挑选不与 Frozen Spec 冲突的选项**；
+> 任何需要"发明业务能力"的选项一律**不做**，登记为待裁定。
+
+### 12.1 采用与未采用的选项
+
+| 未冻结项 | 采用 | 未采用 | 未采用的理由 |
+|---|---|---|---|
+| **DD-01** Provider 选型 | **不选定产品级 Provider**；`app/` 内零算法实现；测试专用 Provider 只放 `tests/`；无 Provider 时 fail-closed | 正式冻结 TOTP / Email / SMS | `00 §4`、`16 §1`、`PHASES.md` Phase 5、`PHASE-005-SESSION-MFA.md` **四处**禁止实现者宣布具体 Provider 为需求事实。这条比"把功能做全"更硬 |
+| **DD-22** Secret 加密 | AES-256-GCM；密钥 `MFA_ENCRYPTION_KEY`（base64 的 32 字节）；密文 `v1.<base64url(nonce‖ct‖tag)>`；**AAD 绑定 `user_id:provider`**；密钥缺失/格式错/解密失败一律 fail-closed；密文列用 `Text` | 密钥轮换、多密钥并存 | 属 DD-09 Secret Manager 范畴（未冻结）。版本前缀已为**将来**加轮换预留为纯增量改动 |
+| **DD-23** 挑战与会话续接 | **不建 Session**；`POST /auth/login` 回一次性 `mfa_token`（TTL 300s、库内只存 SHA-256、成功或达上限即核销）；`POST /auth/mfa/verify` 成功后才建 Session 并签发令牌 | 提前建 Session 并标记 pending | Phase 4 已验收的在线判定会把"只输对密码的人"算成**在线**；且"认证是否完成"会退化成 `sessions` 上的**可选列**，漏检一处即**认证绕过** |
+| **DD-24** 存储模型 | **策略与凭据分表**：`mfa_policies` / `user_mfa` / `mfa_challenges`；`required` **可空**；`user_mfa` 唯一键 `(user_id, provider)` | 把 `required` 并进 `user_mfa` | 角色级策略不属于任何用户，在 `user_mfa` 里无处安放；强行合并只能放弃 `04 §7` 的角色级策略 |
+| **system 级默认值归属** | **保持环境变量** `MFA_REQUIRED_DEFAULT`，**Phase 7** 迁入系统参数表 | Phase 5 就地建参数表 | `05 §5` 把 "MFA default policy" 列为**系统参数**（含类型/默认值/状态/描述/审计），而系统参数整体属 **Phase 7**；Phase 5 建表会与 Phase 7 交付重叠并形成两套参数机制。`MfaPolicyResolver` 已把 system 级抽象为构造参数，迁移时**无需改动 MFA 代码** |
+| **裁判第 12 项**"恢复流程" | 取 **(c)** 读法：**不新增**恢复码 / 管理员重置；以自动化护栏钉住"Secret 只在 setup 出现一次" | 恢复码 / 管理员重置 MFA 端点 | 两者都要求新增表与端点（超出 `08 §3` 清单），属**新增业务能力**；`AGENTS.md §4` 禁止自行扩范围。已在 `DECISION-REQUEST-PHASE-5.md` §5 请求澄清，**尚未收到** |
+
+**未新增第三方依赖**：加解密用 `cryptography`（其本身是 `asyncpg` 之外的成熟库，
+已在 `pyproject.toml` 锁版 `46.0.3`）；TOTP 类库（`pyotp` 等）**一个都不装** ——
+装了就等于选定了 Provider。测试用例中含 AST 级护栏，
+扫描 `app/**/*.py` 的 import，禁止 `pyotp` / `onetimepass` / `fido2` / `webauthn`
+/ `yubico_client` / `twilio` / `qrcode` 出现在产品代码里，也禁止 `app/` 下出现
+以 `totp` / `hotp` / `webauthn` / `fido` / `sms` 命名的模块。
+
+### 12.2 JUDGMENT-MFA-01 策略要求但用户尚未绑定 → **放行登录**并标记
+
+- **情形**：策略要求二次验证，但该用户**尚未完成绑定**（无 `ENABLED` 凭据）。
+- **处置**：**不阻断登录**，在 `LoginResult.mfa_setup_required` 中如实标记，
+  由客户端引导用户去绑定。
+- **为什么不能阻断**：绑定接口 `POST /auth/mfa/setup` 需要一个**已认证会话**。
+  若在登录处拒绝，"没绑定"就永远走不到"绑定"——那是**死锁**，不是安全。
+  对照：`10 §5` 的强制改密之所以能阻断，是因为存在 `get_current_actor_allow_password_change`
+  这条**替代路径**；MFA 绑定没有等价路径。
+- **不构成弱化**：放行的是"**登录**"，不是"**免二次验证**"。
+  一旦用户完成绑定，下一次登录立即被要求二次验证（有端到端用例）。
+  这一点与 `04 §7` 的策略意图一致 —— 策略要求的是"该用户必须有 MFA"，
+  而新用户需要一个受控的窗口去完成绑定。
+
+### 12.3 FINDING-MFA 挑战签发不产生独立审计事件
+
+- `04 §8` 的安全日志清单只有 **MFA setup / enable / disable / failure** 四类，
+  没有"挑战签发"。新增一个动作属于**扩展 Spec**，故本 Phase **保持沉默**。
+- 留痕并未缺失：真正需要追溯的是随后可能发生的 `MFA_FAILURE`
+  （含 `WRONG_CODE_ON_LOGIN`）与成功核销时的 `AUTH_LOGIN_SUCCESS`
+  （`after_data.via = "MFA_CHALLENGE"`）。
+- 已登记，等待裁定是否补这个事件。
+
+### 12.4 Phase 5 新增的 INTERIM 取值与技术默认
+
+| 位置 | 取值 | 说明 |
+|---|---|---|
+| `app/services/mfa_management.py::CHALLENGE_TTL_SECONDS` | **300 秒** | **INTERIM-5-07**。草案未给 TTL；300 秒足以完成"打开 App → 输码"，又不至于把一次性凭证的暴露窗口拉长到"跨会话复用"的程度 |
+| `app/services/mfa_management.py::MAX_CHALLENGE_ATTEMPTS` | **5 次后作废挑战** | **INTERIM-5-08**。草案 Q3 写"成功或失败即作废"、Q4 又写"5 次后作废"，**两者并存时 Q4 无意义**。取 Q4：Q3 想解决的是"用同一挑战**无限次**试码"，有限次上限已达成同一目的；而一次性作废会让偶发输错变成必须重走登录。这是对草案**内部不一致**的解释，不是新要求 |
+| `app/repositories/mfa.py::get_role_policy_required` | 多角色合并取 **OR**（任一要求 ⇒ 要求） | **INTERIM-5-09**。`04 §7` 只规定**层级间**优先级，未规定**同层内**多角色如何合并。取 AND 或"宽松者胜"会让同时持有高敏角色与宽松角色的用户**静默地**失去二次验证 —— 未经授权的安全弱化，只有 OR 可写 |
+| `app/models/mfa.py::MfaChallenge.token_hash` | 挑战令牌库内**只存 SHA-256** | 与 access / refresh 同口径（`app/core/security/token.py::hash_token`）。DB 泄漏时攻击者无法用哈希续完任何一次登录 |
+| `app/models/mfa.py::MfaPolicy.subject_id` | **无数据库外键**（泛化主体） | 引用完整性由服务层校验。代价明确记录：这不是"省略校验"，而是把校验放在**知道主体类型**的地方；两个可空外键会让"每主体至多一条策略"无法用单个唯一约束表达 |
+| `app/models/mfa.py::UserMfa` | **不设 `deleted_at`** | 凭据终态由 `status = DISABLED` 表达（生命周期的起点也是终点）。再引入软删除会产生"`status` 与 `deleted_at` 谁说了算"的第二套语义 |
+| `app/services/mfa.py::MfaService.check_login` | 要求 + Provider 可用 → **返回 `required=True`**（不再抛"尚未实现"） | **INTERIM-5-10**。Phase 4 的占位分支（当时 `/auth/mfa/verify` 不存在）随真实实现到位而删除，属"占位实现退场"，**不是验收标准放宽** —— "要求但**无** Provider"的 fail-closed 分支一字未改（有专门用例钉住） |
+| `app/core/security/aead.py::build_secret_box` | 构造失败抛 `SecretBoxError` → 服务层映射为 `ConfigurationError` | `SecretBoxError` **刻意不继承** `AppError`：加密层的失败不应直接映射为 HTTP 响应，语义由调用方（MFA 服务）决定。有专门用例断言这一继承关系 |
+| `tests/conftest.py` | 注入测试专用的 `MFA_ENCRYPTION_KEY` | `.env.example` 刻意把它留空（真实部署由环境/密钥管理注入，`13 §2`）。若测试沿用空值，**所有涉及 Secret 的验收项都无法被验证**——那会让裁判第 3 项永远无法判定 |
+| `app/core/config.py::_guard_production_secrets` | 补上 `MFA_ENCRYPTION_KEY` 的 prod 校验 | **修复 §11.2 记录的真实缺口**：此前 `prod` 只校验 4 个密钥，唯独漏了 MFA 加密密钥 —— 意味着生产可以用空密钥启动，直到第一次绑定才失败 |
+

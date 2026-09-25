@@ -146,17 +146,19 @@ class TestLoginStep:
         with pytest.raises(ConfigurationError, match="没有可用的 MFA Provider"):
             await service.check_login(user_id=USER_ID)
 
-    async def test_required_with_provider_still_refuses_until_phase_5(self) -> None:
-        """Provider 可用但"挑战签发/校验"尚未实现时同样拒绝。
+    async def test_required_with_provider_returns_requirement(self) -> None:
+        """策略要求 + Provider 可用 → 返回 `required=True`，由登录流程续接。
 
-        Phase 4 尚未实现 `/auth/mfa/verify`；此时若放行，
-        就等于"要求了二次验证却没验证"。宁可明确失败。
+        Phase 4 时此处曾抛"尚未实现"（当时 `/auth/mfa/verify` 不存在）。
+        Phase 5 落地挑战签发与核销后该占位分支删除，行为变为如实返回要求；
+        "要求但**无** Provider" 的 fail-closed 分支不受影响（见上一个用例）。
         """
         registry = MfaProviderRegistry({"stub": _StubProvider()}, active_name="stub")
         assert registry.has_active() is True
         service = MfaService(resolver=MfaPolicyResolver(system_default=True), registry=registry)
-        with pytest.raises(ConfigurationError, match="尚未实现"):
-            await service.check_login(user_id=USER_ID)
+        requirement = await service.check_login(user_id=USER_ID)
+        assert requirement.required is True
+        assert requirement.source is MfaPolicySource.SYSTEM
 
 
 class TestProviderRegistry:

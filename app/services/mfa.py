@@ -290,20 +290,28 @@ class MfaService:
         self._registry = registry or get_mfa_provider_registry()
 
     async def check_login(self, *, user_id: int) -> MfaRequirement:
-        """执行登录流程的 MFA 检查步骤。
+        """执行登录流程的 MFA 检查步骤（`04 §1` 第 6 步）。
 
         Returns:
-            解析出的 MFA 要求（Phase 4 恒为 `required=False`）。
+            解析出的 MFA 要求。`required=True` 表示这次登录**必须**经过
+            二次验证；具体走"签发挑战"还是"引导去绑定"，由调用方
+            （`AuthService.login` 第 6b / 6c 步）依据"用户是否已启用凭据"决定。
+            本方法刻意**不**替调用方做那个判断：那需要读凭据表，
+            而本类持有的是**策略与 Provider 能力**，不持有持久化。
 
         Raises:
             ConfigurationError: 策略**要求**二次验证，但没有任何可用 Provider。
                 这是刻意的 fail-closed：宁可让登录明确失败（配置问题立刻可见），
                 也不能放行一个"号称有 MFA 实际没有"的系统。
 
-                注意 `required=True` 且 Provider 可用时也会进入此分支 ——
-                本 Phase 尚未实现"签发挑战 / 校验动态码"，
-                因此同样必须拒绝而不是放行。Phase 5 落地后此分支改为
-                返回"需要二次验证"并由 `/auth/mfa/verify` 续接。
+        Phase 4 → Phase 5 的行为变更
+        ---------------------------
+        Phase 4 时本方法在"要求 + Provider 可用"时也抛 `ConfigurationError`
+        （文案为"尚未实现"），因为当时挑战签发与校验并不存在，放行即等于
+        "要求了二次验证却没验证"。Phase 5 已落地 `/auth/mfa/verify`，
+        该占位分支因此**不再成立**，改为如实返回 `required=True`。
+        这是"占位实现随真实实现到位而删除"，不是验收标准的放宽 ——
+        "策略要求 + 无 Provider"这条 fail-closed 分支**一字未改**。
         """
         requirement = await self._resolver.resolve(user_id=user_id)
         if not requirement.required:
@@ -316,9 +324,7 @@ class MfaService:
                 "请配置 Provider，或将策略改回不要求二次验证。"
             )
 
-        # Provider 可用：Phase 5 在此返回"需要二次验证"的中间态。
-        # 本 Phase 尚未实现挑战签发与校验，因此必须拒绝而不是放行。
-        raise ConfigurationError("MFA 二次验证流程尚未实现（属 Phase 5）；拒绝登录而非放行。")
+        return requirement
 
 
 __all__ = [
