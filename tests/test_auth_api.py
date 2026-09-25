@@ -432,10 +432,27 @@ class TestRouteSurface:
             f"{AUTH_PREFIX}/logout",
             f"{AUTH_PREFIX}/me",
             f"{AUTH_PREFIX}/password",
+            f"{AUTH_PREFIX}/permissions",
         }
         assert expected <= paths
-        # Phase 8 的端点仍未冻结，不得预实现
-        assert f"{AUTH_PREFIX}/permissions" not in paths
+
+    def test_permissions_path_was_pinned_absent_until_phase_eight(self, app: FastAPI) -> None:
+        """`/auth/permissions` 的存在性护栏已由 Phase 8 **正向**接管。
+
+        ⚠️ 本测试的前身是一条**反向钉住**（断言该路径**不得**存在），
+        服务于当时的目标：Phase 4 不得预实现 Phase 8 的动态权限契约。
+        `PHASES.md` Phase 8 现已实现该端点，那条断言随之失效 ——
+        因此这里不是"删掉护栏换实现"，而是**把护栏换成正向钉住**：
+
+        - 端点必须存在（少一个 = 漏实现）；
+        - 路径必须落在**认证域**而非 admin 域（`08 §3` 的分组 +
+          INTERIM-4-01 的认证域裁定；`09 §2` 顺带写出的
+          `/api/v1/admin/auth/permissions` 形式与 `08 §3` 指向同一逻辑端点，
+          取与登录/刷新/me 同域的那一个，避免出现两个 auth 前缀）。
+        """
+        paths = set(app.openapi()["paths"])
+        assert f"{AUTH_PREFIX}/permissions" in paths
+        assert "/api/v1/admin/auth/permissions" not in paths
 
     def test_mfa_paths_match_spec_exactly(self, app: FastAPI) -> None:
         """`/auth/mfa*` 必须与 `08 §3` 的清单**逐条相等**。

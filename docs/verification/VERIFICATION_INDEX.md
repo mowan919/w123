@@ -35,7 +35,7 @@
 | 005 | MFA | **PASS**（13/13，0 BLOCKED） | `005-mfa-result.md`（2026-09-25） |
 | 006 | Logging / Audit / Trace | **PASS**（35/35，0 BLOCKED） | `006-logging-audit-result.md`（2026-09-25） |
 | 007 | Dictionary | **PASS**（18/18，0 BLOCKED） | `007-dictionary-result.md`（2026-09-25） |
-| 008 | Dynamic Permission | NOT RUN | — |
+| 008 | Dynamic Permission | **PASS**（11/11，0 BLOCKED） | `008-dynamic-permission-result.md`（2026-09-25） |
 | 009 | Hardening | NOT RUN | — |
 | 010 | Final Acceptance | NOT RUN | — |
 
@@ -93,6 +93,26 @@
 > Phase 5 的测试全部直接构造服务并注入 resolver，因此没有一条用例覆盖
 > 依赖装配路径 —— 这也说明"工厂函数返回什么"必须有测试。
 > 修复后该分支已恢复（方向：收紧）。
+
+> ✅ **008 已判定 PASS（11/11，0 BLOCKED）**：`09 §2` 的七段契约
+> （pages / menus / buttons / apis / fields / data_scope / permission_version）
+> 全部落地于 `GET /auth/permissions`；DD-20 遗留的"资源 CRUD HTTP 暴露"
+> 以 8 条 `/admin/permission-resources*` 端点交付；`08 §7` 的角色授权与
+> 数据范围端点逐条显式声明（不合并为 `/permissions/{kind}`，否则 Phase 10
+> 的路径比对会判缺失）。第 9 项"前端可动态生成 route/menu"以**测试内独立消费者**
+> 证明契约充分性 —— 它只读响应、不读库、不引用任何 Python 权限常量。
+>
+> ⚠️ 三项需要留意：
+> 1. **FINDING-8-01（未关闭）**：`08 §4/§6/§7` 冻结的 Users / Departments /
+>    Roles **实体 CRUD 的 HTTP 面至今未交付**（只有服务层）。根因是
+>    `001` / `002` 裁判项全是服务层判定、不含端点存在性，因此 Phase 1 / 2
+>    PASS 时不会暴露。本 Phase **不越界补实现**（属 Phase 1 / 2），
+>    但必须在 Phase 10「Functional: Organization / User / Role」之前关闭。
+> 2. **DD-21 仍未冻结**，但本 Phase **未做需要裁定的行为变更**：
+>    `build()` 默认行为完全不变，只对新增读路径启用拒绝型上下文
+>    （`docs/DESIGN-DECISIONS.md §15.5`），**待人类追认**。
+> 3. `08 §3–§9` **未列出**资源 CRUD 端点路径，本 Phase 按既有复数资源命名
+>    取 `/admin/permission-resources*` 并登记为 `INTERIM-8-01`。
 >
 > ⚠️ `docs/DESIGN-DECISIONS.md §12.1` 的既定安排已兑现：
 > MFA 的 system 级默认值由**系统参数表**提供（Seed 行 `700001`），

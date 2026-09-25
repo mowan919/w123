@@ -257,6 +257,49 @@ class PermissionResourceRepository:
         stmt = select(MenuPage.page_id).where(MenuPage.menu_id == menu_id)
         return frozenset((await self._session.execute(stmt)).scalars().all())
 
+    async def list_menu_page_map(self, menu_ids: Sequence[int]) -> dict[int, frozenset[int]]:
+        """批量读取多个 Menu 关联的 Page ID（`Phase 8` 权限契约用）。
+
+        为什么需要批量版本：`/auth/permissions` 要为每个已授权菜单输出
+        其可访问页面，逐菜单调用 `list_menu_page_ids` 会退化成 N 次查询
+        （N = 用户可见菜单数），而这是**每次打开后台首页**都会走的路径。
+        一条 `IN (...)` 查询即可，语义与单条版本完全一致。
+
+        返回的字典只包含**有关联行**的菜单；调用方对缺席的菜单按空集合处理。
+        """
+        if not menu_ids:
+            return {}
+        stmt = select(MenuPage.menu_id, MenuPage.page_id).where(
+            MenuPage.menu_id.in_(sorted(set(menu_ids)))
+        )
+        result: dict[int, set[int]] = {}
+        for menu_id, page_id in (await self._session.execute(stmt)).all():
+            result.setdefault(int(menu_id), set()).add(int(page_id))
+        return {menu_id: frozenset(page_ids) for menu_id, page_ids in result.items()}
+
+    async def list_all_live(
+        self, *, resource_type: PermissionResourceType
+    ) -> list[PermissionResource]:
+        """列出某类型的**全部有效资源**（未删除 + ACTIVE），按排序值返回。
+
+        用途单一：SUPER_ADMIN 的权限契约。`10 §3` 冻结的超管 bypass
+        意味着"有效权限 = 全部资源"，若仍按 `role_permissions` 逐条查询，
+        超管拿到的会是**空集合**（超管恰恰不需要被逐条授权），
+        前端于是渲染出一个空后台 —— 那是对真实授权状态的错误表述。
+
+        返回不分页：资源定义属**配置面**，规模由管理员控制，
+        与 `PermissionResourceService.tree`（构树时必须完整）同一前提。
+        """
+        stmt = (
+            select(PermissionResource)
+            .where(
+                PermissionResource.resource_type == resource_type,
+                *_live_resource_filter(),
+            )
+            .order_by(PermissionResource.sort_order, PermissionResource.id)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def replace_menu_pages(
         self, menu_id: int, page_ids: frozenset[int]
     ) -> tuple[frozenset[int], frozenset[int]]:

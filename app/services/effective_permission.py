@@ -38,6 +38,16 @@ Spec `00 §1#5` 冻结"权限变更立即生效"，`11 §5` 又要求"宁可短�
 极端情况下"持有被禁用的 SUPER_ADMIN 角色"仍会被当作 SUPER_ADMIN。
 该行为**不在本 Phase 自行更改**（属于已冻结的集中式规则的语义变更），
 已登记 RISK-004 待人类冻结。
+
+无有效角色用户（DD-21）
+--------------------
+`build()` 默认在"无任何有效角色"时**抛错**（fail-closed，由
+`DataScopeResolver.resolve_for_subject` 唯一持有该判定），这是 Phase 3
+的既定行为，未改动。Phase 8 新增 `allow_empty_roles` 可选入参，
+只服务前端权限契约（`/auth/permissions`）这一条读路径：
+那里必须能把"新账号尚未分配角色"表达成**拒绝型上下文**，
+否则一个正常状态会以 500 呈现给用户。
+两条分支之外的任何计算路径都不受影响。
 """
 
 from __future__ import annotations
@@ -203,11 +213,28 @@ class EffectivePermissionService:
     # ------------------------------------------------------------------
     # 计算
     # ------------------------------------------------------------------
-    async def build(self, *, user_id: int) -> PermissionContext:
+    async def build(self, *, user_id: int, allow_empty_roles: bool = False) -> PermissionContext:
         """计算用户的有效权限上下文。
+
+        Args:
+            user_id: 目标用户。
+            allow_empty_roles: **默认 `False`**，保持既有 fail-closed 语义：
+                用户没有任何有效角色时抛错，绝不退化成"放行"。
+                仅当前端权限契约（`GET /auth/permissions`）需要把一个
+                "无角色用户"表达成**拒绝型上下文**（空权限 + 空范围）时，
+                调用方显式传 `True`（DD-21 的技术处理，见
+                `docs/DESIGN-DECISIONS.md` §15）。
 
         Raises:
             NotFoundError: 用户不存在或已逻辑删除。
+
+        Note:
+            `allow_empty_roles=True` 时，返回的 `data_scope` 为 `None` ——
+            这**不是**"不限制"，而是"无任何范围来源"。消费方必须按
+            **全拒**处理（`app/schemas/permission_contract.py` 把
+            `None` 映射为 `policy=null` + `department_ids=[]`）。
+            该参数只影响"无角色"这一条分支，不影响任何有其他角色可解析的
+            用户的权限计算结果。
         """
         user = await self._users.get(user_id)
         if user is None:
@@ -264,12 +291,19 @@ class EffectivePermissionService:
         configs = await self._build_scope_configs(effective_role_ids)
         role_codes = await self._roles.list_role_codes_for_user(user_id)
         is_super_admin = SUPER_ADMIN_ROLE_CODE in role_codes
-        data_scope = await self._data_scope.resolve_for_subject(
-            user_id=user.id,
-            department_id=user.department_id,
-            is_super_admin=is_super_admin,
-            configs=configs,
-        )
+        if not configs and not is_super_admin and allow_empty_roles:
+            # 拒绝型上下文（DD-21）：无任何有效角色 = 无任何范围来源。
+            # 这里**跳过** resolver 而不是让它抛错，是因为调用方明确要求
+            # "把无角色表达成一个可渲染的上下文"；抛错路径仍然由
+            # `DataScopeResolver` 唯一持有，不会出现两份错误文案。
+            data_scope = None
+        else:
+            data_scope = await self._data_scope.resolve_for_subject(
+                user_id=user.id,
+                department_id=user.department_id,
+                is_super_admin=is_super_admin,
+                configs=configs,
+            )
 
         return PermissionContext(
             user_id=user.id,

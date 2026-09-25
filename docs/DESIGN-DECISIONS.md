@@ -849,3 +849,104 @@ Seed 行   700001 / BOOL / ACTIVE / param_value=NULL / default_value='false'
 代码常量、迁移 Seed 字面量与 Seed 主键三者的一致性由测试钉住
 （`tests/test_param_mfa_binding.py::TestMigrationConsistency`）：改了常量
 忘了 Seed 会让读取方**永远**走 fallback，且运行时几乎无法定位。
+
+---
+
+## 15. Phase 8（Dynamic Frontend Permission）—— 实际落地口径
+
+### 15.1 登记表
+
+| 编号 | 位置 | 取定 | 依据 / 未冻结来源 |
+|---|---|---|---|
+| **INTERIM-8-01** | `endpoints/permission_resources.py` 的路径 `/admin/permission-resources*` | kebab-case 复数资源名 | `08 §3–§9` **未列出**资源 CRUD 端点（DD-20 只说"HTTP 暴露属 008 范围"）。取与 `08 §5/§8` 既有复数资源（`sessions`、`dicts`、`audit/logs`）一致的命名 |
+| **INTERIM-8-02** | `GET /auth/permissions` **不写**审计 | 只读本人快照、每次开页面都调 | 与 INTERIM-7-05（公开字典查询）同一取向：逐次审计会把审计表变成访问日志并稀释 FAILURE 信号 |
+| **INTERIM-8-03** | 契约**不裁剪**空菜单 | 菜单本身是已授权资源 | 是否渲染"无可访问子页面的菜单"属前端策略；后端只保证下发的每一项都已授权，不替前端做渲染决策 |
+| **INTERIM-8-04** | `GET /permission-resources/tree` 的 `resourceType` 缺失 → **400**而非返回空树 | 五种类型的树彼此独立 | 不指定类型时"构树"没有语义；返回空树会让调用方把"参数漏了"误读成"确实没有资源" |
+| **INTERIM-8-05** | 响应 DTO 用 `snake_case`；请求/查询用 camelCase | 与既有 `PermissionPreviewResponse` / `RolePermissionViewResponse` 一致 | `08 §2` 未冻结字段命名；本 Phase 不引入第二套口径 |
+| **INTERIM-8-06** | 六个角色授权端点写成**六条显式路由**而非 `/permissions/{kind}` | `08 §7` 冻结的是四条**具体路径** | 路径参数会让 OpenAPI 只出现一条，Phase 10 的契约比对将直接判缺失 |
+| **JUDGMENT-8-01** | `is_super_admin == True` 时契约输出**全部 ACTIVE 资源**；**字段权限不做 bypass** | `10 §3` 冻结集中式 bypass | 见 §15.2 |
+| **JUDGMENT-8-02** | `GET /auth/permissions` **不要求** API 权限位，但**要求已认证**且用**严格**依赖 | `08 §3` 把它列在 Auth 域 | 见 §15.3 |
+| **FINDING-8-01** | 组织实体（users / departments / roles）CRUD 的 **HTTP 面至今未交付** | `08 §4/§6/§7` 已冻结清单 | 见 §15.4（登记为缺口，**不在本 Phase 越界补实现**） |
+
+### 15.2 JUDGMENT-8-01 —— SUPER_ADMIN 在契约里的表达
+
+`10 §3` 冻结了 SUPER_ADMIN 的**集中式 bypass**（`has_api_permission` 直接放行），
+因此超管的"有效权限"在**事实层面**就是全部资源。若契约仍按
+`role_permissions` 逐条读取，超管会得到**空集合** —— 前端渲染出一个空后台，
+而真实授权是"全部"。那不是保守，而是**对授权状态的错误表述**，
+且会让平台无法通过界面自助管理。所以 `is_super_admin` 为真时输出全部 ACTIVE 资源。
+
+**字段权限刻意不做 bypass**，这是本判定里更重要的一半：
+后端**没有任何**字段级 bypass（`field_policies` 的消费方目前只有本契约），
+若超管额外得到"全部字段可编辑"，前端就会展示出后端实际并不承认的字段能力 ——
+**契约与行为不一致，比"少显示"危险得多**。
+因此字段策略对所有用户一视同仁地按"角色授权 + DD-06 最宽松者胜"输出，
+未出现的字段按 HIDDEN 处理。
+
+菜单与页面的**求交**（`09 §3` / `§4`）：
+`menus[].page_ids = 菜单关联的 Page ∩ 用户已授权 Page`。
+若不求交，前端会拿到指向"无权访问页面"的菜单入口，把"点进去被后端拒绝"
+当成正常交互 —— 这正是 `09 §3` 禁止的"用前端隐藏冒充安全"的镜像错误。
+
+### 15.3 JUDGMENT-8-02 —— `/auth/permissions` 为什么不需要 API 权限位
+
+该端点返回的是**调用者本人**的权限快照。若要求某个 API 权限位才能读取，
+会产生一个循环：客户端得先知道自己的权限，才能证明自己有权知道自己的权限；
+而"没有权限"的用户连"我没有任何权限"这件事都读不到，
+前端只能渲染成故障页而不是"无权限页"。
+
+它仍然**要求已认证**，且使用**严格**依赖 `get_current_actor`
+（处于强制改密状态的用户不可用）—— 该状态的客户端本来就只应调用
+`/auth/me` 与 `/auth/password`，此时下发权限契约等于让它先逛后台再改密。
+
+**没有**任何"目标用户"入参，目标恒为令牌所指的本人。
+查看**他人**权限属权限预览（`03 §11`），是另一条需要授权的能力。
+
+### 15.4 FINDING-8-01 —— 组织实体 CRUD 的 HTTP 面缺口（**未关闭**）
+
+`08 §4/§6/§7` 冻结了 Users / Departments / Roles 的实体 CRUD 端点清单，
+但仓库至今**只有服务层**，没有任何 HTTP 端点。原因是
+`docs/verification/001` 与 `002` 的裁判项**全部是服务层判定**，
+不包含端点存在性，因此 Phase 1 / Phase 2 验收 PASS 时不会暴露这个缺口。
+
+**处置：登记，不在本 Phase 越界补实现。**
+`PHASES.md` 的 Phase 8 范围明确是"权限输出（page/menu/button/api/field/data scope）"，
+组织实体 CRUD 属 Phase 1 / Phase 2；在已 PASS 的阶段之外补实现会打乱阶段边界，
+也使"哪个阶段交付了什么"不可追查。
+但该缺口必须在 **Phase 10 Final Acceptance**（Functional: Organization / User / Role）
+之前关闭，否则"后端全部做完"不成立。
+
+**风险等级：中。** 服务层的能力与授权边界均已交付并被测试覆盖，
+缺的是 HTTP 暴露面；不是安全缺陷，是**交付完整性**缺陷。
+
+### 15.5 DD-21 的处理（**未冻结项，取保守实现，待人类追认**）
+
+DD-21 台账标注"Phase 8 之前必须裁定"。按"继续执行、不得自行决定未决事项"
+的边界，本 Phase **不改变任何既有行为**，只做两件事：
+
+1. `EffectivePermissionService.build(allow_empty_roles: bool = False)` ——
+   **默认 `False`，行为与 Phase 3 完全一致**（无有效角色仍抛错 fail-closed）。
+   既有特征化测试 `test_default_build_still_fails_closed_for_role_less_user`
+   直接钉住这一点。
+2. 只有新增的**读路径** `/auth/permissions` 显式传 `allow_empty_roles=True`，
+   得到"拒绝型上下文"（空权限 + `policy=null` + `department_ids=[]`）。
+
+这样选择是因为：让"没配角色的正常用户"在打开后台时撞到 **500**
+是产品语义问题而非实现细节，但**新增端点**没有历史行为要保护，
+给它一个可渲染的"无权限页"既不违反已冻结的 fail-closed
+（该用户依然什么都不能访问），也不会把 DD-21 的决定空间挤掉 ——
+人类日后裁定"应抛 403"，改动面只是这一个端点的一个入参。
+
+### 15.6 本 Phase 发现并修复的实现缺陷
+
+| # | 缺陷 | 后果 | 修复 |
+|---|---|---|---|
+| 1 | 无有效角色用户的 `data_scope.department_ids` 曾返回 `null` | `null` 的语义是"部门维度**不限制**"（ALL / SUPER_ADMIN），等于把"全拒"表达成"全放行" —— 契约层面的 **fail-open**，且 JSON 里两者都"看起来像空" | `policy=null` 时 `department_ids` 恒为 `[]`；三态语义写进 `schemas/permission_contract.py` 的 docstring 并由 `test_role_less_user_still_gets_a_renderable_contract` 钉住 |
+| 2 | `/permission-resources/tree` 若注册在 `/{resource_id}` **之后** | `tree` 会被当成 ID 交给 `int` 解析 → **422 而非 200**；两个装饰器各自都"正确"，只能靠真实请求发现 | 树路由声明在 ID 路由之前，并由 `test_tree_path_is_not_shadowed_by_the_id_path` 以**真实请求**钉住（只比对注册顺序不足以证明） |
+
+### 15.7 与 Phase 9 的边界
+
+`09 §7` / `00 §1#5` 的"权限变更立即生效"在本 Phase 以**实时计算、不使用任何缓存**
+满足（结构上不可能陈旧），符合 Phase 3 对 DD-03 / DD-04 的裁定。
+`009-hardening.md` 的"权限缓存有失效机制"将在 Phase 9 以
+"**无缓存** ⇒ 无失效需求，且无 stale" 论证，而不是届时引入缓存。

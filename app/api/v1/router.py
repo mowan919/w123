@@ -16,6 +16,8 @@ Spec 08 §1 Base：`/api/v1/admin`
 | `/users/{id}/sessions`、`/users/{id}/sessions/revoke-all` | 会话管理（Session Phase，`08 §4`） |
 | `/dicts*` | 字典管理（Phase 7，`05 §4` / `08 §9`） |
 | `/params*` | 系统参数管理（Phase 7，`05 §5`；路径属 INTERIM-7-04） |
+| `/permission-resources*` | 权限资源定义（Phase 8，DD-20 §5.1.1 冻结的 8 条端点） |
+| `/roles/{id}/permissions*`、`/roles/{id}/data-scope` | 角色授权与数据范围（Phase 8，`08 §7`） |
 
 `/users/{id}/sessions*` 的路径前缀属 Users 资源，但业务语义是会话管理，
 因此实现落在 `endpoints/sessions.py`（详见该模块 docstring）。
@@ -24,20 +26,34 @@ Spec 08 §1 Base：`/api/v1/admin`
 它按 `05 §4` 位于 admin 域之外，由 `create_app` 以
 `settings.public_v1_prefix` 挂载（见 `endpoints/dicts.py::public_router`）。
 
-其余业务端点（users / roles / departments / audit ...）
-分别属于后续 Phase，本阶段不实现。
+**`GET /auth/permissions`**（Phase 8）**不在此处**：它属认证域，
+与 `/auth/me` 同前缀（INTERIM-4-01），由 `create_app` 以
+`settings.auth_v1_prefix` 挂载。
+
+其余业务端点（users / departments / audit / traces ...）
+分别属于后续或既有的 Phase，本阶段不实现（见
+`docs/DESIGN-DECISIONS.md` §15 的 FINDING-8-01）。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import dicts, health, params, sessions
+from app.api.v1.endpoints import (
+    dicts,
+    health,
+    params,
+    permission_resources,
+    role_permissions,
+    sessions,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(sessions.router)
 api_router.include_router(dicts.router)
 api_router.include_router(params.router)
+api_router.include_router(permission_resources.router)
+api_router.include_router(role_permissions.router)
 
 __all__ = ["api_router"]

@@ -9,12 +9,12 @@
 | POST | `/auth/logout` | `08 §3` |
 | GET | `/auth/me` | `08 §3` |
 | POST | `/auth/password` | **补充端点**（见下） |
+| GET | `/auth/permissions` | `08 §3` / `09 §2`（Phase 8） |
 
 **未**实现的端点及归属（有意不做，避免预实现后续 Phase）：
 
 - `/auth/mfa`、`/auth/mfa/verify`、`/auth/mfa/setup|enable|disable`
   → Phase 5（DD-01 具体 Provider 未冻结）；
-- `/auth/permissions` → Phase 8（动态权限契约：page/menu/button/api/field/data scope）。
 
 关于 `POST /auth/password`（补充端点）
 ------------------------------------
@@ -32,6 +32,21 @@ Phase 2 已有同样的先例（`POST /users/{id}/delete`、`GET|PUT /users/{id}
 **由端点负责 `commit()`** —— 端点是"一次业务操作"的边界，
 而 Service 只 flush、不 commit，这样 Service 才能被安全地组合进更大的事务。
 
+`GET /auth/permissions` 为什么不需要 API 权限位（JUDGMENT-8-02）
+------------------------------------------------------------
+该端点返回的是**调用者本人**的权限快照。若要求某个 API 权限位才能读取，
+就会产生一个循环：客户端得先知道自己的权限，才能证明自己有权知道自己的权限；
+而"没有权限"的用户会连"我没有任何权限"这件事都读不到 ——
+前端只能渲染成故障页而不是"无权限页"。
+
+它仍然**要求已认证**，且刻意使用**严格**依赖 `get_current_actor`
+（处于强制改密状态的用户不可用）：强制改密状态的客户端本来就只应调用
+`/auth/me` 与 `/auth/password`，此时下发权限契约等于让它先逛后台再改密。
+
+**没有**任何"目标用户"入参 —— 目标恒为令牌所指的本人。
+查看**他人**的权限属权限预览（`03 §11`），是另一条需要授权的能力，
+不在本端点上开口子。
+
 响应信封
 -------
 全部走 `success_response`，保证 Spec `08 §2` 的 `{code, message, data}` 一致；
@@ -47,11 +62,14 @@ from app.api.deps import (
     AuthServiceDep,
     BearerTokenDep,
     CurrentActorAllowPasswordChangeDep,
+    CurrentActorDep,
     DbSessionDep,
+    PermissionContractServiceDep,
     client_ip,
     client_user_agent,
 )
 from app.core.response import success_response
+from app.core.scope import ResolvedScope
 from app.core.security.password import is_password_expired
 from app.db.base import utc_now
 from app.models.user import AdminUser
@@ -67,7 +85,17 @@ from app.schemas.auth import (
     TokenPairResponse,
 )
 from app.schemas.mfa import MfaVerifyRequest
+from app.schemas.permission_contract import (
+    PermissionApiItem,
+    PermissionButtonItem,
+    PermissionContractResponse,
+    PermissionDataScopeResponse,
+    PermissionFieldItem,
+    PermissionMenuItem,
+    PermissionPageItem,
+)
 from app.services.auth import MfaPendingResult
+from app.services.permission_contract import PermissionContract
 
 router = APIRouter(tags=["Auth"])
 
@@ -239,6 +267,136 @@ async def me(
     """
     user = await service.me(actor=actor)
     return success_response(_me_response(user))
+
+
+def _data_scope_response(scope: ResolvedScope | None) -> PermissionDataScopeResponse:
+    """把 `ResolvedScope` 映射为契约的数据范围段落。
+
+    ⚠️ 这里有一处**极易写成 fail-open** 的映射，单独抽出来并逐分支写明：
+    `department_ids` 的 `null` 表示"部门维度**不限制**"（仅 ALL / 超管），
+    而"什么都看不到"必须写成 `[]`。若把"无有效角色"（`scope is None`）
+    映射成 `null`，客户端会把它读成"没有部门限制" ——
+    也就是把一个**全拒**状态表达成了**全放行**状态。
+    这是本 Phase 的测试实际抓出来的缺陷（见结果文档 §5）。
+    """
+    if scope is None:
+        # 无任何有效角色：既无策略，也无可见部门 → 明确的"全拒"。
+        return PermissionDataScopeResponse(policy=None, department_ids=[], include_self=False)
+    if scope.is_unrestricted_departments:
+        return PermissionDataScopeResponse(
+            policy=scope.scope, department_ids=None, include_self=scope.include_self
+        )
+    return PermissionDataScopeResponse(
+        policy=scope.scope,
+        department_ids=sorted(scope.department_ids or frozenset()),
+        include_self=scope.include_self,
+    )
+
+
+def _contract_response(contract: PermissionContract) -> PermissionContractResponse:
+    """把权限契约领域对象映射为 `09 §2` 的响应体。
+
+    三处映射值得单独说明：
+
+    1. **无有效角色的用户**：`context.data_scope is None` →
+       `policy = null` + `department_ids = []`。
+       不能用某个具体策略值顶替 —— 那会把"没配"显示成"配了最窄策略"，
+       属误导性诊断（详见 `app/schemas/permission_contract.py` 的说明）。
+    2. **`department_ids = null` 与 `[]` 是两件事**：
+       `null` = 部门维度不限制（ALL / SUPER_ADMIN），`[]` = 全拒。
+       两者在 JSON 里都"看起来像空"，因此这里显式区分，绝不互相顶替。
+    3. **字段策略**取自 `context.field_policies`（已按 DD-06
+       "最宽松者胜"合并），不在 HTTP 层二次合并 —— 合并规则只有一处实现。
+    """
+    return PermissionContractResponse(
+        user_id=contract.context.user_id,
+        is_super_admin=contract.context.is_super_admin,
+        direct_role_ids=sorted(contract.context.direct_role_ids),
+        inherited_role_ids=sorted(contract.context.inherited_role_ids),
+        pages=[
+            PermissionPageItem(
+                id=page.id,
+                code=page.resource_code,
+                name=page.resource_name,
+                route_path=page.route_path,
+                component_path=page.component_path,
+                sort_order=page.sort_order,
+            )
+            for page in contract.pages
+        ],
+        menus=[
+            PermissionMenuItem(
+                id=entry.resource.id,
+                code=entry.resource.resource_code,
+                name=entry.resource.resource_name,
+                icon=entry.resource.icon,
+                parent_id=entry.resource.parent_id,
+                sort_order=entry.resource.sort_order,
+                page_ids=list(entry.page_ids),
+            )
+            for entry in contract.menus
+        ],
+        buttons=[
+            PermissionButtonItem(
+                id=button.id,
+                code=button.resource_code,
+                name=button.resource_name,
+                parent_id=button.parent_id,
+                sort_order=button.sort_order,
+            )
+            for button in contract.buttons
+        ],
+        apis=[
+            PermissionApiItem(
+                id=api.id,
+                code=api.resource_code,
+                name=api.resource_name,
+                api_method=api.api_method,
+                api_path=api.api_path,
+                parent_id=api.parent_id,
+            )
+            for api in contract.apis
+        ],
+        fields=[
+            PermissionFieldItem(
+                id=policy.field_id,
+                code=policy.resource_code,
+                field_key=policy.field_key,
+                owner_resource_id=policy.owner_resource_id,
+                access_level=policy.access_level,
+            )
+            for policy in contract.context.field_policies
+        ],
+        data_scope=_data_scope_response(contract.context.data_scope),
+        permission_version=contract.context.version,
+    )
+
+
+@router.get("/permissions", summary="当前用户有效权限（前端动态权限契约）")
+async def permissions(
+    actor: CurrentActorDep,
+    service: PermissionContractServiceDep,
+) -> JSONResponse:
+    """返回当前用户的有效权限（Spec `09 §2`）。
+
+    输出 pages / menus / buttons / apis / fields / data_scope /
+    permission_version，供前端**动态生成**路由、导航、按钮与字段行为。
+
+    两条必须说清的性质：
+
+    - 本响应**不是安全边界**（`09 §3`）。前端隐藏页面/菜单/按钮
+      只是渲染策略；真正的边界是每个受保护端点的后端授权
+      （`08 §10`，由 `require_api_permission` 声明式绑定）。
+      因此本端点返回空列表**不会**赋予任何能力，返回了也不会替代判权。
+    - 权限变更**立即生效**（`00 §1#5` / `09 §7`）：本 Phase 不启用任何
+      权限缓存，每次请求实时计算，重新拉取即可看到新结果，
+      不存在"改了权限但必须重新登录"的隐藏行为。
+
+    实时计算意味着**不是**给前端做"权限快照缓存"的理由；
+    客户端如需缓存，必须按 `permission_version` 自行失效。
+    """
+    contract = await service.build(user_id=actor.user_id)
+    return success_response(_contract_response(contract))
 
 
 @router.post("/password", summary="修改本人密码（含强制改密）")
