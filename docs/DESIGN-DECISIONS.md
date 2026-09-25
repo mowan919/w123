@@ -641,3 +641,111 @@
 | `tests/conftest.py` | 注入测试专用的 `MFA_ENCRYPTION_KEY` | `.env.example` 刻意把它留空（真实部署由环境/密钥管理注入，`13 §2`）。若测试沿用空值，**所有涉及 Secret 的验收项都无法被验证**——那会让裁判第 3 项永远无法判定 |
 | `app/core/config.py::_guard_production_secrets` | 补上 `MFA_ENCRYPTION_KEY` 的 prod 校验 | **修复 §11.2 记录的真实缺口**：此前 `prod` 只校验 4 个密钥，唯独漏了 MFA 加密密钥 —— 意味着生产可以用空密钥启动，直到第一次绑定才失败 |
 
+---
+
+## 13. Phase 6 日志 / 审计 / Trace —— 实际落地口径（2026-09-25）
+
+> 执行依据：人类指令"继续执行不再问我完成整个项目"。
+> 裁判：`docs/verification/006-logging-audit.md`（5 类日志 / 4 项 Trace /
+> 16 项 Audit / 5 项 Masking / 5 项 Retention）。
+
+### 13.1 DD-08 仍未冻结 → 不分区，交付"表 + 清理能力"
+
+`16 §技术设计待冻结项` 的 **DD-08**（PostgreSQL 声明式分区 / pg_partman /
+归档到对象存储）**至今未裁定**。因此本 Phase：
+
+- **不分区**，只建普通表 + 索引；
+- 交付保留期清理能力（`LogRetentionService` + `scripts/purge_logs.py`）。
+
+依据是 `06 §5` 的原文 —— "**必须提供后续**归档/清理能力"，以及
+`07 §8` 的"高容量日志应**考虑**分区与 retention job"（"考虑"不等于"必须分区"）。
+**JUDGMENT-6-01**：分区化不改列、不改查询，将来按 DD-08 落地时是**纯增量**改动，
+因此现在的延期不会产生返工，也不会让现有的清理能力失效。
+
+### 13.2 三类日志是**同一批事件的三切片**，不是三套写入点
+
+`06 §1` 把日志分为五类，`06 §2` 只规定了 Audit 的 15 个字段。
+本 Phase 的口径：
+
+```text
+一条审计事件 ─┬─→ audit_logs      （全部事件，2 年）
+               ├─→ security_logs   （安全类，180 天）
+               └─→ operation_logs  （业务类，180 天）
+```
+
+因此 `security_logs` / `operation_logs` 是**切片**，不是第二个记录入口。
+否则"同一次登录失败"会有两条互相独立、可能不一致的写入路径。
+
+### 13.3 Phase 6 新增的 INTERIM 取值与技术默认
+
+| 位置 | 取值 | 说明 |
+|---|---|---|
+| `app/models/logs.py` 表名 | `application_logs` | **INTERIM-6-01**。`07 §8` 写的是 "application logs"（其余四张写了 `_logs` 后缀）。此处统一加后缀，否则 ORM 模型名与表名不成对应，且与其余四张表的命名规则不一致 |
+| `app/audit/classify.py` | 三个封闭集合覆盖全部 `AuditAction` | **INTERIM-6-02**。Spec 未枚举"动作 → 类别"。有测试断言 `SECURITY ∪ OPERATION ∪ READ_ONLY == set(AuditAction)`，因此"新增动作忘了分类"会在 CI 立刻失败，而不是**静默地**只进审计表 |
+| `app/repositories/logs.py::_clamp` | 超长值截断到列宽并追加 `…` | **INTERIM-6-03**。`varchar(n)` 超长会**报错**，而报错发生在落库的独立事务里 → **整批日志一起丢失**。于是"发一个 64KB 的 UA"就是一条让审计静默消失的通道。截断只损失尾部，不截断损失全部 |
+| `app/core/logging.py::DB_LOG_LEVEL` | `INFO` | **INTERIM-6-04**。`06 §1` 的 Application Log 是面向运维的"应用运行日志"，不是开发态诊断。若跟随 `DEBUG`，几条调试语句即可在 30 天内写入千万行，淹没真实事件 |
+| `app/services/log_retention.py::RETENTION_DAYS["audit"]` | **730 天** | **INTERIM-6-05**。`06 §1` 写 "2 years"，未规定按日历年（闰年 730/731）还是 365×2。取 730 使边界不依赖"当前处于哪个日历区间"，从而可被测试精确断言；差异最多 1 天且方向不确定 |
+| `app/audit/buffer.py` 落库位置 | 中间件的**最后一个响应分片**之前，独立事务 | **INTERIM-6-06**。锚在"函数返回后"会留下窗口：客户端拿到 200，进程随即崩溃，而这次操作的审计尚未落库 —— 最需要留证的恰是那一刻。代价是每请求一次额外数据库往返。`finally` 保留兜底调用（空缓冲不建连接） |
+| `scripts/purge_logs.py` | 提供入口但**不内建调度器** | **INTERIM-6-07**。是否在进程内跑定时任务取决于部署形态（单实例/多实例/K8s CronJob）。内建调度会在多实例下变成"N 个实例各清一遍" |
+| `app/audit/buffer.py` 熔断参数 | 超时 **5s** / 连续失败 **3** 次打开 / 冷却 **60s** | **INTERIM-6-08**。asyncpg 的连接超时默认 **60 秒**：数据库主机"丢包"时一次落库就能挂住请求 60 秒，而 `/health` 是**存活探针** —— 挂住它会让编排系统重启进程，把"数据库抖动"放大成"服务不可用"。熔断期内的日志被**丢弃**并计入 `dropped_logs`（可观测，不是静默丢失） |
+| `app/core/masking.py::scrub_text` | 自由文本中的令牌**整体**替换为 `<redacted>` | **INTERIM-6-09**。`06 §4` 对 token 的规则是"保留前 6 个字符"，那是**具名 token 字段**的展示口径；`10 §4` 的措辞是"不得记录 access token **plaintext**"。自由文本没有"这是个 token 字段"的上下文，故取更严者。方向只允许更严 |
+| `app/models/logs.py::SecurityLog.reason` | 从 `after_data["reason"]` 提升为独立列 | **INTERIM-6-10**。Spec 未定义 `security_logs` 的字段。该值本就存在（`auth_audit` 写入 `after_data` 以遵守"审计 15 字段不可增删"），提升为列只是让"按 `LOCKED` / `TOKEN_REUSE_DETECTED` 检索"不必反解 JSONB |
+| `app/middleware/trace.py` | `access_logs.path` **不含 query string** | **INTERIM-6-11**。查询串里常出现 `?token=` / `?code=` 这类一次性凭据，写进保留 30 天的访问日志等于给凭据开一条长期留存通道 |
+| `app/core/context.py::_actor_id_var` | `operator_id` 经 ContextVar 从认证依赖传到中间件 | **INTERIM-6-12**。中间件**不解析令牌** —— 重复解析等于把认证逻辑变成两份实现，而"哪一份说了算"没有答案。该机制成立的前提是**纯 ASGI 中间件**（`BaseHTTPMiddleware` 会各自持有上下文副本，`operator_id` 将永远是 NULL，并有专门用例钉住） |
+| `app/models/logs.py::LOG_MODELS` | 以**表名**为键的单一清单 | **INTERIM-6-13**。避免"有哪些日志表"在迁移、保留期服务、测试里各写一份而漂移；有测试断言 `set(LOG_MODELS) == set(RETENTION_DAYS)`，即"新增日志表却忘了定保留期"会立刻失败 |
+
+### 13.4 FINDING-6-01 分类失败时**先写审计主表**
+
+`classify()` 对未分类动作抛 `KeyError`（刻意不静默回落）。
+但调用点若让异常冒到 `flush_logs()`，代价是**同批次所有日志一起丢失** ——
+其中包含本该留痕的审计主记录。
+
+因此 `LogRepository._classify_safe` 把异常收窄为"这一条的**切片**不写"：
+`audit_logs` 照写（取证不丢），并记 ERROR。这不属于静默回落 ——
+静默回落指"照样写进某个类别且无人知晓"，这里的缺口是响亮的，且有专门用例。
+
+### 13.5 Phase 6 关闭的历史缺口
+
+Phase 2~5 期间，`app/api/deps.py` 里的服务全部用默认的 `NullAuditRecorder`
+构造，即**所有审计事件止步于内存**（只有测试替身看得见）。本 Phase：
+
+| 缺口 | 关闭方式 |
+|---|---|
+| 业务审计事件从未落库 | `deps.py` 的四个服务工厂统一注入 `BufferingAuditRecorder` |
+| 令牌无效 / 会话已撤销 / 用户不可用 / **Refresh Token 复用**（DD-02 family revocation）在审计中不可见 | `get_session_service` 同步注入 —— 它是**每个受保护端点**的必经之路，此前这条路径上的事件全部丢失 |
+| 消息正文（`msg` / `args`）从未脱敏 | `MaskingFilter` 重写 `record.msg` 并清空 `args`；两个 formatter 覆盖 `formatException` |
+| `before_data` / `after_data` 在写入前未脱敏 | `LogBuffer.add_audit` 在**入缓冲时**即递归脱敏（JSONB 无法事后补救，且未脱敏数据在内存中停留最短） |
+
+### 13.6 FINDING-6-02 包 `__init__` 重导出遮蔽同名子模块（已修复）
+
+**现象**：完整测试运行出现 2 个 FAIL，错误信息都是
+
+```text
+AttributeError: 'function' object at app.audit.classify has no attribute 'SECURITY_ACTIONS'
+```
+
+**根因**：`app/audit/__init__.py` 重导出了 `classify` **函数**。
+`classify` 同时是子模块名（`app.audit.classify`）与其中的函数名；
+重导出把包上的 `classify` 属性从"模块"覆盖成"函数"，
+于是所有按**点号字符串**定位目标的工具（`pytest` 的
+`monkeypatch.setattr("app.audit.classify.X", ...)`、`mock.patch`）解析失败。
+
+**为什么它难发现**：`sys.modules["app.audit.classify"]` 仍然是模块，
+`import app.audit.classify` / `importlib.import_module(...)` 一切正常；
+只有 `getattr(app.audit, "classify")` 这条路径拿到的是函数。
+即"按模块导入"的代码完全正常，"按字符串定位"的代码全部失效 ——
+两者在同一进程里并存，却不是同一个东西。
+
+**修复**：
+
+1. 包 `__init__` 不再重导出 `classify`（保留 `LogCategory` 与三个动作集合，
+   它们不与子模块同名），并在模块文档写明原因；
+2. 新增 `TestPackageNamespaceDoesNotShadowSubmodules`（含一条真实复现失败
+   用法的用例），把"点号路径只有一个含义"钉成回归测试。
+
+**通用规则（本 Phase 起适用）**：包的 `__init__` **不得**重导出与子模块同名的名字。
+代价只是多写一次完整导入路径。
+
+> 修复过程记录在 `docs/verification/006-logging-audit-result.md §5.1`
+> （FAIL → 定位根因 → 修复 → 重新测试 → 重新执行完整 Verification）。
+

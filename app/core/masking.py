@@ -12,6 +12,7 @@ Frozen（Spec 00 §8 / 06 §4 / 15 D-012 / AGENTS.md §8）：
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -126,7 +127,21 @@ def scrub_field(key: str, value: Any) -> Any:
         return f"<{type(value).__name__} scrubbed>"
     if isinstance(value, (Mapping, list, tuple, set)):
         return scrub(value)
-    return mask_value(key, value)
+    return _scrub_scalar(key, value)
+
+
+def _scrub_scalar(key: str, value: Any) -> Any:
+    """按键名脱敏一个标量，再对文本做模式脱敏。
+
+    两道都要走：键名规则覆盖"这个字段叫 phone"，
+    文本规则覆盖"值里恰好写着手机号但字段名叫 `remark`"。
+    前者是声明式的，后者是兜底的 —— 只有前者时，
+    一个自由文本字段就能把手机号完整带进日志。
+    """
+    masked = mask_value(key, value)
+    if isinstance(masked, str):
+        return scrub_text(masked)
+    return masked
 
 
 def scrub(value: Any, *, _depth: int = 0) -> Any:
@@ -153,10 +168,85 @@ def scrub(value: Any, *, _depth: int = 0) -> Any:
             elif isinstance(raw_value, (Mapping, list, tuple, set)):
                 cleaned[key] = scrub(raw_value, _depth=_depth + 1)
             else:
-                cleaned[key] = mask_value(key, raw_value)
+                cleaned[key] = _scrub_scalar(key, raw_value)
         return cleaned
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [scrub(item, _depth=_depth + 1) for item in value]
 
+    if isinstance(value, str):
+        return scrub_text(value)
+
     return value
+
+
+# ---------------------------------------------------------------------------
+# 自由文本脱敏
+# ---------------------------------------------------------------------------
+# 为什么结构脱敏之外还需要文本脱敏
+# ------------------------------
+# `scrub()` 靠**键名**判断敏感度。而日志正文是**渲染后的字符串**：
+#
+#     logger.info("登录失败 phone=13812341234 password=%s", raw_password)
+#
+# 渲染之后既没有 `phone` 键也没有 `password` 键，`scrub()` 无从下手 ——
+# 而 `MaskingFilter` 跳过的恰恰是 `msg` / `args`（它们是保留键）。
+# 于是 `06 §4` 的脱敏规则在最常见的路径上**形同虚设**。
+#
+# 因此这里补一层基于**模式**的文本脱敏，作用在渲染结果上。
+#
+# 刻意保守：宁可多脱一点，不可漏脱
+# ------------------------------
+# 手机号只匹配中国大陆 11 位号段（`1[3-9]` 开头、前后不是数字），
+# 使 19 位 Snowflake ID 等业务数字不会被误伤。
+# 密钥对（`password=...`）一律整体替换为 `<redacted>` —— 对**自由文本**而言，
+# "只留前 6 字符"会把 Secret 的前缀写进日志，而前缀本身已足以用于关联、
+# 部分暴力破解与"哪个密钥泄露了"的确认；`10 §4` 的措辞是"不得记录明文"，
+# 因此这里比 `mask_token` 更严。方向只允许更严，不允许更松。
+_PHONE_RE = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
+_EMAIL_RE = re.compile(r"([A-Za-z0-9._%+\-]+)@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})")
+
+#: `Authorization: Bearer xxx` —— 值直到行尾。
+_AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^\r\n,;]*")
+
+#: `Bearer xxx` / `Basic xxx`（缺少 `authorization` 关键字时的兜底）。
+_BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{6,}")
+
+#: 密钥类键值对。`\S+` 取到空白为止，足以覆盖典型写法。
+_SECRET_PAIR_RE = re.compile(
+    r"(?i)\b("
+    r"password|passwd|pwd|new_password|old_password|confirm_password|password_hash|"
+    r"mfa_secret|totp_secret|otp_secret|secret|client_secret|signing_secret|"
+    r"encryption_key|mfa_encryption_key|private_key|secret_key|"
+    r"access_token|refresh_token|id_token|session_token|token|api_key"
+    r")\b\s*[:=]\s*\S+"
+)
+
+#: JWT（三段 base64url）。它是最容易在自由文本里出现形态的令牌。
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}")
+
+
+def mask_phone_in_text(match: re.Match[str]) -> str:
+    """把文本中命中的手机号替换为 `138****1234` 形态。"""
+    return f"{match.group(1)}****{match.group(3)}"
+
+
+def scrub_text(value: str) -> str:
+    """对**自由文本**做模式脱敏（消息体、异常堆栈）。
+
+    顺序有意为之：先处理"整段密钥"，再处理单个令牌形态，最后才处理
+    可部分保留的 phone / email —— 否则一次 `password=13812341234`
+    会被先脱成 `password=138****1234`，虽然结果仍安全，
+    但多绕一步会掩盖"这里原本是密钥字段"这一更强的事实。
+
+    幂等：输出中的 `***` / `<redacted>` 不会再被任何模式命中。
+    """
+    if not value:
+        return value
+
+    text = _AUTHORIZATION_RE.sub("authorization=<redacted>", value)
+    text = _BEARER_RE.sub(r"\1 <redacted>", text)
+    text = _JWT_RE.sub(NEVER_LOG, text)
+    text = _SECRET_PAIR_RE.sub(lambda m: f"{m.group(1)}={NEVER_LOG}", text)
+    text = _EMAIL_RE.sub(lambda m: f"{m.group(1)}{MASKED}@{m.group(2)}", text)
+    return _PHONE_RE.sub(mask_phone_in_text, text)

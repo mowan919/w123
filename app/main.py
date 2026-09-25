@@ -27,6 +27,7 @@ from app import __version__
 from app.api.v1.endpoints.auth import router as auth_router
 from app.api.v1.endpoints.mfa import router as mfa_router
 from app.api.v1.router import api_router
+from app.audit.buffer import flush_logs
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
@@ -74,6 +75,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("application_stopping")
+        # 关闭前落库一次：启动 / 关闭期间产生的日志落在"兜底缓冲"里，
+        # 若不在进程结束前写出，它们会随进程一起消失 ——
+        # 而"服务为什么重启"这类问题的答案往往正好在那几行里。
+        # 必须在 `dispose_engine()` **之前**调用：落库需要一个可用引擎。
+        # `flush_logs()` 不抛异常且有 5 秒上限，因此不会拖住关闭流程。
+        await flush_logs()
         await dispose_engine()
         await close_redis()
 

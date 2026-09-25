@@ -39,7 +39,9 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.buffer import BufferingAuditRecorder
 from app.auth.actor import CurrentActor
+from app.core.context import set_actor_id
 from app.core.errors import AuthenticationError, PermissionDeniedError
 from app.core.security.token import extract_bearer_token
 from app.db.session import get_db
@@ -84,37 +86,42 @@ async def get_bearer_token(request: Request) -> str:
 async def get_session_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> SessionService:
-    """提供会话服务。"""
-    return SessionService(session)
+    """提供会话服务。
+
+    必须注入审计记录器：`SessionService.authenticate` 是**每个受保护端点**
+    的必经之路，它在令牌无效、会话已撤销、用户不可用、以及"已轮换的
+    Refresh Token 被复用"（DD-02 的 family revocation）时都会写事件。
+    默认的 `NullAuditRecorder` 会让这些事件止步于内存 ——
+    于是"谁拿着一个失效令牌反复尝试"这件事在审计里完全不可见。
+    """
+    return SessionService(session, audit=BufferingAuditRecorder())
 
 
 async def get_auth_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> AuthService:
-    """提供认证服务。"""
-    return AuthService(session)
+    """提供认证服务。
+
+    Phase 6 起注入 `BufferingAuditRecorder`：审计事件被写入**请求级缓冲**，
+    由中间件在同一请求结束前用独立事务落库。
+    在此之前这里是 `NullAuditRecorder` —— 也就是说 Phase 2~5 产生的审计事件
+    全部止步于内存，只有测试断言看得见；这正是 Phase 6 要补的口子。
+    """
+    return AuthService(session, audit=BufferingAuditRecorder())
 
 
 async def get_session_management_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> SessionManagementService:
-    """提供会话管理服务（列表 / 在线查询 / 踢下线）。
-
-    与 `AuthService` 一致，默认不注入审计记录器：
-    审计事件通过端口产生，**落库属 Phase 6**（DD-08 未冻结）。
-    """
-    return SessionManagementService(session)
+    """提供会话管理服务（列表 / 在线查询 / 踢下线）。"""
+    return SessionManagementService(session, audit=BufferingAuditRecorder())
 
 
 async def get_mfa_management_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> MfaManagementService:
-    """提供 MFA 管理服务（状态 / 绑定 / 启用 / 禁用 / 挑战核销）。
-
-    与 `AuthService` 一致，默认不注入审计记录器：审计事件经端口产生，
-    **落库属 Phase 6**（DD-08 未冻结）。
-    """
-    return MfaManagementService(session)
+    """提供 MFA 管理服务（状态 / 绑定 / 启用 / 禁用 / 挑战核销）。"""
+    return MfaManagementService(session, audit=BufferingAuditRecorder())
 
 
 async def get_authenticated_session(
@@ -126,12 +133,20 @@ async def get_authenticated_session(
 
     Raises:
         AuthenticationError: 令牌无效 / 过期 / 已撤销 / 所属用户不可用。
+
+    Note:
+        认证成功后把操作者写进请求上下文（`set_actor_id`）。
+        访问日志（`access_logs.operator_id`）由中间件产生，而中间件**不解析令牌**
+        —— 令牌校验只此一处，中间件重复解析会带来第二个真相。
+        这个写入能被中间件看见，前提是纯 ASGI 中间件（见 `middleware/trace.py`）。
     """
-    return await service.authenticate(
+    authenticated = await service.authenticate(
         access_token=token,
         ip=client_ip(request),
         user_agent=client_user_agent(request),
     )
+    set_actor_id(authenticated.actor.user_id)
+    return authenticated
 
 
 async def get_current_actor(

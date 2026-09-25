@@ -33,7 +33,7 @@
 | 003 | Authentication | **PASS** | `003-authentication-result.md` |
 | 004 | Session | **PASS** | `004-session-result.md`（2026-09-24，15/15，0 BLOCKED） |
 | 005 | MFA | **PASS**（13/13，0 BLOCKED） | `005-mfa-result.md`（2026-09-25） |
-| 006 | Logging / Audit / Trace | NOT RUN | — |
+| 006 | Logging / Audit / Trace | **PASS**（35/35，0 BLOCKED） | `006-logging-audit-result.md`（2026-09-25） |
 | 007 | Dictionary | NOT RUN | — |
 | 008 | Dynamic Permission | NOT RUN | — |
 | 009 | Hardening | NOT RUN | — |
@@ -60,3 +60,15 @@
 > ⚠️ 裁判第 12 项的读法**仍待人类澄清**：本次取 (c)"不新增恢复流程"，
 > 并以自动化护栏钉住"Secret 只在 setup 流出一次"。若裁定为 (a) 恢复码 /
 > (b) 管理员重置 MFA，则需**新增**表与端点，届时应重跑本验收。
+
+> ✅ **006 已判定 PASS（35/35，0 BLOCKED）**：`06 §1` 的五类日志全部落库，
+> `06 §3` 的 Trace 四项全部成立，`06 §2` 的 15 个 Audit 字段一字不缺且
+> **append-only 由数据库触发器强制**（非"ORM 里没写 update 方法"的约定），
+> `06 §4` 的五条脱敏规则首次覆盖**消息正文**与异常堆栈，
+> `06 §5` 的保留期清理能力以 `LogRetentionService` + `scripts/purge_logs.py` 交付。
+> DD-08（日志分区）仍未冻结 → 按 `06 §5` 的"**后续**归档/清理能力"口径
+> 不分区、纯增量延后（`JUDGMENT-6-01`），**不构成阻塞**。
+>
+> ⚠️ 本 Phase 顺带关闭了一个此前**无裁判项命中**的真实缺口：Phase 2~5 的
+> `app/api/deps.py` 用 `NullAuditRecorder` 构造全部服务，**所有审计事件
+> 止步于内存**，从未落库（详见 `docs/DESIGN-DECISIONS.md §13.5`）。

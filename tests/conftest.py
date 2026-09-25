@@ -17,6 +17,7 @@ import base64
 import hashlib
 import os
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 # 必须在导入应用模块之前设置，保证 settings 单例读取到测试值
@@ -61,6 +62,73 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E4
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 from app.main import create_app  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# 日志落库隔离（Phase 6）
+# ---------------------------------------------------------------------------
+
+
+class _NullSession:
+    """吞掉所有写入的会话替身（见 `isolate_log_flush`）。"""
+
+    async def execute(self, *args: Any, **kwargs: Any) -> None:
+        """什么也不做。"""
+        return None
+
+    async def commit(self) -> None:
+        """什么也不做。"""
+        return None
+
+    async def rollback(self) -> None:
+        """什么也不做。"""
+        return None
+
+    async def close(self) -> None:
+        """什么也不做。"""
+        return None
+
+
+@asynccontextmanager
+async def _null_session_provider() -> AsyncIterator[_NullSession]:
+    """提供一个不落库的会话。"""
+    yield _NullSession()
+
+
+@pytest.fixture(autouse=True)
+def isolate_log_flush() -> Iterator[None]:
+    """把日志落库限制在测试进程内（不连数据库、不跨用例残留）。
+
+    为什么需要它
+    -----------
+    每个 HTTP 请求结束时中间件都会调用 `flush_logs()`（Phase 6）。
+    若走默认提供者，**每一个**请求都会去连 `.env` 指向的数据库 ——
+    而在测试期那是一个不可达端口，于是每次请求都产生一次连接失败
+    外加一条 ERROR 堆栈。
+
+    结果不是"测试失败"，而是"几百条与用例无关的噪音混进输出"，
+    以及 `flush_failures` 这个全局计数被污染（需要它的用例将失去意义）。
+
+    替换成吞掉写入的会话替身之后：
+    - HTTP 用例不再需要数据库；
+    - 计数从 0 开始，断言可靠；
+    - 需要**真实**落库的用例自行注入提供者 —— 见
+      `tests/test_trace_access_log.py::flush_into_session`。
+    """
+    from app.audit import buffer as log_buffer
+
+    def _reset() -> None:
+        log_buffer.set_session_provider(_null_session_provider)
+        log_buffer.drain()
+        log_buffer.flush_failures = 0
+        log_buffer.dropped_logs = 0
+        log_buffer.reset_circuit()
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+        log_buffer.set_session_provider(None)
 
 
 def _real_database_url() -> str | None:

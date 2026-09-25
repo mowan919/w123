@@ -26,8 +26,14 @@ Phase 5 追加（DD-22 / DD-23 / DD-24 **方案 A** 已按裁定草案落地）�
     - **仍未冻结**：V1 具体 Provider（`00 §4` / `16 §1`）—— 因此本项目的 `app/`
       下不存在任何具体算法实现，Phase 5 只交付 Provider-无关的骨架。
 
-尚未注册（属后续 Phase 或未冻结）：
-    各日志表（Phase 6，DD-08 未冻结）
+Phase 6 追加（DD-08 日志分区仍**未冻结**，故采用技术默认并登记 INTERIM）：
+    - `audit_logs` / `security_logs` / `operation_logs` / `access_logs` /
+      `application_logs` —— `06 §1` 的五类日志。
+    - **未冻结**：`DD-08` 日志**分区**（PostgreSQL 声明式分区 / pg_partman /
+      归档到对象存储）。本 Phase 交付**不分区**的表 + 保留期清理能力；
+      分区与归档延后到日志量真正需要时（`06 §5` 只要求"**提供**后续归档/清理能力"）。
+    - 五张表一律只保留 `created_at`（**无 `updated_at`**），
+      并由迁移中的 `BEFORE UPDATE` 触发器强制拒绝更新 —— `10 §8` append-only。
 """
 
 from __future__ import annotations
@@ -49,6 +55,15 @@ from app.models.enums import (
     UserStatus,
     most_permissive_field_level,
 )
+from app.models.logs import (
+    LOG_MODELS,
+    AccessLog,
+    ApplicationLog,
+    AuditLog,
+    LogModel,
+    OperationLog,
+    SecurityLog,
+)
 from app.models.mfa import MfaChallenge, MfaPolicy, UserMfa
 from app.models.password_history import AdminUserPasswordHistory
 from app.models.permission import (
@@ -65,17 +80,23 @@ from app.models.user import AdminUser
 __all__ = [
     "FIELD_ACCESS_READABLE",
     "FIELD_ACCESS_WRITABLE",
+    "LOG_MODELS",
+    "AccessLog",
     "AdminUser",
     "AdminUserPasswordHistory",
+    "ApplicationLog",
+    "AuditLog",
     "Department",
     "DepartmentStatus",
     "FieldAccessLevel",
     "HttpMethod",
+    "LogModel",
     "MenuPage",
     "MfaChallenge",
     "MfaPolicy",
     "MfaPolicySubject",
     "MfaStatus",
+    "OperationLog",
     "PermissionResource",
     "PermissionResourceType",
     "PermissionStatus",
@@ -87,6 +108,7 @@ __all__ = [
     "RoleInheritance",
     "RolePermission",
     "RoleStatus",
+    "SecurityLog",
     "SessionRefreshTokenHistory",
     "SessionRevokeReason",
     "UserMfa",
