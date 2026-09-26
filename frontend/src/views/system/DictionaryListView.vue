@@ -10,14 +10,26 @@
  * partial unique index 保证，前端**不重复实现** —— 那属于后端不变量。
  * 前端只做友好提示：把后端 409 原样回显，不改写原因。
  */
-import { onMounted, ref } from 'vue'
+import { formatDateTime } from '@/utils/format'
+import { computed, onMounted, ref } from 'vue'
+import { NButton, NIcon } from 'naive-ui'
+import {
+  AddOutline,
+  BookOutline,
+  CreateOutline,
+  RefreshOutline,
+  TrashOutline,
+} from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import SearchForm from '@/components/data/SearchForm.vue'
 import DataTable from '@/components/data/DataTable.vue'
 import Pagination from '@/components/data/Pagination.vue'
+import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
+import FormDialog from '@/components/feedback/FormDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { useColumnSettings } from '@/composables/useColumnSettings'
 import {
   createDictItem,
   createDictType,
@@ -34,12 +46,20 @@ import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
 
-const columns: Array<DataTableColumn<DictType>> = [
+const dataColumns: Array<DataTableColumn<DictType>> = [
   { key: 'dict_code', title: '字典编码' },
   { key: 'dict_name', title: '字典名称' },
   { key: 'status', title: '状态', width: '90px', align: 'center' },
   { key: 'created_at', title: '创建时间', width: '170px' },
 ]
+
+const {
+  visible: visibleColumns,
+  items: columnItems,
+  toggle: toggleColumn,
+  move: moveColumn,
+  reset: resetColumns,
+} = useColumnSettings<DictType>('dictionaries', dataColumns)
 
 interface TypeDraft {
   id: ID | null
@@ -69,7 +89,25 @@ const error = ref<string | null>(null)
 const keyword = ref('')
 const statusFilter = ref<'ACTIVE' | 'DISABLED' | null>(null)
 
-const typeDraft = ref<TypeDraft | null>(null)
+function emptyTypeDraft(): TypeDraft {
+  return { id: null, dict_code: '', dict_name: '', description: '', status: 'ACTIVE' }
+}
+
+function emptyItemDraft(): ItemDraft {
+  return {
+    id: null,
+    item_label: '',
+    item_value: '',
+    item_code: '',
+    sort_order: 0,
+    is_default: false,
+    description: '',
+    status: 'ACTIVE',
+  }
+}
+
+const typeDraft = ref<TypeDraft>(emptyTypeDraft())
+const typeOpen = ref(false)
 const savingType = ref(false)
 const pendingDelete = ref<DictType | null>(null)
 const deletingType = ref(false)
@@ -79,10 +117,34 @@ const deleteResult = ref<string | null>(null)
 const expandedDictId = ref<ID | null>(null)
 const items = ref<DictItem[]>([])
 const itemLoading = ref(false)
-const itemDraft = ref<ItemDraft | null>(null)
+const itemDraft = ref<ItemDraft>(emptyItemDraft())
+const itemOpen = ref(false)
 const savingItem = ref(false)
 const pendingDeleteItem = ref<DictItem | null>(null)
 const deletingItem = ref(false)
+
+const isEditingType = computed(() => typeDraft.value.id !== null)
+const isEditingItem = computed(() => itemDraft.value.id !== null)
+
+const typeError = computed<string | null>(() => {
+  if (!typeOpen.value) return null
+  if (typeDraft.value.dict_code.trim() === '') return '请填写字典编码'
+  if (typeDraft.value.dict_name.trim() === '') return '请填写字典名称'
+  return null
+})
+
+const itemError = computed<string | null>(() => {
+  if (!itemOpen.value) return null
+  if (itemDraft.value.item_code.trim() === '') return '请填写项编码'
+  if (itemDraft.value.item_label.trim() === '') return '请填写标签'
+  if (itemDraft.value.item_value.trim() === '') return '请填写值'
+  return null
+})
+
+/** 当前展开的字典名，供字典项弹窗提示用。 */
+const expandedDictName = computed<string>(
+  () => rows.value.find((row) => row.id === expandedDictId.value)?.dict_name ?? '',
+)
 
 function notice(cause: unknown, fallback: string): void {
   appStore.showNotice('error', cause instanceof Error ? cause.message : fallback)
@@ -124,26 +186,44 @@ function onPageChange(next: { pageNum: number; pageSize: number }): void {
   void load()
 }
 
+// ---------------------------------------------------------------- 字典（类型）
+
+function startCreateType(): void {
+  typeDraft.value = emptyTypeDraft()
+  typeOpen.value = true
+}
+
+function startEditType(row: DictType): void {
+  typeDraft.value = {
+    id: row.id,
+    dict_code: row.dict_code,
+    dict_name: row.dict_name,
+    description: row.description ?? '',
+    status: row.status,
+  }
+  typeOpen.value = true
+}
+
 async function saveType(): Promise<void> {
+  if (typeError.value !== null) return
   const current = typeDraft.value
-  if (current === null) return
   savingType.value = true
   try {
     if (current.id === null) {
       await createDictType({
-        dict_code: current.dict_code,
-        dict_name: current.dict_name,
+        dict_code: current.dict_code.trim(),
+        dict_name: current.dict_name.trim(),
         description: current.description || null,
         status: current.status,
       })
     } else {
       await updateDictType(current.id, {
-        dict_name: current.dict_name,
+        dict_name: current.dict_name.trim(),
         description: current.description || null,
         status: current.status,
       })
     }
-    typeDraft.value = null
+    typeOpen.value = false
     await load()
   } catch (cause) {
     notice(cause, '保存失败')
@@ -169,6 +249,8 @@ async function confirmDeleteType(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- 字典项
+
 async function toggleExpand(dict: DictType): Promise<void> {
   if (expandedDictId.value === dict.id) {
     expandedDictId.value = null
@@ -192,16 +274,11 @@ async function loadItems(dictTypeId: ID): Promise<void> {
 }
 
 function startCreateItem(): void {
-  itemDraft.value = {
-    id: null,
-    item_label: '',
-    item_value: '',
-    item_code: '',
-    sort_order: 0,
-    is_default: false,
-    description: '',
-    status: 'ACTIVE',
-  }
+  itemDraft.value = emptyItemDraft()
+  // 新项排在最后：用当前最大排序值 +10，避免每次都要手填。
+  const maxSort = items.value.reduce((max, item) => Math.max(max, item.sort_order), 0)
+  itemDraft.value.sort_order = maxSort + 10
+  itemOpen.value = true
 }
 
 function startEditItem(item: DictItem): void {
@@ -215,18 +292,19 @@ function startEditItem(item: DictItem): void {
     description: item.description ?? '',
     status: item.status,
   }
+  itemOpen.value = true
 }
 
 async function saveItem(): Promise<void> {
   const dictTypeId = expandedDictId.value
+  if (dictTypeId === null || itemError.value !== null) return
   const current = itemDraft.value
-  if (dictTypeId === null || current === null) return
   savingItem.value = true
   try {
     const payload: DictItemCreateRequest = {
-      item_label: current.item_label,
-      item_value: current.item_value,
-      item_code: current.item_code,
+      item_label: current.item_label.trim(),
+      item_value: current.item_value.trim(),
+      item_code: current.item_code.trim(),
       sort_order: current.sort_order,
       is_default: current.is_default,
       description: current.description || null,
@@ -237,7 +315,7 @@ async function saveItem(): Promise<void> {
     } else {
       await updateDictItem(dictTypeId, current.id, payload)
     }
-    itemDraft.value = null
+    itemOpen.value = false
     await loadItems(dictTypeId)
   } catch (cause) {
     notice(cause, '保存失败')
@@ -268,7 +346,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <PageContainer title="数据字典" description="字典是枚举展示源。业务页面统一从这里取选项，不在页面里硬编码字面量。">
+  <PageContainer
+    title="数据字典"
+    description="维护下拉选项这类枚举值。统一在这里维护，各业务页面的选项才不会有出入。"
+    :icon="BookOutline"
+  >
     <SearchForm @search="search" @reset="resetFilters">
       <label class="field">
         <span class="field__label">关键字</span>
@@ -285,20 +367,38 @@ onMounted(() => {
     </SearchForm>
 
     <div class="toolbar">
-      <PermissionButton code="dict:create" type="primary" @click="typeDraft = { id: null, dict_code: '', dict_name: '', description: '', status: 'ACTIVE' }">
+      <PermissionButton code="dictionary:create" type="primary" @click="startCreateType">
+        <NIcon :component="AddOutline" />
         新增字典
       </PermissionButton>
+      <NButton size="small" :loading="loading" @click="load">
+        <template #icon>
+          <NIcon :component="RefreshOutline" />
+        </template>
+        刷新
+      </NButton>
+      <span class="toolbar__end">
+        <ColumnSettings
+          :items="columnItems"
+          :disabled="loading"
+          @toggle="toggleColumn"
+          @move="moveColumn"
+          @reset="resetColumns"
+        />
+      </span>
     </div>
 
     <div v-if="error" class="alert alert--error">{{ error }}</div>
 
     <DataTable
       v-else
-      :columns="columns"
+      :columns="visibleColumns"
       :rows="rows"
       :loading="loading"
       :row-key="(row: DictType) => row.id"
       empty-text="没有符合条件的字典"
+      actions-title="操作"
+      actions-width="150px"
     >
       <template #cell-status="{ row }">
         <span class="tag" :class="row.status === 'ACTIVE' ? 'tag--active' : 'tag--disabled'">
@@ -306,20 +406,28 @@ onMounted(() => {
         </span>
       </template>
       <template #cell-created_at="{ row }">
-        <span class="muted">{{ row.created_at }}</span>
+        <span class="muted">{{ formatDateTime(row.created_at) }}</span>
       </template>
       <template #cell-dict_code="{ row }">
         <div class="cell-actions">
+          <code>{{ row.dict_code }}</code>
           <button class="link" type="button" @click="toggleExpand(row)">
             {{ expandedDictId === row.id ? '收起字典项' : '展开字典项' }}
           </button>
-          <PermissionButton code="dict:edit" type="text" @click="typeDraft = { id: row.id, dict_code: row.dict_code, dict_name: row.dict_name, description: row.description ?? '', status: row.status }">
+        </div>
+      </template>
+
+      <template #actions="{ row }">
+        <span class="table-actions">
+          <PermissionButton code="dictionary:update" type="text" @click="startEditType(row)">
+            <NIcon :component="CreateOutline" />
             编辑
           </PermissionButton>
-          <PermissionButton code="dict:delete" type="text" @click="pendingDelete = row">
+          <PermissionButton code="dictionary:delete" type="text" @click="pendingDelete = row">
+            <NIcon :component="TrashOutline" />
             删除
           </PermissionButton>
-        </div>
+        </span>
       </template>
     </DataTable>
 
@@ -332,8 +440,13 @@ onMounted(() => {
     />
 
     <div v-if="expandedDictId !== null" class="sub-panel">
-      <h3 class="sub-panel__title">字典项</h3>
-      <PermissionButton code="dict:item-create" type="primary" @click="startCreateItem">新增字典项</PermissionButton>
+      <h3 class="sub-panel__title">
+        <span>字典项 — {{ expandedDictName }}</span>
+        <PermissionButton code="dictionary:item-create" type="primary" @click="startCreateItem">
+          <NIcon :component="AddOutline" />
+          新增字典项
+        </PermissionButton>
+      </h3>
 
       <div v-if="itemLoading" class="state"><span class="spinner" aria-hidden="true" /><span>加载中…</span></div>
       <table v-else class="mini-table">
@@ -363,8 +476,10 @@ onMounted(() => {
               </span>
             </td>
             <td>
-              <PermissionButton code="dict:item-edit" type="text" @click="startEditItem(item)">编辑</PermissionButton>
-              <PermissionButton code="dict:item-delete" type="text" @click="pendingDeleteItem = item">删除</PermissionButton>
+              <span class="table-actions">
+                <PermissionButton code="dictionary:item-update" type="text" @click="startEditItem(item)">编辑</PermissionButton>
+                <PermissionButton code="dictionary:item-delete" type="text" @click="pendingDeleteItem = item">删除</PermissionButton>
+              </span>
             </td>
           </tr>
         </tbody>
@@ -372,47 +487,88 @@ onMounted(() => {
       <p v-if="items.length === 0" class="muted">该字典下还没有字典项</p>
     </div>
 
-    <div v-if="itemDraft !== null" class="editor">
-      <h3 class="editor__title">{{ itemDraft.id === null ? '新增字典项' : '编辑字典项' }}</h3>
-      <label class="field"><span class="field__label">标签</span><input v-model="itemDraft.item_label" class="field__control" /></label>
-      <label class="field"><span class="field__label">值</span><input v-model="itemDraft.item_value" class="field__control" /></label>
-      <label class="field"><span class="field__label">项编码</span><input v-model="itemDraft.item_code" class="field__control" /></label>
-      <label class="field"><span class="field__label">排序</span><input v-model.number="itemDraft.sort_order" class="field__control" type="number" /></label>
-      <label class="field"><span class="field__label">描述</span><input v-model="itemDraft.description" class="field__control" /></label>
-      <label class="check"><input v-model="itemDraft.is_default" type="checkbox" /><span>设为该字典的默认项</span></label>
-      <label class="field"><span class="field__label">状态</span>
-        <select v-model="itemDraft.status" class="field__control">
-          <option value="ACTIVE">启用</option>
-          <option value="DISABLED">禁用</option>
-        </select>
-      </label>
-      <div class="editor__actions">
-        <button class="btn btn--primary" type="button" :disabled="savingItem" @click="saveItem">保存</button>
-        <button class="btn" type="button" :disabled="savingItem" @click="itemDraft = null">取消</button>
-      </div>
-    </div>
-
-    <div v-if="typeDraft !== null" class="editor">
-      <h3 class="editor__title">{{ typeDraft.id === null ? '新增字典' : '编辑字典' }}</h3>
-      <label class="field">
-        <span class="field__label">字典编码</span>
-        <input v-model="typeDraft.dict_code" class="field__control" :disabled="typeDraft.id !== null" />
-      </label>
-      <label class="field"><span class="field__label">字典名称</span><input v-model="typeDraft.dict_name" class="field__control" /></label>
-      <label class="field"><span class="field__label">描述</span><input v-model="typeDraft.description" class="field__control" /></label>
-      <label class="field"><span class="field__label">状态</span>
-        <select v-model="typeDraft.status" class="field__control">
-          <option value="ACTIVE">启用</option>
-          <option value="DISABLED">禁用</option>
-        </select>
-      </label>
-      <div class="editor__actions">
-        <button class="btn btn--primary" type="button" :disabled="savingType" @click="saveType">保存</button>
-        <button class="btn" type="button" :disabled="savingType" @click="typeDraft = null">取消</button>
-      </div>
-    </div>
-
     <p v-if="deleteResult !== null" class="muted">{{ deleteResult }}</p>
+
+    <FormDialog
+      :open="typeOpen"
+      :title="isEditingType ? '编辑字典' : '新增字典'"
+      :loading="savingType"
+      :error="typeError"
+      @cancel="typeOpen = false"
+      @submit="saveType"
+    >
+      <div class="form-grid">
+        <label class="field">
+          <span class="field__label">字典编码</span>
+          <input v-model.trim="typeDraft.dict_code" class="field__control" :disabled="isEditingType" placeholder="如 user_status" />
+        </label>
+        <label class="field">
+          <span class="field__label">字典名称</span>
+          <input v-model.trim="typeDraft.dict_name" class="field__control" placeholder="如 用户状态" />
+        </label>
+        <label class="field">
+          <span class="field__label">状态</span>
+          <select v-model="typeDraft.status" class="field__control">
+            <option value="ACTIVE">启用</option>
+            <option value="DISABLED">禁用</option>
+          </select>
+        </label>
+        <label class="field field--full">
+          <span class="field__label">描述</span>
+          <input v-model.trim="typeDraft.description" class="field__control" placeholder="选填" />
+        </label>
+      </div>
+      <p class="hint">
+        <template v-if="isEditingType">字典编码是业务读取用的标识，创建后不可修改。</template>
+        <template v-else>创建后可在列表里「展开字典项」逐条维护选项。</template>
+      </p>
+    </FormDialog>
+
+    <FormDialog
+      :open="itemOpen"
+      :title="isEditingItem ? '编辑字典项' : '新增字典项'"
+      :loading="savingItem"
+      :error="itemError"
+      :width="620"
+      @cancel="itemOpen = false"
+      @submit="saveItem"
+    >
+      <div class="form-grid">
+        <label class="field">
+          <span class="field__label">标签</span>
+          <input v-model.trim="itemDraft.item_label" class="field__control" placeholder="界面显示的文字" />
+        </label>
+        <label class="field">
+          <span class="field__label">值</span>
+          <input v-model.trim="itemDraft.item_value" class="field__control" placeholder="实际存储的值" />
+        </label>
+        <label class="field">
+          <span class="field__label">项编码</span>
+          <input v-model.trim="itemDraft.item_code" class="field__control" />
+        </label>
+        <label class="field">
+          <span class="field__label">排序</span>
+          <input v-model.number="itemDraft.sort_order" class="field__control" type="number" />
+        </label>
+        <label class="field">
+          <span class="field__label">状态</span>
+          <select v-model="itemDraft.status" class="field__control">
+            <option value="ACTIVE">启用</option>
+            <option value="DISABLED">禁用</option>
+          </select>
+        </label>
+        <label class="field field--full">
+          <span class="field__label">描述</span>
+          <input v-model.trim="itemDraft.description" class="field__control" placeholder="选填" />
+        </label>
+      </div>
+
+      <label class="check">
+        <input v-model="itemDraft.is_default" type="checkbox" />
+        <span>设为该字典的默认项</span>
+      </label>
+      <p class="hint">同一字典下只能有一个默认项；设为默认时，原默认项会被自动取消。</p>
+    </FormDialog>
 
     <ConfirmDialog
       :open="pendingDelete !== null"
@@ -420,7 +576,7 @@ onMounted(() => {
       danger
       :confirm-text="deletingType ? '删除中…' : '确认删除'"
       :loading="deletingType"
-      :description="`删除字典会连带逻辑删除其下全部字典项。字典编码 ${pendingDelete?.dict_code ?? ''} 如有业务已按该编码读取，取值将回退为空。`"
+      :description="`删除字典会连带删除其下全部字典项。字典编码 ${pendingDelete?.dict_code ?? ''} 如已被业务引用，对应取值会回退为空。`"
       @cancel="pendingDelete = null"
       @confirm="confirmDeleteType"
     />
@@ -442,6 +598,7 @@ onMounted(() => {
 .cell-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 </style>

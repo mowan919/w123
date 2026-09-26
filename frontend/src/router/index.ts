@@ -61,6 +61,15 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/DashboardView.vue'),
         meta: { title: '概览' },
       },
+      {
+        // 个人中心是**静态路由**：它不需要任何管理类权限，人人都有自己的一页，
+        // 因此不进权限契约、也不由 `generateRoutes` 生成。
+        // 没有 `meta.permission` ⇒ 守卫只校验"已登录"，不做页面权限判定。
+        path: 'profile',
+        name: 'profile',
+        component: () => import('@/views/ProfileView.vue'),
+        meta: { title: '个人中心' },
+      },
     ],
   },
 ]
@@ -97,7 +106,11 @@ export function installDynamicRoutes(contract: PermissionContract): string[] {
       ...record,
       name: `${DYNAMIC_PREFIX}${String(record.name)}`,
     }
-    router.addRoute({ path: '/', children: [withPrefix] })
+    // ⚠️ 必须挂到 admin-layout **名下**。曾经新建一条 `{ path: '/', children: [...] }`
+    // —— 它没有 component，vue-router 会把子组件"提升"到根 RouterView，
+    // 页面绕过 AppLayout 渲染：侧栏、顶栏、面包屑全部消失，只剩孤零零的内容。
+    // 表现正好是"所有页面都光秃秃的"。
+    router.addRoute(LAYOUT_NAME, withPrefix)
     names.push(String(withPrefix.name))
     addedDynamicNames.push(String(withPrefix.name))
   }
@@ -174,6 +187,10 @@ router.beforeEach(async (to) => {
     } catch {
       return { name: 'login', query: { redirect: to.fullPath } }
     }
+    // 动态路由只由 LoginView 在登录成功时装一次 —— 整页刷新后不存在，
+    // 初始导航已把 /system/users 这类路径解析成 not-found。
+    // 必须在放行前重建，并**重新导航**让新路由参与解析。
+    installDynamicRoutes(permissionStore.toContract())
     const retry = decideNavigation({
       to: to.path,
       isAuthenticated: authStore.isAuthenticated,
@@ -183,6 +200,12 @@ router.beforeEach(async (to) => {
     })
     if (retry.kind === 'redirect') return retry.to
     if (retry.kind === 'wait') return false
+    // 初始导航发生在动态路由注册之前，路径已被解析成 not-found；
+    // 现在路由已就位，用原路径重导一次。真正不存在的路径重导后
+    // 仍是 not-found，且此时 permissionsLoaded=true 不会再进本分支 —— 无循环。
+    if (to.name === 'not-found') {
+      return { path: to.fullPath, replace: true }
+    }
   }
   return true
 })

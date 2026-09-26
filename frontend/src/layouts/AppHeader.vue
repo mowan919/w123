@@ -5,16 +5,17 @@
  * 折叠开关为什么在这里而不是侧栏里：侧栏被折叠时能点的地方只剩 64px，
  * 展开按钮放进去很容易做成一个几乎点不中的图标。
  */
-import { computed } from 'vue'
+import { computed, h } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NAvatar,
   NButton,
   NDropdown,
+  NIcon,
   NTag,
   type DropdownOption,
 } from 'naive-ui'
-import { MenuOutline } from '@vicons/ionicons5'
+import { LogOutOutline, MenuOutline, PersonCircleOutline } from '@vicons/ionicons5'
 
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -30,10 +31,16 @@ const displayName = computed<string>(() => authStore.user?.display_name || authS
 /** 头像取展示名首字符；中文取第一个字，英文取首字母大写。 */
 const initial = computed<string>(() => (displayName.value.trim()[0] ?? '?').toUpperCase())
 
+/** 下拉项图标要走 `icon` 字段的插槽函数 —— 直接放组件实例在 naive 里不会渲染。 */
+function iconOf(component: typeof PersonCircleOutline) {
+  return () => h(NIcon, null, { default: () => h(component) })
+}
+
 const userMenu = computed<DropdownOption[]>(() => [
-  { key: 'who', label: displayName.value, disabled: true },
+  { key: 'who', label: displayName.value || '未登录', disabled: true },
   { type: 'divider', key: 'd1' },
-  { key: 'logout', label: '退出登录' },
+  { key: 'profile', label: '个人中心', icon: iconOf(PersonCircleOutline) },
+  { key: 'logout', label: '退出登录', icon: iconOf(LogOutOutline) },
 ])
 
 async function onLogout(): Promise<void> {
@@ -44,6 +51,7 @@ async function onLogout(): Promise<void> {
 
 function onSelect(key: string): void {
   if (key === 'logout') void onLogout()
+  else if (key === 'profile') void router.push({ name: 'profile' })
 }
 </script>
 
@@ -52,7 +60,7 @@ function onSelect(key: string): void {
     <div class="app-header__left">
       <NButton quaternary circle :aria-label="appStore.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'" @click="appStore.toggleSidebar()">
         <template #icon>
-          <MenuOutline />
+          <NIcon :component="MenuOutline" />
         </template>
       </NButton>
       <span class="app-header__name">{{ displayName }}</span>
@@ -68,6 +76,7 @@ function onSelect(key: string): void {
             {{ initial }}
           </NAvatar>
           <span class="app-header__user-name">{{ displayName || '未登录' }}</span>
+          <NIcon :component="PersonCircleOutline" class="app-header__caret" :size="14" />
         </button>
       </NDropdown>
     </div>
@@ -113,6 +122,10 @@ function onSelect(key: string): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.app-header__caret {
+  color: var(--vctn-text-weak);
 }
 
 /* 窄屏只留头像，名字挤没了反而更糟。 */

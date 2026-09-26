@@ -5,6 +5,7 @@
  * 布局只做**外壳**。权限判断不在这里 —— 菜单来自后端权限结果
  * （FE-03 §7），越权访问由路由守卫拦到 /403。
  */
+import { RouterView } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import AppSidebar from './AppSidebar.vue'
 import AppHeader from './AppHeader.vue'
@@ -21,7 +22,10 @@ const appStore = useAppStore()
       <AppHeader />
       <AppBreadcrumb />
       <main class="app-layout__content">
-        <slot />
+        <!-- 嵌套路由的出口：业务页面都是本布局的 children，
+             没有 RouterView 它们就没有渲染点（面包屑照常显示，内容区永远空白）。
+             曾经写成 <slot /> —— 测试直接 mount 视图测不出，浏览器一跑就露馅。 -->
+        <RouterView />
       </main>
     </div>
     <NotificationHost />

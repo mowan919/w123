@@ -13,6 +13,7 @@ import {
   CubeOutline,
   GridOutline,
   KeyOutline,
+  SpeedometerOutline,
 } from '@vicons/ionicons5'
 
 import { useAuthStore } from '@/stores/auth'
@@ -62,7 +63,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <PageContainer title="概览" :description="`${displayName}，欢迎回来`">
+  <PageContainer title="概览" :description="`${displayName}，欢迎回来`" :icon="SpeedometerOutline">
     <!-- 欢迎区：身份 + 数据范围，一眼回答"我现在是谁、能看多宽"。 -->
     <section class="hero">
       <div class="hero__id">
@@ -76,8 +77,21 @@ onMounted(() => {
         </div>
       </div>
       <div class="hero__tags">
-        <NTag round :bordered="false" type="info" size="small">数据范围：{{ scopeText }}</NTag>
-        <NTag round :bordered="false" size="small">权限版本 v{{ permissionStore.version }}</NTag>
+        <!-- 深色渐变底上默认的蓝色 tag 会融进去，显式给半透明白皮。 -->
+        <NTag
+          round
+          size="small"
+          :color="{ color: 'rgba(255,255,255,0.16)', textColor: '#fff', borderColor: 'transparent' }"
+        >
+          数据范围：{{ scopeText }}
+        </NTag>
+        <NTag
+          round
+          size="small"
+          :color="{ color: 'rgba(255,255,255,0.16)', textColor: '#fff', borderColor: 'transparent' }"
+        >
+          权限配置版本 v{{ permissionStore.version }}
+        </NTag>
       </div>
     </section>
 
@@ -105,7 +119,7 @@ onMounted(() => {
     </section>
 
     <p class="note">
-      以上为后端计算并下发的权限契约概览；前端不据此替代服务端鉴权（FE-06 §4）。
+      统计当前账号已获授权的范围：可访问的页面、可见菜单、可调用接口、可用按钮与受控字段。
     </p>
   </PageContainer>
 </template>

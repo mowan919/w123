@@ -70,7 +70,12 @@ export function deleteDictItem(dictTypeId: ID, itemId: ID): Promise<void> {
 
 /** 公开字典查询（无需认证）。业务页面统一走它取枚举，不在各页面硬编码。 */
 export function getPublicDict(dictCode: string): Promise<PublicDictResponse> {
-  return http.get<PublicDictResponse>(`/dicts/${dictCode}`, undefined, { auth: false })
+  // ⚠️ 不能带 `auth: false`。后端 `/dicts/{dict_code}` 的"公开"指**免 API 权限**
+  // 但仍需登录（JUDGMENT-7-03：CurrentActorDep 强制认证）。曾按"公开=匿名"
+  // 理解写成 auth:false —— 请求永远 401，触发 refresh 后重试仍 401，
+  // 重试耗尽 → notifySessionLost → clearSession 把刚登录的令牌**整体清空**，
+  // 表现为"登录成功、能看页面，但一刷新/切换就掉回登录页"。
+  return http.get<PublicDictResponse>(`/dicts/${dictCode}`)
 }
 
 export type DictItems = PageResult<DictItem>

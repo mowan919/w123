@@ -75,7 +75,7 @@ async function afterAuth(): Promise<void> {
       </div>
       <h2 class="login__headline">统一身份与权限<br />管理平台</h2>
       <ul class="login__points">
-        <li>角色继承与数据范围下推</li>
+        <li>按角色分配页面、按钮与字段</li>
         <li>字段级读写权限控制</li>
         <li>全链路审计留痕</li>
       </ul>

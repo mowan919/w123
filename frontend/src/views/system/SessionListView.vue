@@ -8,25 +8,30 @@
  *
  * 撤销会话会立刻生效（后端实时计算权限，不依赖缓存）。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { NButton, NIcon } from 'naive-ui'
+import { DesktopOutline, LogOutOutline, RefreshOutline, TrashOutline } from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import SearchForm from '@/components/data/SearchForm.vue'
 import DataTable from '@/components/data/DataTable.vue'
 import Pagination from '@/components/data/Pagination.vue'
+import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { useColumnSettings } from '@/composables/useColumnSettings'
 import {
   listSessions,
   revokeAllUserSessions,
   revokeSession,
 } from '@/api/endpoints/organization'
+import { formatDateTime } from '@/utils/format'
 import type { DataTableColumn } from '@/components/data/types'
 import type { Session } from '@/types'
 
 const appStore = useAppStore()
 
-const columns: Array<DataTableColumn<Session>> = [
+const dataColumns: Array<DataTableColumn<Session>> = [
   { key: 'username', title: '用户' },
   { key: 'login_at', title: '登录时间', width: '170px' },
   { key: 'ip', title: 'IP', width: '140px' },
@@ -35,6 +40,14 @@ const columns: Array<DataTableColumn<Session>> = [
   { key: 'online', title: '状态', width: '90px', align: 'center' },
   { key: 'revoked_at', title: '撤销时间', width: '170px' },
 ]
+
+const {
+  visible: visibleColumns,
+  items: columnItems,
+  toggle: toggleColumn,
+  move: moveColumn,
+  reset: resetColumns,
+} = useColumnSettings<Session>('sessions', dataColumns)
 
 const rows = ref<Session[]>([])
 const total = ref(0)
@@ -49,6 +62,11 @@ const pendingRevoke = ref<Session | null>(null)
 const revoking = ref(false)
 const pendingRevokeAll = ref<Session | null>(null)
 const revokingAll = ref(false)
+
+/** 选中的会话对应的用户：批量撤销是"按用户"生效的，先解出用户名再确认。 */
+const selectedUser = computed<Session | null>(
+  () => rows.value.find((row) => row.id === selected.value[0]) ?? null,
+)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -109,6 +127,7 @@ async function confirmRevokeAll(): Promise<void> {
   try {
     await revokeAllUserSessions(target.user_id)
     pendingRevokeAll.value = null
+    selected.value = []
     await load()
   } catch (cause) {
     appStore.showNotice('error', cause instanceof Error ? cause.message : '批量撤销失败')
@@ -123,7 +142,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <PageContainer title="会话管理" description="撤销是即时生效的：后端不缓存权限，撤销后下一次请求即被拒绝。">
+  <PageContainer
+    title="会话管理"
+    description="查看用户的登录会话，撤销后该会话立即失效，用户需要重新登录。"
+    :icon="DesktopOutline"
+  >
     <SearchForm @search="search" @reset="resetFilters">
       <label class="field">
         <span class="field__label">在线状态</span>
@@ -135,19 +158,34 @@ onMounted(() => {
     </SearchForm>
 
     <div class="toolbar">
+      <NButton size="small" :loading="loading" @click="load">
+        <template #icon>
+          <NIcon :component="RefreshOutline" />
+        </template>
+        刷新
+      </NButton>
       <PermissionButton
         v-if="selected.length > 0"
         code="session:revoke-all"
         danger
-        @click="pendingRevokeAll = rows.find((row) => row.id === selected[0]) ?? null"
+        @click="pendingRevokeAll = selectedUser"
       >
-        批量撤销（{{ selected.length }}）
+        <NIcon :component="LogOutOutline" />
+        强制该用户下线（{{ selected.length }}）
       </PermissionButton>
-      <span class="muted">批量撤销按用户维度生效，而不是按选中的会话逐条撤销</span>
+      <span class="toolbar__end">
+        <ColumnSettings
+          :items="columnItems"
+          :disabled="loading"
+          @toggle="toggleColumn"
+          @move="moveColumn"
+          @reset="resetColumns"
+        />
+      </span>
     </div>
 
     <DataTable
-      :columns="columns"
+      :columns="visibleColumns"
       :rows="rows"
       :loading="loading"
       :error="error"
@@ -155,6 +193,8 @@ onMounted(() => {
       selectable
       :selected="selected"
       empty-text="没有会话"
+      actions-title="操作"
+      actions-width="130px"
       @selection-change="(keys: string[]) => (selected = keys)"
     >
       <template #cell-online="{ row }">
@@ -162,20 +202,40 @@ onMounted(() => {
           {{ row.online ? '在线' : '离线' }}
         </span>
       </template>
+      <template #cell-login_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.login_at) }}</span>
+      </template>
+      <template #cell-last_active_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.last_active_at) }}</span>
+      </template>
       <template #cell-device="{ row }">
         <span>{{ row.device ?? '—' }}</span>
         <div class="muted">{{ row.user_agent ?? '' }}</div>
       </template>
       <template #cell-revoked_at="{ row }">
         <span v-if="row.revoked_at !== null" class="tag tag--disabled">
-          {{ row.revoked_at }}
-          <span v-if="row.revoke_reason !== null">（{{ row.revoke_reason }}）</span>
+          {{ formatDateTime(row.revoked_at) }}
         </span>
         <span v-else class="muted">—</span>
       </template>
       <template #cell-username="{ row }">
         <div>{{ row.display_name || row.username }}</div>
         <div class="muted">{{ row.username }}</div>
+      </template>
+
+      <template #actions="{ row }">
+        <span class="table-actions">
+          <PermissionButton
+            v-if="row.revoked_at === null"
+            code="session:revoke"
+            type="text"
+            @click="pendingRevoke = row"
+          >
+            <NIcon :component="TrashOutline" />
+            撤销会话
+          </PermissionButton>
+          <span v-else class="muted">已撤销</span>
+        </span>
       </template>
     </DataTable>
 
@@ -193,21 +253,20 @@ onMounted(() => {
       danger
       :confirm-text="revoking ? '撤销中…' : '确认撤销'"
       :loading="revoking"
-      :description="`该会话的 Refresh Token 将立即失效。若后续复用旧 Refresh Token，后端会按 TOKEN_REUSE_DETECTED 处理（强制登出）。`"
+      :description="`该会话的登录凭证将立即失效，用户需要重新登录。${pendingRevoke === null ? '' : `用户：${pendingRevoke.username}（${pendingRevoke.device ?? '未知设备'}）`}`"
       @cancel="pendingRevoke = null"
       @confirm="confirmRevoke"
     />
 
     <ConfirmDialog
       :open="pendingRevokeAll !== null"
-      title="撤销该用户的全部会话"
+      title="强制该用户下线"
       danger
-      :confirm-text="revokingAll ? '撤销中…' : '确认撤销全部'"
+      :confirm-text="revokingAll ? '撤销中…' : '确认全部撤销'"
       :loading="revokingAll"
-      :description="`将撤销 ${pendingRevokeAll?.username ?? ''} 名下的所有会话，用户需要重新登录。此操作不可撤销。`"
+      :description="`将撤销 ${pendingRevokeAll?.username ?? ''} 名下全部会话（不只是当前勾选的这一条），该用户需要重新登录。此操作不可撤销。`"
       @cancel="pendingRevokeAll = null"
       @confirm="confirmRevokeAll"
     />
   </PageContainer>
 </template>
-

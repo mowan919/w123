@@ -19,6 +19,8 @@
  * 给自己的角色加权限后界面上立刻出现对应入口，是这个页面该有的行为。
  */
 import { computed, ref, watch } from 'vue'
+import { NIcon } from 'naive-ui'
+import { KeyOutline, SaveOutline } from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
@@ -196,7 +198,7 @@ async function refreshSelfIfAffected(roleId: ID): Promise<void> {
     await permissionStore.refreshIfHoldsRole([roleId])
   } catch {
     // 保存已经成功，契约同步失败只影响菜单的即时性，不能回滚保存结果。
-    appStore.showNotice('info', '保存成功，但权限契约同步失败，刷新页面后生效')
+    appStore.showNotice('info', '已保存，但界面权限刷新失败，刷新页面后生效')
   }
 }
 
@@ -281,7 +283,7 @@ watch(
 const contractVersion = computed<number>(() => permissionStore.version)
 
 watch(contractVersion, () => {
-  appStore.showNotice('info', `权限契约已更新到版本 ${contractVersion.value}，请重新加载权限配置后再修改`)
+  appStore.showNotice('info', `你的权限已被更新到版本 ${contractVersion.value}，请重新加载本页后再修改`)
 })
 
 async function boot(): Promise<void> {
@@ -294,10 +296,17 @@ void boot()
 </script>
 
 <template>
-  <PageContainer title="权限配置" description="授权语义为整体替换：保存后该类别只保留当前勾选的资源。">
+  <PageContainer
+    title="权限配置"
+    description="按角色配置它能看到哪些页面、能点哪些按钮、能读改哪些字段，以及能看到哪个范围的数据。"
+    :icon="KeyOutline"
+  >
     <div class="picker">
       <label class="field">
-        <span class="field__label">角色</span>
+        <span class="field__label">
+          <NIcon :component="KeyOutline" />
+          角色
+        </span>
         <select
           class="field__control"
           :value="selectedRoleId ?? ''"
@@ -311,16 +320,17 @@ void boot()
       <PermissionButton code="role:assign-permission" @click="selectedRoleId !== null && loadConfig(selectedRoleId)">
         重新加载
       </PermissionButton>
+      <span class="muted">修改会按类别即时保存，没有「全部保存」按钮。</span>
     </div>
     <p v-if="rolesStore.pickerMightBeTruncated" class="hint">
-      角色较多时这份清单可能未取全；找不到目标角色请到「角色管理」页按关键字筛选。
+      角色数量较多，这里的下拉可能未取全；查不到目标角色时可到「角色管理」页按关键字检索。
     </p>
 
     <div v-if="loadingConfig" class="state"><span class="spinner" aria-hidden="true" /><span>加载配置…</span></div>
 
     <template v-else>
       <section class="panel">
-        <h3 class="panel__title">页面 / 菜单 / 按钮 / API 授权</h3>
+        <h3 class="panel__title">页面 / 菜单 / 按钮 / 接口授权</h3>
         <div class="grid">
           <div v-for="kind in (['PAGE', 'MENU', 'BUTTON', 'API'] as ResourceKind[])" :key="kind" class="group">
             <div class="group__head">
@@ -330,6 +340,7 @@ void boot()
                 :loading="saving === kind"
                 @click="saveKind(kind)"
               >
+                <NIcon :component="SaveOutline" />
                 保存
               </PermissionButton>
             </div>
@@ -345,9 +356,9 @@ void boot()
             <p v-if="options[kind].length === 0" class="muted">该类别还没有资源</p>
           </div>
         </div>
-        <p class="hint">空数组提交表示清空该类别的全部授权；其余类别不受影响。</p>
+        <p class="hint">取消某类别的全部勾选并保存，即清空该类别的授权；其他类别不受影响。</p>
         <p v-if="resourcesStore.grantableMightBeTruncated" class="hint">
-          资源较多时这份清单可能未取全；找不到目标资源请到「权限资源」页按类型筛选。
+          资源数量较多，这里的清单可能未取全；可到「权限资源」页按类型检索后再授权。
         </p>
       </section>
 
@@ -382,16 +393,16 @@ void boot()
           </tbody>
         </table>
         <PermissionButton code="role:assign-permission" :loading="saving === 'FIELDS'" @click="saveFields">
+          <NIcon :component="SaveOutline" />
           保存字段权限
         </PermissionButton>
         <p class="hint">
-          字段权限的四态由后端再次校验；前端这里的设置只决定"让不让改"，
-          HIDDEN 的字段即使被直接提交也会被后端拒绝。
+          设为「隐藏」的字段既不会出现在接口返回里，也无法被直接提交修改。
         </p>
       </section>
 
       <section class="panel">
-        <h3 class="panel__title">数据范围（DD-07）</h3>
+        <h3 class="panel__title">数据范围</h3>
         <div class="radios">
           <label v-for="option in DATA_SCOPE_OPTIONS" :key="option.value" class="check">
             <input v-model="dataScope" type="radio" :value="option.value" />
@@ -413,14 +424,16 @@ void boot()
             />
             <span>{{ dept.name }}</span>
           </label>
-          <p v-if="organizationStore.flat.length === 0" class="muted">部门树加载失败，无法配置 CUSTOM 集合</p>
+          <p v-if="organizationStore.flat.length === 0" class="muted">部门树加载失败，暂时无法选择自定义部门</p>
         </div>
 
         <PermissionButton code="role:config-data-scope" :loading="saving === 'DATA_SCOPE'" @click="saveDataScope">
+          <NIcon :component="SaveOutline" />
           保存数据范围
         </PermissionButton>
         <p class="hint">
-          部门维度的数据范围由后端下推到 SQL。切换策略后，该角色下所有用户下一次请求即生效。
+          范围决定该角色能看到哪些部门的数据（例如只看本部门、或只看本人）。
+          保存后立即生效，角色下的用户下次请求即按新范围返回。
         </p>
       </section>
     </template>

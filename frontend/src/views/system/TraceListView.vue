@@ -9,24 +9,37 @@
  * "业务日志多还是审计多"；点开才看逐条明细。
  */
 import { onMounted, ref } from 'vue'
+import { NButton, NIcon } from 'naive-ui'
+import { EyeOutline, GitNetworkOutline, RefreshOutline } from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import DataTable from '@/components/data/DataTable.vue'
 import Pagination from '@/components/data/Pagination.vue'
+import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import { useAppStore } from '@/stores/app'
+import { useColumnSettings } from '@/composables/useColumnSettings'
+import { formatDateTime } from '@/utils/format'
 import { getTrace, listTraces } from '@/api/endpoints/logs'
 import type { DataTableColumn } from '@/components/data/types'
 import type { TraceEntry, TraceSummary } from '@/api/endpoints/logs'
 
 const appStore = useAppStore()
 
-const columns: Array<DataTableColumn<TraceSummary>> = [
-  { key: 'trace_id', title: 'Trace ID' },
+const dataColumns: Array<DataTableColumn<TraceSummary>> = [
+  { key: 'trace_id', title: '链路 ID' },
   { key: 'first_seen_at', title: '首条时间', width: '170px' },
   { key: 'last_seen_at', title: '末条时间', width: '170px' },
   { key: 'counts', title: '日志类型分布' },
   { key: 'total_entries', title: '总条数', width: '90px', align: 'right' },
 ]
+
+const {
+  visible: visibleColumns,
+  items: columnItems,
+  toggle: toggleColumn,
+  move: moveColumn,
+  reset: resetColumns,
+} = useColumnSettings<TraceSummary>('traces', dataColumns)
 
 const rows = ref<TraceSummary[]>([])
 const total = ref(0)
@@ -88,28 +101,60 @@ onMounted(() => {
 </script>
 
 <template>
-  <PageContainer title="链路查询" description="按 Trace ID 串联一个请求产生的全部日志，用于定位某个请求为什么慢或为什么失败。">
+  <PageContainer
+    title="链路查询"
+    description="按一次请求串联它产生的全部日志，用于判断一个操作慢在哪里、或者在哪一步失败。"
+    :icon="GitNetworkOutline"
+  >
+    <div class="toolbar">
+      <NButton size="small" :loading="loading" @click="load">
+        <template #icon>
+          <NIcon :component="RefreshOutline" />
+        </template>
+        刷新
+      </NButton>
+      <span class="toolbar__end">
+        <ColumnSettings
+          :items="columnItems"
+          :disabled="loading"
+          @toggle="toggleColumn"
+          @move="moveColumn"
+          @reset="resetColumns"
+        />
+      </span>
+    </div>
+
     <div v-if="error" class="alert alert--error">{{ error }}</div>
 
     <DataTable
       v-else
-      :columns="columns"
+      :columns="visibleColumns"
       :rows="rows"
       :loading="loading"
       :row-key="(row: TraceSummary) => row.trace_id"
       empty-text="没有链路记录"
+      actions-title="操作"
+      actions-width="110px"
     >
       <template #cell-trace_id="{ row }">
-        <PermissionButton code="trace:read" type="text" @click="openDetail(row.trace_id)">
-          <code>{{ row.trace_id }}</code>
-        </PermissionButton>
+        <code>{{ row.trace_id }}</code>
       </template>
       <template #cell-counts="{ row }">
         <span class="muted">{{ describeCounts(row.counts) }}</span>
       </template>
       <template #cell-first_seen_at="{ row }">
-        <div>{{ row.first_seen_at }}</div>
+        <div class="muted">{{ formatDateTime(row.first_seen_at) }}</div>
         <div v-if="row.total_entries > 0" class="muted">{{ row.total_entries }} 条</div>
+      </template>
+      <template #cell-last_seen_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.last_seen_at) }}</span>
+      </template>
+
+      <template #actions="{ row }">
+        <PermissionButton code="trace:read" type="text" @click="openDetail(row.trace_id)">
+          <NIcon :component="EyeOutline" />
+          明细
+        </PermissionButton>
       </template>
     </DataTable>
 
@@ -125,7 +170,7 @@ onMounted(() => {
       <div class="drawer__panel">
         <h3 class="drawer__title">
           链路明细
-          <button class="link" type="button" @click="detail = null">关闭</button>
+          <NButton size="small" quaternary @click="detail = null">关闭</NButton>
         </h3>
         <p v-if="detailLoading" class="muted">加载中…</p>
         <template v-else>
@@ -141,7 +186,7 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-for="entry in detail.entries" :key="entry.id">
-                <td class="nowrap">{{ entry.created_at }}</td>
+                <td class="nowrap">{{ formatDateTime(entry.created_at) }}</td>
                 <td><span class="tag">{{ entry.log_type }}</span></td>
                 <td>{{ entry.name }}</td>
                 <td>{{ entry.result ?? '—' }}</td>

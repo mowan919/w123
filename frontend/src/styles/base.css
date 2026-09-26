@@ -281,6 +281,23 @@ input[type='radio']:not([class*='n-']) {
   text-align: center;
 }
 
+/* 操作列：不换行，避免"编辑 / 删除"被拆到两行把行高撑起来。 */
+.data-table__table td.col-actions,
+.data-table__table th.col-actions {
+  white-space: nowrap;
+}
+
+.data-table__table tbody tr .col-actions {
+  /* 操作列在 hover 前保持低调：整张表每行都挂三个彩色按钮会非常吵。 */
+  opacity: 0.72;
+  transition: opacity var(--vctn-motion);
+}
+
+.data-table__table tbody tr:hover .col-actions,
+.data-table__table tbody tr:focus-within .col-actions {
+  opacity: 1;
+}
+
 .data-table__state {
   display: flex;
   align-items: center;
@@ -386,28 +403,22 @@ input[type='radio']:not([class*='n-']) {
 
 /* ---------------------------------------------------------------- 分页 */
 
+/* 布局只占一行：左侧是"第 x–y 条 / 共 n 条"，右侧是页码与每页条数。
+   页码本身由 naive 的 NPagination 渲染，这里不再给它任何外观 ——
+   外面再包一层边框和背景会跟组件库的内联样式抢优先级。 */
 .pagination {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 12px;
+  margin-top: 14px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .pagination__range {
   margin-right: auto;
   color: var(--vctn-text-weak);
-}
-
-.pagination__gap {
-  color: var(--vctn-text-weak);
-}
-
-/* ⚠️ 这里**故意不给** `.pagination__btn` / `.pagination__size` 任何外观：
-   分页已经换用 naive 的 Button / Select，再写一层边框和背景只会跟组件库的
-   内联样式抢优先级（表现为 hover 态一半生效一半不生效）。这里只管布局。 */
-.pagination__size {
-  min-width: 110px;
+  font-size: 13px;
 }
 
 /* ---------------------------------------------------------------- 侧边栏 */
@@ -451,8 +462,15 @@ input[type='radio']:not([class*='n-']) {
 }
 
 .sidebar__nav {
+  /* 占满剩余高度：菜单多了自己滚动，底部"个人中心"始终贴底可见。 */
+  flex: 1;
   padding: 12px 0;
   overflow-y: auto;
+}
+
+.sidebar__foot {
+  padding: 8px 0 12px;
+  border-top: 1px solid var(--vctn-sidebar-border);
 }
 
 /* 手动折叠（`AppHeader` 里的开关）：与窄屏自动收起共用同一套收窄尺寸，
@@ -505,10 +523,21 @@ input[type='radio']:not([class*='n-']) {
 }
 
 .sidebar__item.is-active {
-  background: var(--vctn-sidebar-bg-sub);
+  /* 活动项用主色渐变底 + 左侧主色条：只靠"底色稍浅一档"在深色侧栏里
+     几乎看不出来，用户会以为高亮失效。 */
+  background: linear-gradient(
+    90deg,
+    rgba(59, 110, 246, 0.28) 0%,
+    rgba(59, 110, 246, 0.06) 100%
+  );
   border-left-color: var(--vctn-primary);
   color: var(--vctn-sidebar-text-active);
   font-weight: 500;
+}
+
+.sidebar__item.is-active .sidebar__icon {
+  opacity: 1;
+  color: var(--vctn-primary-hover);
 }
 
 .sidebar__item.is-static {
@@ -528,9 +557,24 @@ input[type='radio']:not([class*='n-']) {
   opacity: 0.75;
 }
 
+/* 分组里有活动项时，标题也点亮 —— 否则"我在系统管理下的哪一栏"
+   在收起的分组上看不出来。 */
+.sidebar__group-title.is-active {
+  opacity: 1;
+  color: var(--vctn-sidebar-text-active);
+}
+
+.sidebar__group-title.is-active .sidebar__icon {
+  opacity: 1;
+  color: var(--vctn-primary-hover);
+}
+
 .sidebar__icon {
-  width: 16px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex: 0 0 18px;
   opacity: 0.85;
 }
 
@@ -591,11 +635,26 @@ input[type='radio']:not([class*='n-']) {
 
 .page-container__head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+/* 页头图标：给"这是哪一页"一个比纯文字更快的识别锚点。 */
+.page-container__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 10px;
+  background: var(--vctn-primary-weak);
+  color: var(--vctn-primary);
+}
+
+.page-container__titles {
+  min-width: 0;
 }
 
 .page-container__title {
@@ -676,6 +735,48 @@ input[type='radio']:not([class*='n-']) {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 12px;
+}
+
+/* 工具栏右端：列设置、刷新这类"对整张表生效"的控件。
+   靠右是为了和左侧的"新增 xxx"主操作分开，避免用户在新建按钮旁边
+   误点到一个改变整页外观的开关。 */
+.toolbar__end {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 行内操作组：表格某一列里并排的若干动作按钮。 */
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+/* 表单弹窗内的字段网格：窄屏自动降为单列。 */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.form-grid > .field--full {
+  grid-column: 1 / -1;
+}
+
+/* 单列变体：字段少、或者字段之间没有并列关系（如修改口令的旧/新/确认）。 */
+.form-grid--single {
+  grid-template-columns: 1fr;
+}
+
+/* 弹窗里不做水平滚动：`.field__control` 的全局 min-width 会让两列布局
+   在 560px 弹窗里溢出。 */
+.form-grid .field__control {
+  min-width: 0;
+  width: 100%;
 }
 
 .panel,

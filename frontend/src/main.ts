@@ -22,8 +22,11 @@ installHttpClient()
 useAuthStore().restorePersistedTokens()
 
 // 权限集合不能在启动时就信 localStorage：它由后端每次计算。
-// 这里只启动加载；真正"该不该进页面"由路由守卫判定。
-void usePermissionStore().load().catch(() => undefined)
+// 只在**已认证**时预加载 —— 未登录就请求必然 401，refresh 流程会把它
+// 误判成"会话丢失"，弹"登录状态已失效"横幅且横幅在登录成功后仍残留。
+if (useAuthStore().isAuthenticated) {
+  void usePermissionStore().load().catch(() => undefined)
+}
 
 app.use(router)
 app.mount('#app')

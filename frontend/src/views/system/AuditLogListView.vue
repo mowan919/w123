@@ -9,20 +9,25 @@
  * 注意只展示**结果**：`before_data` / `after_data` 里可能含敏感字段，
  * 后端已经在写入侧做了脱敏范围控制，这里不做二次加工、也不额外放大。
  */
+import { formatDateTime } from '@/utils/format'
 import { onMounted, ref } from 'vue'
+import { NButton, NIcon } from 'naive-ui'
+import { DocumentTextOutline, EyeOutline, RefreshOutline } from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import SearchForm from '@/components/data/SearchForm.vue'
 import DataTable from '@/components/data/DataTable.vue'
 import Pagination from '@/components/data/Pagination.vue'
+import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import { useAppStore } from '@/stores/app'
+import { useColumnSettings } from '@/composables/useColumnSettings'
 import { getAuditLog, listAuditLogs } from '@/api/endpoints/logs'
 import type { DataTableColumn } from '@/components/data/types'
 import type { AuditLog } from '@/types'
 
 const appStore = useAppStore()
 
-const columns: Array<DataTableColumn<AuditLog>> = [
+const dataColumns: Array<DataTableColumn<AuditLog>> = [
   { key: 'created_at', title: '时间', width: '170px' },
   { key: 'action', title: '动作' },
   { key: 'operator_username', title: '操作者' },
@@ -31,6 +36,14 @@ const columns: Array<DataTableColumn<AuditLog>> = [
   { key: 'result', title: '结果', width: '90px', align: 'center' },
   { key: 'ip', title: '来源 IP', width: '130px' },
 ]
+
+const {
+  visible: visibleColumns,
+  items: columnItems,
+  toggle: toggleColumn,
+  move: moveColumn,
+  reset: resetColumns,
+} = useColumnSettings<AuditLog>('audit-logs', dataColumns)
 
 const RESULT_STYLE: Record<string, string> = {
   SUCCESS: 'tag--active',
@@ -130,7 +143,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <PageContainer title="审计日志" description="失败记录（越权尝试）是这一页最有价值的部分，可按动作、操作者、资源类型与时间窗组合过滤。">
+  <PageContainer
+    title="审计日志"
+    description="记录谁在什么时候做了什么、结果如何。被拒绝的操作同样会留痕，排查异常时优先看「结果 = 失败」。"
+    :icon="DocumentTextOutline"
+  >
     <SearchForm @search="search" @reset="resetFilters">
       <label class="field"><span class="field__label">动作</span><input v-model="action" class="field__control" placeholder="如 USER_DISABLE" /></label>
       <label class="field"><span class="field__label">操作者 ID</span><input v-model="operatorId" class="field__control" /></label>
@@ -147,30 +164,55 @@ onMounted(() => {
       <label class="field"><span class="field__label">结束时间</span><input v-model="createdTo" class="field__control" type="datetime-local" /></label>
     </SearchForm>
 
+    <div class="toolbar">
+      <NButton size="small" :loading="loading" @click="load">
+        <template #icon>
+          <NIcon :component="RefreshOutline" />
+        </template>
+        刷新
+      </NButton>
+      <span class="toolbar__end">
+        <ColumnSettings
+          :items="columnItems"
+          :disabled="loading"
+          @toggle="toggleColumn"
+          @move="moveColumn"
+          @reset="resetColumns"
+        />
+      </span>
+    </div>
+
     <div v-if="error" class="alert alert--error">{{ error }}</div>
 
     <DataTable
       v-else
-      :columns="columns"
+      :columns="visibleColumns"
       :rows="rows"
       :loading="loading"
       :row-key="(row: AuditLog) => row.id"
       empty-text="没有符合条件的审计记录"
+      actions-title="操作"
+      actions-width="120px"
     >
       <template #cell-result="{ row }">
         <span class="tag" :class="RESULT_STYLE[row.result] ?? ''">{{ row.result }}</span>
       </template>
       <template #cell-resource_id="{ row }">
-        <PermissionButton code="audit:read" type="text" @click="openDetail(row)">
-          {{ row.resource_id ?? '—' }}
-        </PermissionButton>
+        <span>{{ row.resource_id ?? '—' }}</span>
       </template>
       <template #cell-created_at="{ row }">
-        <span class="muted">{{ row.created_at }}</span>
+        <span class="muted">{{ formatDateTime(row.created_at) }}</span>
       </template>
       <template #cell-action="{ row }">
         <div>{{ row.action }}</div>
         <div v-if="row.error_code !== null" class="muted">错误码 {{ row.error_code }}</div>
+      </template>
+
+      <template #actions="{ row }">
+        <PermissionButton code="audit:read" type="text" @click="openDetail(row)">
+          <NIcon :component="EyeOutline" />
+          明细
+        </PermissionButton>
       </template>
     </DataTable>
 
@@ -186,7 +228,7 @@ onMounted(() => {
       <div class="drawer__panel">
         <h3 class="drawer__title">
           审计明细
-          <button class="link" type="button" @click="detail = null">关闭</button>
+          <NButton size="small" quaternary :loading="detailLoading" @click="detail = null">关闭</NButton>
         </h3>
         <dl class="kv">
           <dt>动作</dt>

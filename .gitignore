@@ -32,6 +32,7 @@ docs/vctn_frontend_spec_complete.zip
 .ruff_cache/
 .coverage
 htmlcov/
+frontend/.playwright-cli/
 
 # ---- IDE ----
 .idea/

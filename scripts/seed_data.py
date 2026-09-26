@@ -71,16 +71,54 @@ PAGES: list[tuple[str, str, str, str, int]] = [
 ]
 
 #: (code, name, page_code) —— 按钮挂在其所属 PAGE 下（DD-20：BUTTON.parent_id 必填且指向 PAGE）。
+#:
+#: ⚠️ 这里的编码是**前端 `PermissionButton` 的 `code`**。前端拿不到授权时
+#: 按钮直接不渲染（FE-09 §4），所以清单漏一个的后果不是"点不动"，而是
+#: "这个功能在界面上根本不存在" —— 且不会有任何报错。
+#: 曾经只有 9 个按钮，而前端用了 27 个，命名还对不上（`role:edit` vs
+#: `role:update`、`dict:create` vs `dictionary:create`），结果是除用户管理外
+#: 各页的"新增 / 编辑 / 删除"全部凭空消失。
+#: 新增按钮只改这里，并同步前端使用点（`tests/test_seed_data.py` 会钉住父子关系）。
 BUTTONS: list[tuple[str, str, str]] = [
+    # 用户管理
     ("user:create", "新增用户", "system:user:page"),
     ("user:update", "编辑用户", "system:user:page"),
-    ("user:delete", "删除用户", "system:user:page"),
+    ("user:enable", "启用用户", "system:user:page"),
+    ("user:disable", "禁用用户", "system:user:page"),
     ("user:reset-password", "重置口令", "system:user:page"),
+    ("user:delete", "删除用户", "system:user:page"),
+    # 部门管理
     ("department:create", "新增部门", "system:department:page"),
     ("department:update", "编辑部门", "system:department:page"),
+    ("department:disable", "禁用部门", "system:department:page"),
+    # 角色管理
     ("role:create", "新增角色", "system:role:page"),
     ("role:update", "编辑角色", "system:role:page"),
+    ("role:delete", "删除角色", "system:role:page"),
+    # 权限配置
+    ("role:assign-permission", "配置角色权限", "system:permission:page"),
+    ("role:config-data-scope", "配置数据范围", "system:permission:page"),
+    # 权限资源
+    ("permission:resource-create", "新增权限资源", "system:permission-resource:page"),
+    ("permission:resource-update", "编辑权限资源", "system:permission-resource:page"),
+    ("permission:resource-delete", "删除权限资源", "system:permission-resource:page"),
+    # 会话管理
+    ("session:revoke", "撤销会话", "system:session:page"),
+    ("session:revoke-all", "强制用户下线", "system:session:page"),
+    # 数据字典
     ("dictionary:create", "新增字典", "system:dictionary:page"),
+    ("dictionary:update", "编辑字典", "system:dictionary:page"),
+    ("dictionary:delete", "删除字典", "system:dictionary:page"),
+    ("dictionary:item-create", "新增字典项", "system:dictionary:page"),
+    ("dictionary:item-update", "编辑字典项", "system:dictionary:page"),
+    ("dictionary:item-delete", "删除字典项", "system:dictionary:page"),
+    # 系统参数
+    ("param:create", "新增参数", "system:param:page"),
+    ("param:update", "编辑参数", "system:param:page"),
+    ("param:delete", "删除参数", "system:param:page"),
+    # 日志
+    ("audit:read", "查看审计明细", "system:audit-log:page"),
+    ("trace:read", "查看链路明细", "system:trace:page"),
 ]
 
 #: (code, name, method, path, page_code)
@@ -130,17 +168,21 @@ FIELDS: list[tuple[str, str]] = [
 
 #: 菜单（导航层级），code 沿用前端 `menuTree` 的父子约定。
 #: (code, name, parent_code, icon, order)
+#:
+#: `icon` 是**图标名称**，不是渲染字符；前端按名称 → 菜单编码两级解析
+#: （`AppSidebar` 的 `ICON_BY_NAME` / `ICON_BY_CODE`）。留空也能显示，
+#: 会回退到默认图标 —— 但显式写上，`权限资源` 页里才看得到这个菜单配了什么。
 MENUS: list[tuple[str, str, str | None, str | None, int]] = [
     ("system:system", "系统管理", None, "setting", 10),
-    ("system:user", "用户管理", "system:system", None, 20),
-    ("system:department", "部门管理", "system:system", None, 30),
-    ("system:role", "角色管理", "system:system", None, 40),
-    ("system:permission", "权限配置", "system:system", None, 50),
-    ("system:session", "会话管理", "system:system", None, 60),
-    ("system:dictionary", "字典管理", "system:system", None, 70),
-    ("system:param", "系统参数", "system:system", None, 80),
-    ("system:audit-log", "审计日志", "system:system", None, 90),
-    ("system:trace", "链路查询", "system:system", None, 100),
+    ("system:user", "用户管理", "system:system", "user", 20),
+    ("system:department", "部门管理", "system:system", "department", 30),
+    ("system:role", "角色管理", "system:system", "role", 40),
+    ("system:permission", "权限配置", "system:system", "permission", 50),
+    ("system:session", "会话管理", "system:system", "session", 60),
+    ("system:dictionary", "字典管理", "system:system", "dictionary", 70),
+    ("system:param", "系统参数", "system:system", "param", 80),
+    ("system:audit-log", "审计日志", "system:system", "audit-log", 90),
+    ("system:trace", "链路查询", "system:system", "trace", 100),
 ]
 
 #: 菜单 ↔ 页面关联。菜单点进去若没有任何关联 PAGE，守卫会直接 403。
@@ -171,9 +213,26 @@ ROLE_PAGES: dict[str, list[str]] = {
 }
 
 #: 角色 → 授权按钮。
+#:
+#: 部门管理员刻意**只拿到日常运维动作**：用户的增改与启停、部门维护、
+#: 撤销会话。授权类（`role:*permission*`）、删除类（`*:delete`）、
+#: 字典与参数维护都不给 —— 那几类会直接改变"谁能看到什么"，
+#: 属于超管职责（与 `ROLE_PAGES` 里不给它「权限配置 / 系统参数 / 审计日志」一致）。
+#:
+#: VIEWER 一个按钮都不给：只读用户不该在管理面上有任何写入口。
 ROLE_BUTTONS: dict[str, list[str]] = {
     "SUPER_ADMIN": [button[0] for button in BUTTONS],
-    "DEPARTMENT_ADMIN": ["user:create", "user:update", "department:create", "department:update"],
+    "DEPARTMENT_ADMIN": [
+        "user:create",
+        "user:update",
+        "user:enable",
+        "user:disable",
+        "user:reset-password",
+        "department:create",
+        "department:update",
+        "session:revoke",
+        "session:revoke-all",
+    ],
     "VIEWER": [],
 }
 

@@ -69,7 +69,16 @@ export const useAuthStore = defineStore('auth', {
   }),
 
   getters: {
-    isAuthenticated: (state): boolean => state.user !== null,
+    /**
+     * 认证判定 = 有用户身份 **或** 持有令牌。
+     *
+     * 曾经只看 `user`：整页刷新（F5 / 直接输 URL）后只恢复令牌、
+     * 不恢复 user（user 必须由 /auth/me 服务端确认），于是守卫把
+     * 已登录用户弹回登录页 —— 表现为"一刷新就掉登录"。
+     * 只恢复令牌时也算认证，让守卫走 wait → 校验令牌有效性；
+     * 令牌若已失效，401 → refresh 失败 → onSessionLost 清场回登录页。
+     */
+    isAuthenticated: (state): boolean => state.user !== null || accessToken !== null,
     accessTokenValue: (): string | null => accessToken,
     refreshTokenValue: (): string | null => refreshToken,
   },
