@@ -24,12 +24,19 @@
  *
  * 树形不做递归组件：模板不能自引用，用一个自定义递归组件反而更难测。
  * 这里先把树压平成带层级的行列表再渲染，与部门页同一套做法。
+ *
+ * **折叠**（2026-09-28 补）：压平必须带上"哪些节点处于展开态"，否则只是把树
+ * 摊成一张不能收的长表 —— 真实数据 16 根 / 65 节点，一屏根本铺不下，而
+ * 授权树与部门树都能收，只有这一页不能，是明显的遗漏。口径统一为
+ * 「`expanded: Set<ID>` + 默认全展开 + 展开全部/收起全部」，见 `expanded` 的注释。
  */
 import { computed, onMounted, ref } from 'vue'
 import { NButton, NIcon } from 'naive-ui'
 import {
   AddOutline,
   AlbumsOutline,
+  ChevronDownOutline,
+  ChevronUpOutline,
   CreateOutline,
   GitBranchOutline,
   RefreshOutline,
@@ -108,6 +115,7 @@ interface ResourceDraft {
 interface FlatTreeNode {
   node: PermissionResourceTreeNode
   depth: number
+  hasChildren: boolean
 }
 
 function emptyDraft(kind: ResourceType): ResourceDraft {
@@ -131,6 +139,17 @@ const statusFilter = ref<'' | 'ACTIVE' | 'DISABLED'>('')
 
 const mode = ref<'list' | 'tree'>('list')
 const treeNodes = ref<PermissionResourceTreeNode[]>([])
+
+/**
+ * 处于**展开**态的节点 ID 集合（默认全展开，语义与部门页一致）。
+ *
+ * 为什么是「展开集合」而不是「折叠集合」：全类型树在真实数据下是 16 个根、
+ * 65 个节点、深度 2 —— 一屏铺不下，用户第一眼要看的恰恰是层级本身。
+ * 用展开集合时只需一个 `expandAll()` 就能表达"补全到全展开"，
+ * 而"收某个分支"是一次删元素，两种操作都不会出现"集合里留着已消失节点的键"
+ * 这种说不清的状态。
+ */
+const expanded = ref<Set<ID>>(new Set())
 
 const draft = ref<ResourceDraft>(emptyDraft('PAGE'))
 const draftOpen = ref(false)
@@ -169,17 +188,51 @@ const menuPageMenu = computed<PermissionResource | null>(() => {
   )
 })
 
+/**
+ * 压平成带层级的行列表。
+ *
+ * ⚠️ 从前这里是**无条件递归**：不管有多少层都全铺出来，只靠缩进表达层级 ——
+ * 于是"树"其实是一张不能收的长表（真实数据 65 行）。现在子节点只在
+ * 父节点处于展开态时才进入结果，与部门页同一口径。
+ *
+ * `hasChildren` 由扁平化时一并算出，模板只消费不判断。它与
+ * `entry.node.children.length > 0` 等价，但把它放在这里有两个好处：
+ * 「什么算可折叠」只有一处定义（将来若改成"根节点也能收"，只需改这里），
+ * 以及模板不必为每一行重复计算同一个表达式。
+ */
 const flatTree = computed<FlatTreeNode[]>(() => {
   const out: FlatTreeNode[] = []
   const walk = (nodes: PermissionResourceTreeNode[], depth: number): void => {
     for (const node of nodes) {
-      out.push({ node, depth })
-      walk(node.children, depth + 1)
+      out.push({ node, depth, hasChildren: node.children.length > 0 })
+      if (node.children.length > 0 && expanded.value.has(node.resource.id)) {
+        walk(node.children, depth + 1)
+      }
     }
   }
   walk(treeNodes.value, 0)
   return out
 })
+
+/** 树里全部节点的 ID（`expandAll` 用；`flatTree` 是**裁剪后**的，不能拿来补全）。 */
+function allNodeIds(nodes: PermissionResourceTreeNode[]): ID[] {
+  return nodes.flatMap((node) => [node.resource.id, ...allNodeIds(node.children)])
+}
+
+function expandAll(): void {
+  expanded.value = new Set(allNodeIds(treeNodes.value))
+}
+
+function collapseAll(): void {
+  expanded.value = new Set()
+}
+
+function toggleExpand(id: ID): void {
+  const next = new Set(expanded.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expanded.value = next
+}
 
 function notice(cause: unknown, fallback: string): void {
   appStore.showNotice('error', cause instanceof Error ? cause.message : fallback)
@@ -200,6 +253,10 @@ async function loadTree(): Promise<void> {
       status: statusFilter.value === '' ? null : (statusFilter.value as PermissionStatus),
       keyword: keyword.value,
     })
+    // 树换了就重新展开（与部门页同一理由，但这里更硬）：筛选会**换掉整棵树**，
+    // 若沿用上一次的展开集合，新树的分支没有一个是"展开"的 —— 用户搜到一个按钮，
+    // 界面上却只见一排收起的根，命中节点藏在里面看不见，看起来就像"搜索坏了"。
+    expandAll()
   } catch (cause) {
     resourcesStore.error = cause instanceof Error ? cause.message : '资源树加载失败'
     treeNodes.value = []
@@ -381,6 +438,21 @@ onMounted(() => {
       <NButton size="small" :type="mode === 'tree' ? 'primary' : 'default'" @click="switchMode('tree')">
         树形
       </NButton>
+      <!-- 展开 / 收起只在树形下有意义，切到列表还留着会让人以为点了没反应。 -->
+      <template v-if="mode === 'tree'">
+        <NButton size="small" @click="expandAll">
+          <template #icon>
+            <NIcon :component="ChevronDownOutline" />
+          </template>
+          展开全部
+        </NButton>
+        <NButton size="small" @click="collapseAll">
+          <template #icon>
+            <NIcon :component="ChevronUpOutline" />
+          </template>
+          收起全部
+        </NButton>
+      </template>
       <PermissionButton
         v-for="kind in KINDS"
         :key="kind"
@@ -500,6 +572,20 @@ onMounted(() => {
         class="tree__row"
         :style="{ paddingLeft: `${entry.depth * 20 + 12}px` }"
       >
+        <!-- 叶子用等宽占位而不是不渲染：否则同一层里"有子节点"和"没子节点"的
+             名称会错开 20px，缩进就不再表示层级了。 -->
+        <button
+          v-if="entry.hasChildren"
+          class="tree__twisty"
+          type="button"
+          :aria-expanded="expanded.has(entry.node.resource.id)"
+          :aria-label="`${expanded.has(entry.node.resource.id) ? '收起' : '展开'} ${entry.node.resource.resource_name}`"
+          @click="toggleExpand(entry.node.resource.id)"
+        >
+          {{ expanded.has(entry.node.resource.id) ? '−' : '+' }}
+        </button>
+        <span v-else class="tree__twisty tree__twisty--leaf" aria-hidden="true" />
+
         <span class="tree__name">{{ entry.node.resource.resource_name }}</span>
         <code class="tree__code">{{ entry.node.resource.resource_code }}</code>
         <span class="tag">{{ entry.node.resource.resource_type }}</span>
@@ -527,7 +613,10 @@ onMounted(() => {
           </PermissionButton>
         </span>
       </div>
-      <p v-if="flatTree.length === 0" class="state__item">没有符合条件的资源</p>
+      <!-- 判"有没有资源"要看 treeNodes，不能看 flatTree：
+           后者是**裁剪后**的可见行，将来若允许收起根节点，它会先变空，
+           于是"树里有数据但被你自己收起来了"会被误报成"没有符合条件的资源"。 -->
+      <p v-if="treeNodes.length === 0" class="state__item">没有符合条件的资源</p>
     </div>
 
     <!-- 新增 / 编辑资源 -->

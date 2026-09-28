@@ -387,6 +387,61 @@ describe('权限资源维护页', () => {
     return found
   }
 
+  /** 按可见文字找工具栏按钮；找不到返回 undefined（断言"不该出现"时用这个）。 */
+  function findToolbarButton(
+    wrapper: VueWrapper,
+    label: string,
+  ): DOMWrapper<Element> | undefined {
+    return wrapper.findAll('button').find((item) => item.text().includes(label))
+  }
+
+  /**
+   * 严格版：找不到直接抛错。
+   *
+   * 点按一律走这个而不是 `findToolbarButton(...)?.trigger(...)` —— 后者在按钮
+   * 不存在时静默什么都不做，用例会以"断言没过"的形式失败，把真正的原因
+   * （按钮压根没渲染）藏起来。
+   */
+  function toolbarButton(wrapper: VueWrapper, label: string): DOMWrapper<Element> {
+    const found = findToolbarButton(wrapper, label)
+    if (found === undefined) throw new Error(`找不到「${label}」按钮`)
+    return found
+  }
+
+  /**
+   * 树形行里的折叠箭头。
+   *
+   * 叶子行渲染的是等宽**占位 span**（`tree__twisty--leaf`）而不是 button，
+   * 所以 `button.tree__twisty` 天然只选中真正能折叠的行 —— 不需要再按类过滤。
+   */
+  function twisties(wrapper: VueWrapper): DOMWrapper<Element>[] {
+    return wrapper.findAll('button.tree__twisty')
+  }
+
+  /** 一棵最小的跨类型树：PAGE「用户管理」下挂一个 BUTTON，另有一个叶子 PAGE。 */
+  function twoTypeTree() {
+    return [
+      {
+        resource: treeNode({ id: '7001', resource_type: 'PAGE', resource_name: '用户管理' }),
+        children: [
+          {
+            resource: treeNode({
+              id: '7002',
+              resource_type: 'BUTTON',
+              resource_name: '新建用户',
+              parent_id: '7001',
+            }),
+            children: [],
+          },
+        ],
+      },
+      {
+        resource: treeNode({ id: '7003', resource_type: 'PAGE', resource_name: '报表' }),
+        children: [],
+      },
+    ]
+  }
+
   function treeNode(overrides: Partial<PermissionResource> & { id: string }): PermissionResource {
     return {
       resource_type: 'PAGE',
@@ -474,6 +529,107 @@ describe('权限资源维护页', () => {
       keyword: 'user',
       status: 'DISABLED',
     })
+  })
+
+  /**
+   * 折叠这一组用例存在的理由：压平渲染曾经是**无条件递归**，于是"树形"
+   * 其实是一张不能收的长表 —— 真实数据 16 根 / 65 节点。这几条把这个能力钉住。
+   */
+  it('树形默认全展开，折叠箭头只画在有子节点的行上', async () => {
+    resources.getResourceTree.mockResolvedValue(twoTypeTree())
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    // 默认就该看得见层级：两条根 + 一个跨类型的子节点都在。
+    expect(wrapper.text()).toContain('用户管理')
+    expect(wrapper.text()).toContain('新建用户')
+    expect(wrapper.text()).toContain('报表')
+
+    // 只有「用户管理」有子节点；叶子行给的是等宽占位 span（不占 button）。
+    expect(twisties(wrapper)).toHaveLength(1)
+    expect(wrapper.findAll('span.tree__twisty--leaf')).toHaveLength(2)
+    expect(twisties(wrapper)[0]?.attributes('aria-expanded')).toBe('true')
+  })
+
+  it('点箭头能收起分支，父节点留在原地', async () => {
+    resources.getResourceTree.mockResolvedValue(twoTypeTree())
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    await twisties(wrapper)[0]?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('新建用户')
+    expect(wrapper.text()).toContain('用户管理')
+    expect(twisties(wrapper)[0]?.attributes('aria-expanded')).toBe('false')
+    // 收的是分支不是数据：另一个根不受影响。
+    expect(wrapper.text()).toContain('报表')
+
+    // 再点一次能收回来 —— 否则"折叠"是单向的，等于把节点弄丢了。
+    await twisties(wrapper)[0]?.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('新建用户')
+    expect(twisties(wrapper)[0]?.attributes('aria-expanded')).toBe('true')
+  })
+
+  it('「收起全部」只剩根节点，「展开全部」能补回来', async () => {
+    resources.getResourceTree.mockResolvedValue(twoTypeTree())
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    await toolbarButton(wrapper, '收起全部').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('新建用户')
+    // 根节点仍在 —— 收起全部不是"清空"。
+    expect(wrapper.text()).toContain('用户管理')
+    expect(wrapper.text()).toContain('报表')
+
+    await toolbarButton(wrapper, '展开全部').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('新建用户')
+  })
+
+  it('重新查询后回到全展开，命中节点不会被自己收起的祖先藏住', async () => {
+    resources.getResourceTree.mockResolvedValue(twoTypeTree())
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    await toolbarButton(wrapper, '收起全部').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('新建用户')
+
+    // 用户搜一个按钮：树被整棵换掉，若沿用上一次的展开集合，
+    // 界面上只会出现一排收起的根，看起来就像"搜索坏了"。
+    await searchButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('新建用户')
+    expect(twisties(wrapper)[0]?.attributes('aria-expanded')).toBe('true')
+  })
+
+  it('展开 / 收起按钮只在树形模式下出现', async () => {
+    resources.getResourceTree.mockResolvedValue([])
+
+    const wrapper = await mountView(PermissionResourceListView)
+    expect(findToolbarButton(wrapper, '展开全部')).toBeUndefined()
+    expect(findToolbarButton(wrapper, '收起全部')).toBeUndefined()
+
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(findToolbarButton(wrapper, '展开全部')).toBeDefined()
+    expect(findToolbarButton(wrapper, '收起全部')).toBeDefined()
+
+    // 切回列表就不该再留着 —— 点了没反应的按钮比没有按钮更糟。
+    await wrapper.findAll('button').find((item) => item.text().trim() === '列表')?.trigger('click')
+    await flushPromises()
+    expect(findToolbarButton(wrapper, '展开全部')).toBeUndefined()
   })
 })
 
