@@ -120,6 +120,26 @@ class ResourceTreeNode:
     children: tuple[ResourceTreeNode, ...]
 
 
+def _tree_parent_id(resource: PermissionResource) -> int | None:
+    """资源在**树形视图**里的父边。
+
+    FIELD 的归属按 **DD-06 冻结**用 `owner_resource_id` 表达，
+    `parent_id` 恒为空（`_PARENT_TYPE_RULES[FIELD] is None`：该类型不得有父资源）。
+    构树若只认 `parent_id`，字段资源就会因为"没有父"被**提升为根** ——
+    响应仍是 200、结构仍像树，只是界面上变成几个光秃秃的一级行，
+    "这个字段属于哪张页面"这个层级信息静默消失。
+
+    其余类型仍走 `parent_id`（`PAGE` 无父、`BUTTON`/`API` 挂 `PAGE`、
+    `MENU` 挂 `MENU`）。
+
+    ⚠️ 返回的 ID 可能**不在本次取回的批次里**（单类型树、owner 已软删），
+    调用方必须按"父不在 `by_id` → 提升为根"处理，不能假定它一定存在。
+    """
+    if resource.resource_type is PermissionResourceType.FIELD:
+        return resource.owner_resource_id
+    return resource.parent_id
+
+
 def _visible_resource_ids(
     resources: list[PermissionResource],
     by_id: dict[int, PermissionResource],
@@ -142,13 +162,16 @@ def _visible_resource_ids(
        结果集合看着像"筛选生效了"，实际层级已经错了。
 
     祖先一定在 `by_id` 里（只统计本次取回范围内的父），因此沿
-    `parent_id` 上溯必然终止：每轮都往 `visible` 里加一个范围内节点。
+    `_tree_parent_id()` 给出的父边上溯必然终止：每轮都往 `visible` 里加一个
+    范围内节点。**父边必须是构树用的同一条** —— 这里若只认 `parent_id`，
+    搜一个 FIELD 就不会连带保留它所属的页面，于是"搜出来一个没有归属的字段"，
+    和构树那边刚修掉的问题一模一样。
     """
     has_keyword = bool(keyword)
     if status is None and not has_keyword:
         return None
 
-    parent_of = {resource.id: resource.parent_id for resource in resources}
+    parent_of = {resource.id: _tree_parent_id(resource) for resource in resources}
     matched = {
         resource.id
         for resource in resources
@@ -397,7 +420,18 @@ class PermissionResourceService:
         "按钮挂在哪一页"这个层级信息在不报错的情况下直接消失。
         因此不指定类型时按全类型取，让跨类型父子真正连上。
 
+        FIELD 用 `owner_resource_id` 当父边
+        ----------------------------------
+        FIELD 的归属按 **DD-06 冻结**记在 `owner_resource_id` 上，`parent_id`
+        恒为空，因此它**必须**由 `_tree_parent_id()` 单独映射 —— 只认
+        `parent_id` 的话，四个字段资源会全部被提升为根，界面上就是几个
+        没有归属的一级行（`field:phone` / `field:email` …），而"这个字段属于
+        哪张页面"本来就在库里好好的。修好后它们与同一页面的 BUTTON / API
+        并列显示，关键字/状态筛选也会连带保留所属页面。
+
         传了 `resource_type` 时行为与从前一致（单类型树），既有调用方不受影响。
+        单类型树下 FIELD 的归属页面不在批次里，仍会落在根层 —— 这是本方法的
+        固有代价（见上），不是缺陷。想看归属就省略 `resource_type`。
 
         筛选在内存里做，且保留祖先
         ------------------------
@@ -432,7 +466,10 @@ class PermissionResourceService:
         children_map: dict[int, list[int]] = {}
         roots: list[int] = []
         for resource in resources:
-            parent_id = resource.parent_id
+            # 父边由 `_tree_parent_id()` 统一给出：FIELD 走 `owner_resource_id`，
+            # 其余类型走 `parent_id`。父不在本批次里（单类型树、owner 已软删）
+            # 一律提升为根 —— 宁可少一层归属，也不能静默丢节点。
+            parent_id = _tree_parent_id(resource)
             if parent_id is None or parent_id not in by_id:
                 roots.append(resource.id)
             else:

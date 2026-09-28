@@ -2300,3 +2300,106 @@ FIELD                   → 归属靠 owner_resource_id → PAGE
    必须 `shell=False` + 参数列表。
 2. **vitest 非 TTY 输出带 ANSI 颜色码**，失败行前缀是 `\x1b[31m` 而不是 `×`；
    不剥转义序列就提取不到失败用例名，摘要里只剩一行计数。
+
+## 28. FIELD 资源在资源树里的归属呈现 —— 实际落地口径（2026-09-28）
+
+用户诉求（原文，附权限资源页截图）：
+
+```text
+这几个为什么没有任何分类
+```
+
+截图内容是四条**并列在树最外层**的资源行：
+`phone / field:phone / FIELD`、`email`、`remark`、`department_name`。
+
+### 28.1 根因（在**运行中的后端**上核实过，不是读代码推断）
+
+构树只认 `parent_id`，而 FIELD 的归属按 **DD-06 冻结**记在 `owner_resource_id` 上，
+`parent_id` 恒为空（`_PARENT_TYPE_RULES[FIELD] is None`）。于是：
+
+```text
+FIELD 资源编码            深度   树中的父节点
+field:phone              0     (无父 → 根节点)
+field:email              0     (无父 → 根节点)
+field:remark             0     (无父 → 根节点)
+field:department_name    0     (无父 → 根节点)
+
+库里 FIELD → owner_resource_id 指向的页面：
+  field:phone / email / remark  →  system:user:page
+  field:department_name         →  system:department:page
+```
+
+**归属信息一直在库里**，只是树形视图没读它 —— 与 §27 那次"跨类型父子被静默提升为根"
+是同一类缺陷的第二次出现（第一次修的是 `BUTTON → PAGE` 的 `parent_id` 边）。
+
+### 28.2 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `RESOLVED-28-01` | 资源树里 FIELD 按 `owner_resource_id` **挂到所属 PAGE 下**，与同页 BUTTON / API 并列 | 已裁定（人类选定，三选一） |
+| `OPERATION-28-01` | 构树与"筛选保留祖先"必须用**同一条父边**（`_tree_parent_id()`），两处不一致会让"搜到字段却看不出归属" | 操作约定 |
+| `OPERATION-28-02` | 父边指向的 ID **不在本批次里**（单类型树 / owner 已软删）时一律提升为根，不得抛异常、不得静默丢节点 | 操作约定 |
+| `FINDING-28-01` | 资源**列表**的「字段归属」列只显示裸雪花 ID，不显示页面编码（见 §28.6） | **未修** |
+
+### 28.3 ⚠️ 本决策与模型文档的既有理由**相冲突**，已显式取舍
+
+`app/models/permission.py` 的 `PermissionResource` docstring 写着：
+
+> 为什么 FIELD 用 `owner_resource_id` 而不是 `parent_id`
+> `parent_id` 语义是"权限树上的父子"，参与树遍历；字段对页面的关系是
+> "归属"而非"层级"，混用会让"展开页面子树"把字段一并带出，**污染树结构**。
+
+即：**原始设计意图就是不要让字段出现在页面子树里**。本次改动恰好让资源树
+"展开页面"时把字段一并带出 —— 与该理由直接相反。因此：
+
+1. **只改"呈现"，不改"存储"**：两列语义分离的模型决策（DD-06）保持不动，
+   `parent_id` 仍然不承载字段归属；
+2. **改动面经核实只落在资源维护页**：`/permission-resources/tree` 的调用方
+   全库只有 `PermissionResourceListView.vue` 一处（授权树走
+   `/auth/permissions` + 角色授权端点，**不经过**本端点），所以字段
+   不会漏进角色授权界面；
+3. 模型 docstring 已同步改写，注明"资源树呈现"与本理由的取舍关系，
+   不留自相矛盾的注释。
+
+### 28.4 实现要点
+
+- 新增模块级 `_tree_parent_id(resource)`：FIELD → `owner_resource_id`，
+  其余 → `parent_id`。构树与 `_visible_resource_ids()` **共用**这一个函数 ——
+  两边各写一份正是"列表与树筛选口径漂移"的同类隐患（见 §27.4）。
+- 父不在 `by_id` 时提升为根的分支**必须保留**：单类型树
+  （`resourceType=FIELD`）下 owner 页面不在批次里，字段仍会落在根层。
+  这是本方法的固有代价，已写进 `tree()` docstring 与用例，
+  免得下次有人把它当 bug"修"掉。
+- **零迁移、零契约变更**：`owner_resource_id` 本来就在
+  `PermissionResourceResponse` 里，响应形状没变，只是嵌套关系变了。
+
+### 28.5 测试与变异（后端 23 → 25 例，前端 17 → 18 例）
+
+新增后端用例：
+
+| 用例 | 钉住什么 |
+|---|---|
+| `test_field_hangs_under_its_owner_page` | 有主字段挂在页面下且**不在根层**；owner 已软删时退化为根但**不丢失**；`resourceType=FIELD` 下落在根层（固有语义） |
+| `test_tree_keyword_on_a_field_keeps_its_owner_page` | 搜字段编码时所属页面被当**祖先**保留，未命中的兄弟节点被裁掉 |
+
+改写：`test_tree_omitting_resource_type_covers_every_type` 的子节点清单
+加入 FIELD，并增一条"FIELD 不得掉到根层"的断言（原断言只覆盖 BUTTON，
+所以这次缺陷它抓不到）。
+
+装置新增两条 FIELD（`TREE_FIELD_ID` 有主、`TREE_ORPHAN_FIELD_ID` 的 owner 是
+**先建后软删**的 `TREE_GONE_OWNER_PAGE_ID`）—— `owner_resource_id` 有 FK，
+"指向不存在的 ID"必须在库层可达，不能凭空写一个假 ID。
+
+变异验证：把 `_tree_parent_id()` 的 FIELD 分支改成仍返回 `parent_id`，
+两条新用例**同时**变红（`test_field_hangs_under_its_owner_page` /
+`test_tree_omitting_resource_type_covers_every_type`）；
+把 `_visible_resource_ids()` 改回只认 `parent_id`，
+`test_tree_keyword_on_a_field_keeps_its_owner_page` 变红。
+
+### 28.6 未修
+
+`FINDING-28-01`：资源列表视图的「字段归属」列直接把 `owner_resource_id`
+以 `<code>` 渲染成裸雪花 ID（`PermissionResourceListView.vue` 的
+`#cell-owner_resource_id`）。要显示成页面**编码**需要后端在列表响应里
+带上 owner 的 `resource_code`（或前端维护 id→code 映射），属接口/视图的
+独立改动，不在本轮越界实施。

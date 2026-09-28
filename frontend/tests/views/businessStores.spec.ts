@@ -614,6 +614,42 @@ describe('权限资源维护页', () => {
     expect(twisties(wrapper)[0]?.attributes('aria-expanded')).toBe('true')
   })
 
+  it('字段资源跟着所属页面缩进一层，不再是一排没有归属的一级行', async () => {
+    // 后端把 FIELD 按 `owner_resource_id` 挂在所属页面下（与 BUTTON / API 并列）；
+    // 这里钉住前端**真的把它画在下一层** —— 缩进 = 深度 × 20 + 12。
+    resources.getResourceTree.mockResolvedValue([
+      {
+        resource: treeNode({ id: '7101', resource_type: 'PAGE', resource_name: '用户管理' }),
+        children: [
+          {
+            resource: treeNode({
+              id: '7102',
+              resource_type: 'FIELD',
+              resource_name: 'phone',
+              resource_code: 'field:phone',
+              field_key: 'phone',
+              owner_resource_id: '7101',
+            }),
+            children: [],
+          },
+        ],
+      },
+    ])
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    const rows = wrapper.findAll('.tree__row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.attributes('style')).toContain('padding-left: 12px')
+    expect(rows[1]?.attributes('style')).toContain('padding-left: 32px')
+    expect(rows[1]?.text()).toContain('phone')
+    // 字段是叶子：占位 span 而不是折叠箭头（两行里只有一个能折叠）。
+    expect(wrapper.findAll('span.tree__twisty--leaf')).toHaveLength(1)
+    expect(twisties(wrapper)).toHaveLength(1)
+  })
+
   it('展开 / 收起按钮只在树形模式下出现', async () => {
     resources.getResourceTree.mockResolvedValue([])
 

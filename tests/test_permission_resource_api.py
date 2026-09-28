@@ -229,6 +229,9 @@ TREE_OTHER_PAGE_ID = 61912
 TREE_MENU_ID = 61913
 TREE_SUB_MENU_ID = 61914
 TREE_DISABLED_BUTTON_ID = 61915
+TREE_FIELD_ID = 61916
+TREE_ORPHAN_FIELD_ID = 61917
+TREE_GONE_OWNER_PAGE_ID = 61918
 SAME_KEY_A_ID = 61920
 SAME_KEY_B_ID = 61921
 UNRELATED_PAGE_ID = 61922
@@ -245,8 +248,11 @@ async def _seed_tree(session: AsyncSession) -> None:
     ```
     PAGE  cr-tree:page          ← 根（PAGE 不允许有父）
       ├─ BUTTON cr-tree:page:create   ACTIVE
-      └─ BUTTON cr-tree:page:delete   DISABLED
+      ├─ BUTTON cr-tree:page:delete   DISABLED
+      └─ FIELD  cr-tree:page:phone    ← 归属走 owner_resource_id，不是 parent_id
     PAGE  cr-tree:other         ← 无关页面，用来验证"真的被筛掉了"
+    PAGE  cr-tree:gone          ← **已软删**，用来验证 owner 不在批次里时不崩
+    FIELD cr-tree:gone:field         ← owner_resource_id 指向上面那个已删页面
     MENU  cr-tree:menu          ← 根
       └─ MENU cr-tree:sub           ← MENU 内嵌套
     ```
@@ -281,6 +287,17 @@ async def _seed_tree(session: AsyncSession) -> None:
         parent_id=TREE_PAGE_ID,
         status=PermissionStatus.DISABLED,
     )
+    # FIELD 的归属只能由 `owner_resource_id` 表达：`parent_id` 恒为空。
+    # 构树若只认 `parent_id`，它就会变成没有归属的一级行。
+    await make_permission_resource(
+        session,
+        resource_id=TREE_FIELD_ID,
+        resource_type=PermissionResourceType.FIELD,
+        resource_code="cr-tree:page:phone",
+        resource_name="CR 树字段",
+        field_key="phone",
+        owner_resource_id=TREE_PAGE_ID,
+    )
     await make_permission_resource(
         session,
         resource_id=TREE_OTHER_PAGE_ID,
@@ -289,6 +306,29 @@ async def _seed_tree(session: AsyncSession) -> None:
         resource_name="CR 无关页面",
         route_path="/cr-other",
         component_path="cr/other.vue",
+    )
+    # 归属页面被软删：`owner_resource_id` 指向的是**已从批次里消失**的 ID。
+    # `owner_resource_id` 有 FK，所以这里必须建出真实行再软删，
+    # 不能直接写一个不存在的 ID。
+    gone_owner = await make_permission_resource(
+        session,
+        resource_id=TREE_GONE_OWNER_PAGE_ID,
+        resource_type=PermissionResourceType.PAGE,
+        resource_code="cr-tree:gone",
+        resource_name="CR 已删页面",
+        route_path="/cr-gone",
+        component_path="cr/gone.vue",
+    )
+    gone_owner.deleted_at = utc_now()
+    await session.flush()
+    await make_permission_resource(
+        session,
+        resource_id=TREE_ORPHAN_FIELD_ID,
+        resource_type=PermissionResourceType.FIELD,
+        resource_code="cr-tree:gone:field",
+        resource_name="CR 无主字段",
+        field_key="gone",
+        owner_resource_id=TREE_GONE_OWNER_PAGE_ID,
     )
     await make_permission_resource(
         session,
@@ -879,18 +919,96 @@ class TestMenuPages:
         assert response.status_code == 200, response.text
         nodes = _data(response)
 
-        # 跨类型：BUTTON 必须挂在它的 PAGE 下。
+        # 跨类型：BUTTON 与 FIELD 都必须挂在它们的 PAGE 下。
+        # FIELD 的父边来自 `owner_resource_id`（DD-06），与 BUTTON 的
+        # `parent_id` 是**两条不同的列** —— 只认 `parent_id` 的实现会让字段
+        # 全部落到根层，界面上一眼就是"这几个没有任何分类"。
         page_node = _find_node(nodes, TREE_PAGE_ID)
         assert page_node is not None, "全类型树里找不到 PAGE"
-        assert _child_ids(page_node) == [_key(TREE_BUTTON_ID), _key(TREE_DISABLED_BUTTON_ID)], (
-            "两个 BUTTON 没有被挂在它们的 PAGE 下"
-        )
+        assert _child_ids(page_node) == [
+            _key(TREE_BUTTON_ID),
+            _key(TREE_DISABLED_BUTTON_ID),
+            _key(TREE_FIELD_ID),
+        ], "BUTTON / FIELD 没有被挂在它们的 PAGE 下"
         # 子节点出现在根层 = "父不在同一批数据里"，正是单类型取法的症状。
         assert _key(TREE_BUTTON_ID) not in _root_ids(nodes)
+        assert _key(TREE_FIELD_ID) not in _root_ids(nodes), "FIELD 掉到了根层 —— 归属丢失"
         # 同类型嵌套（MENU → MENU）在全类型树下同样要成立。
         menu_node = _find_node(nodes, TREE_MENU_ID)
         assert menu_node is not None
         assert _child_ids(menu_node) == [_key(TREE_SUB_MENU_ID)]
+
+    async def test_field_hangs_under_its_owner_page(self, api: AsyncClient, db_session) -> None:
+        """FIELD 的归属由 `owner_resource_id` 表达，树里必须挂在所属 PAGE 下。
+
+        这是"四个字段权限在树里没有任何分类"那次的直接守卫：构树只认
+        `parent_id` 时，FIELD 因为没有父被**提升为根** —— 响应仍是 200、
+        结构仍像树，只在界面上表现为几个光秃秃的一级行。
+
+        同时钉住两条边界：
+
+        1. 归属页面**被软删**的字段不能消失、也不能报错，只能退化为根节点；
+        2. 单类型树（`resourceType=FIELD`）里归属页面不在批次内，
+           字段全部落在根层 —— 这是构树的固有语义，不是缺陷。
+        """
+        await _seed(db_session)
+        await _seed_tree(db_session)
+        token = await _login(api)
+
+        response = await api.get(f"{ADMIN_PREFIX}/permission-resources/tree", headers=_auth(token))
+        assert response.status_code == 200, response.text
+        nodes = _data(response)
+
+        # 1. 有主的字段挂在页面下，不是根。
+        page_node = _find_node(nodes, TREE_PAGE_ID)
+        assert page_node is not None
+        assert _key(TREE_FIELD_ID) in _child_ids(page_node)
+        assert _key(TREE_FIELD_ID) not in _root_ids(nodes)
+
+        # 2. 归属页面已软删的字段：退化为根，但**不得丢失**。
+        orphan = _find_node(nodes, TREE_ORPHAN_FIELD_ID)
+        assert orphan is not None, "owner 已软删的 FIELD 被静默丢弃了"
+        assert _key(TREE_ORPHAN_FIELD_ID) in _root_ids(nodes)
+        assert _find_node(nodes, TREE_GONE_OWNER_PAGE_ID) is None, "已软删的页面不该出现"
+
+        # 3. 单类型树的固有代价：owner 不在批次里 → 落在根层。
+        single = await api.get(
+            f"{ADMIN_PREFIX}/permission-resources/tree",
+            params={"resourceType": "FIELD"},
+            headers=_auth(token),
+        )
+        assert single.status_code == 200, single.text
+        single_nodes = _data(single)
+        assert all(node["resource"]["resource_type"] == "FIELD" for node in _walk(single_nodes))
+        assert _key(TREE_FIELD_ID) in _root_ids(single_nodes)
+
+    async def test_tree_keyword_on_a_field_keeps_its_owner_page(
+        self, api: AsyncClient, db_session
+    ) -> None:
+        """搜字段时，它所属的页面必须被当作**祖先**保留下来。
+
+        筛选的"保留祖先"与构树必须是**同一条父边**。两边不一致时的症状很隐蔽：
+        树是全类型树、字段确实挂对了，但用关键字搜字段时页面被裁掉 → 字段
+        又变成根，"搜到了却看不出归属"。所以这条用例专门搜 FIELD 的编码。
+        """
+        await _seed(db_session)
+        await _seed_tree(db_session)
+        token = await _login(api)
+
+        response = await api.get(
+            f"{ADMIN_PREFIX}/permission-resources/tree",
+            params={"keyword": "cr-tree:page:phone"},
+            headers=_auth(token),
+        )
+        assert response.status_code == 200, response.text
+        nodes = _data(response)
+
+        assert _find_node(nodes, TREE_FIELD_ID) is not None
+        page_node = _find_node(nodes, TREE_PAGE_ID)
+        assert page_node is not None, "字段的归属页面被裁掉了 —— 搜出来一个没有归属的字段"
+        assert _child_ids(page_node) == [_key(TREE_FIELD_ID)]
+        assert _find_node(nodes, TREE_BUTTON_ID) is None, "未命中的兄弟节点没有被裁掉"
+        assert _find_node(nodes, TREE_OTHER_PAGE_ID) is None
 
     async def test_tree_with_resource_type_stays_single_type(
         self, api: AsyncClient, db_session
