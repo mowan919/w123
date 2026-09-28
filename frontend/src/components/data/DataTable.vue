@@ -11,7 +11,7 @@
  * 等于在类型层面上承认"字段名可以随便写"，本文件开头那条约束就作废了。
  * 操作列也不参与"列设置"——它不是数据字段，隐藏它等于让整张表失去操作入口。
  */
-import { computed } from 'vue'
+import { computed, useSlots } from 'vue'
 import { NAlert, NCheckbox, NEmpty, NSpin } from 'naive-ui'
 import type { DataTableColumn } from './types'
 
@@ -48,6 +48,24 @@ const emit = defineEmits<{
 }>()
 
 const hasRows = computed(() => props.rows.length > 0)
+
+const slots = useSlots() as unknown as Record<string, unknown>
+
+/**
+ * 该列是否由页面**自定义渲染**（提供了 `cell-<key>` 槽）。
+ *
+ * 两种渲染方式在"要不要给 `title`"上必须分开处理：
+ *
+ * - 默认渲染：单元格里就是字段原值，且外面套了 `.clip`（长文本截断），
+ *   因此 `title` 直接给原值 —— 截断后悬停即可看到完整内容。
+ * - 自定义渲染：画面内容由页面决定。沿用字段原值当提示会**与画面不符** ——
+ *   例如 `status` 渲染成"正常"，提示却是 `ACTIVE`；`department_id` 渲染成
+ *   部门名，提示却是一串雪花 ID。这种提示比没有提示更糟，所以这里返回
+ *   `undefined`，由页面按需自己给。
+ */
+function hasCustomCell(key: keyof T & string): boolean {
+  return Boolean(slots[`cell-${key}`])
+}
 
 function cellText(row: T, key: keyof T & string): string {
   const value = row[key]
@@ -131,9 +149,10 @@ function alignClass(align: 'left' | 'center' | 'right' | undefined): string {
             v-for="column in props.columns"
             :key="column.key"
             :class="alignClass(column.align)"
+            :title="hasCustomCell(column.key) ? undefined : cellText(row, column.key)"
           >
             <slot :name="`cell-${column.key}`" :row="row">
-              {{ cellText(row, column.key) }}
+              <span class="clip">{{ cellText(row, column.key) }}</span>
             </slot>
           </td>
           <td v-if="props.actionsTitle" class="col-actions" :class="alignClass(props.actionsAlign)">

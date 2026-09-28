@@ -321,7 +321,11 @@ onMounted(() => {
       </template>
       <template #cell-device="{ row }">
         <span>{{ row.device ?? '—' }}</span>
-        <div class="muted">{{ row.user_agent ?? '' }}</div>
+        <!-- UA 最长可达 149 字符（实测），整表不折行后会把这列撑到约 700px，
+             因此截断显示、完整值放 title。 -->
+        <div v-if="row.user_agent !== null" class="muted clip" :title="row.user_agent">
+          {{ row.user_agent }}
+        </div>
       </template>
       <template #cell-revoked_at="{ row }">
         <span v-if="row.revoked_at !== null" class="tag tag--disabled">

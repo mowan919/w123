@@ -223,7 +223,9 @@ onMounted(() => {
         <span v-else class="tag tag--locked">{{ row.error_code }}</span>
       </template>
       <template #cell-user_agent="{ row }">
-        <span class="muted">{{ row.user_agent ?? '—' }}</span>
+        <span v-if="row.user_agent === null" class="muted">—</span>
+        <!-- UA 最长 149 字符（实测）：截断显示，完整值放 title。 -->
+        <span v-else class="muted clip" :title="row.user_agent">{{ row.user_agent }}</span>
       </template>
       <template #cell-trace_id="{ row }">
         <code>{{ row.trace_id ?? '—' }}</code>

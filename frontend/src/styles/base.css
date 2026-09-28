@@ -240,6 +240,26 @@ input[type='radio']:not([class*='n-']) {
   border-bottom: 1px solid var(--vctn-border);
   text-align: left;
   vertical-align: middle;
+  /* 单元格一律**单行**。
+     `table { width: 100% }` + 自动布局下，列多于容器可容纳的宽度时浏览器
+     会优先**压缩并折行**而不是溢出 —— 结果是"系统管理员"竖排成三行、
+     "正常"被拆成两个字、时间戳断成"2026-09-" / "26" / "00:01:34"，
+     行高被撑成两三倍，反而更难读。
+     声明 nowrap 后单元格不再能被压到内容宽度以下，整表自然溢出到
+     外层 `.data-table` 的横向滚动里（见该容器上的 `overflow-x`）。 */
+  white-space: nowrap;
+}
+
+/* 长自由文本（UA、描述）在单元格里截断。
+   整表不折行之后，一条 149 字符的 UA 会把该列撑到约 700px 宽 —— 让所有
+   人为了它横向拖并不划算，截断 + 悬停查看完整值更实用。
+   需要更宽时用 `style="--clip-width: 360px"` 就地覆盖。 */
+.clip {
+  display: block;
+  max-width: var(--clip-width, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .data-table__table th {
@@ -250,7 +270,6 @@ input[type='radio']:not([class*='n-']) {
   background: var(--vctn-fill-muted);
   color: var(--vctn-text-weak);
   font-weight: 500;
-  white-space: nowrap;
 }
 
 .data-table__table tbody tr {
@@ -281,10 +300,24 @@ input[type='radio']:not([class*='n-']) {
   text-align: center;
 }
 
-/* 操作列：不换行，避免"编辑 / 删除"被拆到两行把行高撑起来。 */
+/* 操作列：钉在右侧，横向滚动时操作入口不跟着飞出视野。
+   `position: sticky` 要求元素有**不透明背景**，否则滚到它下面的列会透出来
+   （表格背景是 `--vctn-surface`，行 hover 时换 `--vctn-fill-subtle`，
+   两处都要跟着给，见下面的 hover 规则）。 */
 .data-table__table td.col-actions,
 .data-table__table th.col-actions {
+  position: sticky;
+  right: 0;
   white-space: nowrap;
+  background: var(--vctn-surface);
+  /* 与左侧正在滚动的列之间留一条分隔，否则贴住的列看起来像"压"在数据上。 */
+  border-left: 1px solid var(--vctn-border);
+}
+
+.data-table__table th.col-actions {
+  /* 表头同时贴顶（top: 0）与贴右：必须盖住其余 sticky 表头。 */
+  z-index: 2;
+  background: var(--vctn-fill-muted);
 }
 
 .data-table__table tbody tr .col-actions {
@@ -296,6 +329,8 @@ input[type='radio']:not([class*='n-']) {
 .data-table__table tbody tr:hover .col-actions,
 .data-table__table tbody tr:focus-within .col-actions {
   opacity: 1;
+  /* 钉住的单元格不透出底下的行，因此行 hover 的底色要显式补上。 */
+  background: var(--vctn-fill-subtle);
 }
 
 .data-table__state {
@@ -1302,6 +1337,15 @@ input[type='radio']:not([class*='n-']) {
 
   .app-layout__content {
     padding: 16px;
+  }
+
+  /* 窄屏取消操作列的固定。这里可读区本来就被压得很窄，再钉住一列
+     等于把"横向能看到的列数"又砍掉一列 —— 固定的收益（不用拖到底）
+     抵不过它的成本。此时整表仍然横向滚动，行为与宽屏一致。 */
+  .data-table__table td.col-actions,
+  .data-table__table th.col-actions {
+    position: static;
+    border-left: none;
   }
 }
 

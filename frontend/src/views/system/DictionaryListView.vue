@@ -415,7 +415,11 @@ onMounted(() => {
         <span class="muted">{{ formatDateTime(row.updated_at) }}</span>
       </template>
       <template #cell-description="{ row }">
-        <span :class="row.description === null || row.description === '' ? 'muted' : ''">
+        <span
+          class="clip"
+          :class="row.description === null || row.description === '' ? 'muted' : ''"
+          :title="row.description || undefined"
+        >
           {{ row.description === null || row.description === '' ? '—' : row.description }}
         </span>
       </template>

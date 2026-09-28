@@ -287,7 +287,7 @@ onMounted(() => {
       </template>
       <template #cell-effective_value="{ row }">
         <div class="cell">
-          <code>{{ row.effective_value }}</code>
+          <code class="clip" :title="row.effective_value">{{ row.effective_value }}</code>
           <div v-if="row.param_value === null" class="muted">取自默认值</div>
         </div>
       </template>
@@ -295,11 +295,17 @@ onMounted(() => {
         <code>{{ row.param_key }}</code>
       </template>
       <template #cell-param_value="{ row }">
-        <code v-if="row.param_value !== null">{{ row.param_value }}</code>
+        <code v-if="row.param_value !== null" class="clip" :title="row.param_value">
+          {{ row.param_value }}
+        </code>
         <span v-else class="muted">未设置</span>
       </template>
       <template #cell-description="{ row }">
-        <span :class="row.description === null || row.description === '' ? 'muted' : ''">
+        <span
+          class="clip"
+          :class="row.description === null || row.description === '' ? 'muted' : ''"
+          :title="row.description || undefined"
+        >
           {{ row.description === null || row.description === '' ? '—' : row.description }}
         </span>
       </template>
