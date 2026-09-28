@@ -18,6 +18,13 @@ import type {
 export interface ResourceListQuery {
   pageNum: number
   pageSize: number
+  /**
+   * `null` / 省略 = **五类全取**。
+   *
+   * 树端点尤其要注意：父子规则是跨类型的（`BUTTON` / `API` 的父是 `PAGE`），
+   * 所以"全部"才能让这些子节点挂到父节点下；传了具体类型时，
+   * 父节点不在同一次查询里，子节点会被提升为根（该模式的固有语义）。
+   */
   resourceType?: ResourceType | null
   parentId?: ID | null
   status?: PermissionStatus | null
@@ -29,9 +36,9 @@ export function listResources(query: ResourceListQuery): Promise<PageResult<Perm
 }
 
 /** 必须先于 `/{resource_id}`（见文件头说明）。 */
-export function getResourceTree(query: Omit<ResourceListQuery, 'pageNum' | 'pageSize'>): Promise<
-  PermissionResourceTreeNode[]
-> {
+export function getResourceTree(
+  query: Omit<ResourceListQuery, 'pageNum' | 'pageSize'>,
+): Promise<PermissionResourceTreeNode[]> {
   return http.get<PermissionResourceTreeNode[]>('/admin/permission-resources/tree', query)
 }
 

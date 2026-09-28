@@ -31,6 +31,7 @@ from app.db.base import utc_now
 from app.db.session import get_db
 from app.models.enums import PermissionResourceType, PermissionStatus
 from app.models.logs import AuditLog
+from app.models.permission import PermissionResource
 from tests.factories import (
     link_role_permission,
     link_user_role,
@@ -125,6 +126,13 @@ async def _seed(session: AsyncSession) -> None:
 
     第三个用户是本文件的关键前提：它证明"前端权限（PAGE）"
     与"后端接口权限（API resource_code）"是**两件事**。
+
+    ⚠️ `PERMISSION_RESOURCE_MANAGE` 是**种子脚本**写入的真实数据
+    （`scripts/seed_data.py`）。共享库里已经有这一行，直接建会撞
+    `uq_permission_resources_type_code_active`，本文件 21 个用例会**整组**
+    在装置阶段失败（OPERATION-11-01）。因此先查后建：有就复用它的 ID 授权，
+    没有才新建 —— 用例要的是"该角色持有这个接口权限"，
+    而不是"这一行必须由本用例创建"。
     """
     await make_department(session, department_id=DEPT_ID, department_code="P8-RES-DEPT")
     for role_id, code in (
@@ -134,16 +142,33 @@ async def _seed(session: AsyncSession) -> None:
     ):
         await make_role(session, role_id=role_id, role_code=code)
 
-    await make_permission_resource(
-        session,
-        resource_id=RES_API_RESOURCE_MANAGE,
-        resource_type=PermissionResourceType.API,
-        resource_code="PERMISSION_RESOURCE_MANAGE",
-        api_method="GET",
-        api_path="/api/v1/admin/permission-resources",
-        status=PermissionStatus.ACTIVE,
+    seeded_api_id = (
+        (
+            await session.execute(
+                select(PermissionResource.id).where(
+                    PermissionResource.resource_type == PermissionResourceType.API,
+                    PermissionResource.resource_code == "PERMISSION_RESOURCE_MANAGE",
+                    PermissionResource.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
     )
-    await link_role_permission(session, role_id=ROLE_RES_ADMIN, resource_id=RES_API_RESOURCE_MANAGE)
+    if seeded_api_id is None:
+        await make_permission_resource(
+            session,
+            resource_id=RES_API_RESOURCE_MANAGE,
+            resource_type=PermissionResourceType.API,
+            resource_code="PERMISSION_RESOURCE_MANAGE",
+            api_method="GET",
+            api_path="/api/v1/admin/permission-resources",
+            status=PermissionStatus.ACTIVE,
+        )
+        manage_resource_id = RES_API_RESOURCE_MANAGE
+    else:
+        manage_resource_id = int(seeded_api_id)
+    await link_role_permission(session, role_id=ROLE_RES_ADMIN, resource_id=manage_resource_id)
 
     # 一个真实的 PAGE 资源，授权给"只有页面权限"的用户。
     await make_permission_resource(
@@ -192,6 +217,128 @@ def _page_payload(**overrides: Any) -> dict[str, Any]:
     }
     payload.update(overrides)
     return payload
+
+
+# ---------------------------------------------------------------------------
+# 资源树用例的固定装置
+# ---------------------------------------------------------------------------
+#: 本组用例独占的 ID 段（避开 `_seed` 的 61001+ 与共享库的种子行）。
+TREE_PAGE_ID = 61910
+TREE_BUTTON_ID = 61911
+TREE_OTHER_PAGE_ID = 61912
+TREE_MENU_ID = 61913
+TREE_SUB_MENU_ID = 61914
+TREE_DISABLED_BUTTON_ID = 61915
+SAME_KEY_A_ID = 61920
+SAME_KEY_B_ID = 61921
+UNRELATED_PAGE_ID = 61922
+
+#: 仅在 `cr-same-key` 一致性用例里使用：**存的是大写、搜的是小写**。
+#: 两条命中路径不同 —— 一条靠 `resource_code`，一条靠 `resource_name`。
+SAME_KEY_CODE = "cr-same-key:alpha"
+SAME_KEY_NAME = "CR-SAME-KEY 乙"
+
+
+async def _seed_tree(session: AsyncSession) -> None:
+    """一棵**跨类型**的小树，专供资源树用例。
+
+    ```
+    PAGE  cr-tree:page          ← 根（PAGE 不允许有父）
+      ├─ BUTTON cr-tree:page:create   ACTIVE
+      └─ BUTTON cr-tree:page:delete   DISABLED
+    PAGE  cr-tree:other         ← 无关页面，用来验证"真的被筛掉了"
+    MENU  cr-tree:menu          ← 根
+      └─ MENU cr-tree:sub           ← MENU 内嵌套
+    ```
+
+    直接写库而不是走 HTTP：这些用例断言的是**读取**语义，
+    用工厂能精确构造状态（例如一个 DISABLED 但未删除的按钮），
+    也免得每棵树都要凑齐 PAGE / MENU 的形状必填列。
+    """
+    await make_permission_resource(
+        session,
+        resource_id=TREE_PAGE_ID,
+        resource_type=PermissionResourceType.PAGE,
+        resource_code="cr-tree:page",
+        resource_name="CR 树页面",
+        route_path="/cr-tree",
+        component_path="cr/tree.vue",
+    )
+    await make_permission_resource(
+        session,
+        resource_id=TREE_BUTTON_ID,
+        resource_type=PermissionResourceType.BUTTON,
+        resource_code="cr-tree:page:create",
+        resource_name="CR 树按钮",
+        parent_id=TREE_PAGE_ID,
+    )
+    await make_permission_resource(
+        session,
+        resource_id=TREE_DISABLED_BUTTON_ID,
+        resource_type=PermissionResourceType.BUTTON,
+        resource_code="cr-tree:page:delete",
+        resource_name="CR 树禁用按钮",
+        parent_id=TREE_PAGE_ID,
+        status=PermissionStatus.DISABLED,
+    )
+    await make_permission_resource(
+        session,
+        resource_id=TREE_OTHER_PAGE_ID,
+        resource_type=PermissionResourceType.PAGE,
+        resource_code="cr-tree:other",
+        resource_name="CR 无关页面",
+        route_path="/cr-other",
+        component_path="cr/other.vue",
+    )
+    await make_permission_resource(
+        session,
+        resource_id=TREE_MENU_ID,
+        resource_type=PermissionResourceType.MENU,
+        resource_code="cr-tree:menu",
+        resource_name="CR 树菜单",
+        # ⚠️ MENU **不得携带** route_path / component_path：
+        # 它们在 `TYPE_OPTIONAL_COLUMNS[MENU]` 之外，数据库 CHECK
+        # `ck_permission_resources_resource_type_fields` 会直接拒绝。
+        # 菜单是纯导航分组，能点进去的页面由 PAGE 资源 + 菜单挂载关系决定。
+        icon="menu",
+    )
+    await make_permission_resource(
+        session,
+        resource_id=TREE_SUB_MENU_ID,
+        resource_type=PermissionResourceType.MENU,
+        resource_code="cr-tree:menu:sub",
+        resource_name="CR 子菜单",
+        parent_id=TREE_MENU_ID,
+        icon="menu",
+    )
+
+
+def _key(value: Any) -> str:
+    """业务 ID 在 JSON 里是**字符串**（DD-20）、在本地是 int，比对前统一。"""
+    return str(value)
+
+
+def _walk(nodes: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """深度优先遍历树响应（含所有层级的子节点）。"""
+    for node in nodes:
+        yield node
+        yield from _walk(node["children"])
+
+
+def _find_node(nodes: list[dict[str, Any]], resource_id: int) -> dict[str, Any] | None:
+    """按资源 ID 找节点；找不到返回 `None`，便于直接断言"不该出现"。"""
+    for node in _walk(nodes):
+        if _key(node["resource"]["id"]) == _key(resource_id):
+            return node
+    return None
+
+
+def _child_ids(node: dict[str, Any]) -> list[str]:
+    return [_key(child["resource"]["id"]) for child in node["children"]]
+
+
+def _root_ids(nodes: list[dict[str, Any]]) -> set[str]:
+    return {_key(node["resource"]["id"]) for node in nodes}
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +566,83 @@ class TestPageCrud:
         )
         assert response.status_code == 400
 
+    async def test_menu_must_not_carry_route_path(self, api: AsyncClient, db_session) -> None:
+        """给 MENU 填 `route_path` / `component_path` 必须被拒。
+
+        菜单是**纯导航分组**：能点进去的页面由 PAGE 资源 + `menu_pages`
+        关联决定，菜单自己不带路由。所以 `TYPE_REQUIRED_COLUMNS[MENU]` 为空、
+        `TYPE_OPTIONAL_COLUMNS[MENU]` 只有 `parent_id` / `icon` ——
+        其余类型专属列必须为 NULL，数据库 CHECK 也照此拒绝。
+
+        这条规则值得单独钉住，因为**表单侧曾经反过来**：把 route_path /
+        component_path 做成了 MENU 的必填项，于是"新增菜单"必然 400。
+        前端按类型分支的必填规则必须与这里一致。
+        """
+        await _seed(db_session)
+        token = await _login(api)
+
+        for extra in ({"route_path": "/system/x"}, {"component_path": "system/x"}):
+            response = await api.post(
+                f"{ADMIN_PREFIX}/permission-resources",
+                json={
+                    "resource_type": "MENU",
+                    "resource_code": "shape:menu",
+                    "resource_name": "形状菜单",
+                    **extra,
+                },
+                headers=_auth(token),
+            )
+            assert response.status_code == 400, response.text
+            assert next(iter(extra)) in response.json()["message"]
+
+        # 不带这两个列则必须成功 —— 否则"必须被拒"可能只是因为别的原因为被拒。
+        ok = await api.post(
+            f"{ADMIN_PREFIX}/permission-resources",
+            json={
+                "resource_type": "MENU",
+                "resource_code": "shape:menu",
+                "resource_name": "形状菜单",
+                "icon": "menu",
+            },
+            headers=_auth(token),
+        )
+        assert ok.status_code == 200, ok.text
+
+    async def test_button_requires_a_parent_page(self, api: AsyncClient, db_session) -> None:
+        """BUTTON 没有 `parent_id` 必须被拒（按钮必须挂在某个页面上）。
+
+        FIELD 同理由 `owner_resource_id` 归属页面。两条都是"表单少一个输入框
+        就整类资源建不出来"的地方，所以在这里把后端口径写死：
+        前端要能建 BUTTON / FIELD，就必须提供选父页面 / 归属页面的入口。
+        """
+        await _seed(db_session)
+        token = await _login(api)
+
+        response = await api.post(
+            f"{ADMIN_PREFIX}/permission-resources",
+            json={
+                "resource_type": "BUTTON",
+                "resource_code": "shape:btn",
+                "resource_name": "形状按钮",
+            },
+            headers=_auth(token),
+        )
+        assert response.status_code == 400, response.text
+        assert "parent_id" in response.json()["message"]
+
+        field = await api.post(
+            f"{ADMIN_PREFIX}/permission-resources",
+            json={
+                "resource_type": "FIELD",
+                "resource_code": "shape:field",
+                "resource_name": "形状字段",
+                "field_key": "field:user.phone",
+            },
+            headers=_auth(token),
+        )
+        assert field.status_code == 400, field.text
+        assert "owner_resource_id" in field.json()["message"]
+
     async def test_delete_is_rejected_while_referenced(self, api: AsyncClient, db_session) -> None:
         """仍有角色授权引用时删除必须被拒（409），而不是级联清理。
 
@@ -593,7 +817,11 @@ class TestMenuPages:
         assert response.status_code == 400
 
     async def test_menu_hierarchy_is_returned_by_tree(self, api: AsyncClient, db_session) -> None:
-        """`GET /permission-resources/tree?resourceType=MENU` 返回导航层级。"""
+        """`GET /permission-resources/tree?resourceType=MENU` 返回导航层级。
+
+        ⚠️ 断言按**编码**定位节点，而不是 `len(nodes) == 1`：共享库里已经有
+        十来个真实菜单资源，对全量数量下断言会让这条用例只在空库上通过。
+        """
         await _seed(db_session)
         token = await _login(api)
 
@@ -625,13 +853,200 @@ class TestMenuPages:
             headers=_auth(token),
         )
         assert response.status_code == 200, response.text
-        nodes = _data(response)
-        assert len(nodes) == 1
-        assert nodes[0]["resource"]["resource_code"] == "nav:system"
-        assert nodes[0]["children"][0]["resource"]["resource_code"] == "nav:system:user"
+        parent_node = _find_node(_data(response), parent["id"])
+        assert parent_node is not None
+        assert [child["resource"]["resource_code"] for child in parent_node["children"]] == [
+            "nav:system:user"
+        ]
+        # 只返回 MENU：同一次请求里 PATTERN 之外的类型一个都不该出现。
+        assert all(node["resource"]["resource_type"] == "MENU" for node in _walk(_data(response)))
 
-    async def test_tree_requires_resource_type(self, api: AsyncClient, db_session) -> None:
+    async def test_tree_omitting_resource_type_covers_every_type(
+        self, api: AsyncClient, db_session
+    ) -> None:
+        """省略 `resourceType` 时返回全类型树，且**跨类型父子必须真的连上**。
+
+        这是本轮缺口的直接守卫。父子规则是跨类型的（`BUTTON → PAGE`、
+        `API → PAGE`、`MENU → MENU`），按单类型取会让子节点因为
+        "父不在同一批数据里"被**提升为根** —— 响应码仍是 200、
+        结构看着也像一棵树，只有比对层级才看得出问题。
+        """
+        await _seed(db_session)
+        await _seed_tree(db_session)
+        token = await _login(api)
+
+        response = await api.get(f"{ADMIN_PREFIX}/permission-resources/tree", headers=_auth(token))
+        assert response.status_code == 200, response.text
+        nodes = _data(response)
+
+        # 跨类型：BUTTON 必须挂在它的 PAGE 下。
+        page_node = _find_node(nodes, TREE_PAGE_ID)
+        assert page_node is not None, "全类型树里找不到 PAGE"
+        assert _child_ids(page_node) == [_key(TREE_BUTTON_ID), _key(TREE_DISABLED_BUTTON_ID)], (
+            "两个 BUTTON 没有被挂在它们的 PAGE 下"
+        )
+        # 子节点出现在根层 = "父不在同一批数据里"，正是单类型取法的症状。
+        assert _key(TREE_BUTTON_ID) not in _root_ids(nodes)
+        # 同类型嵌套（MENU → MENU）在全类型树下同样要成立。
+        menu_node = _find_node(nodes, TREE_MENU_ID)
+        assert menu_node is not None
+        assert _child_ids(menu_node) == [_key(TREE_SUB_MENU_ID)]
+
+    async def test_tree_with_resource_type_stays_single_type(
+        self, api: AsyncClient, db_session
+    ) -> None:
+        """显式传 `resourceType` 时行为与从前一致：只返回该类型。
+
+        同时也把单类型取法的**代价**钉在测试里 —— `resourceType=BUTTON` 时
+        父页面不在范围内，按钮只能当根节点。这不是缺陷，是"按类型取树"的
+        固有语义；写下来免得下次有人把它当成 bug 去"修"。
+        """
+        await _seed(db_session)
+        await _seed_tree(db_session)
+        token = await _login(api)
+
+        response = await api.get(
+            f"{ADMIN_PREFIX}/permission-resources/tree",
+            params={"resourceType": "PAGE"},
+            headers=_auth(token),
+        )
+        assert response.status_code == 200, response.text
+        nodes = _data(response)
+
+        page_node = _find_node(nodes, TREE_PAGE_ID)
+        assert page_node is not None
+        assert page_node["children"] == [], "单类型树里不该出现别的类型"
+        assert _find_node(nodes, TREE_BUTTON_ID) is None
+        assert _find_node(nodes, TREE_MENU_ID) is None
+
+    async def test_tree_keyword_keeps_ancestors_and_drops_non_matches(
+        self, api: AsyncClient, db_session
+    ) -> None:
+        """关键词筛选保留命中项的**祖先**，并真把无关项筛掉。
+
+        只保留命中项是错的做法：父节点被裁掉后，子节点会变成根，
+        集合看着"筛选生效了"，但"这个按钮挂在哪个页面下"反而看不见了。
+        只筛不删（忽略关键词）同样是错的 —— 那样 `TREE_OTHER_PAGE_ID` 会留在结果里。
+        """
+        await _seed(db_session)
+        await _seed_tree(db_session)
+        token = await _login(api)
+
+        response = await api.get(
+            f"{ADMIN_PREFIX}/permission-resources/tree",
+            params={"keyword": "cr-tree:page:create"},
+            headers=_auth(token),
+        )
+        assert response.status_code == 200, response.text
+        nodes = _data(response)
+
+        assert _find_node(nodes, TREE_BUTTON_ID) is not None
+        page_node = _find_node(nodes, TREE_PAGE_ID)
+        assert page_node is not None, "祖先被裁掉了 —— 层级会因此丢失"
+        assert _child_ids(page_node) == [_key(TREE_BUTTON_ID)]
+        assert _find_node(nodes, TREE_OTHER_PAGE_ID) is None, "关键词没有真的筛掉无关项"
+
+    async def test_tree_status_filter_keeps_ancestor_that_does_not_match(
+        self, api: AsyncClient, db_session
+    ) -> None:
+        """状态筛选同样保留祖先，**即使祖先自身不满足该状态**。
+
+        「祖先保留」按"可达性"而非"是否命中"判定：`status=DISABLED` 时那个
+        ACTIVE 的父页面必须留下，否则禁用按钮会看一眼像是没有归属。
+        同一父节点下未命中的兄弟节点则要被裁掉 —— 两者不能一起放过。
+        """
+        await _seed(db_session)
+        await _seed_tree(db_session)
+        token = await _login(api)
+
+        response = await api.get(
+            f"{ADMIN_PREFIX}/permission-resources/tree",
+            params={"status": "DISABLED", "keyword": "cr-tree:page:delete"},
+            headers=_auth(token),
+        )
+        assert response.status_code == 200, response.text
+        nodes = _data(response)
+
+        assert _find_node(nodes, TREE_DISABLED_BUTTON_ID) is not None
+        page_node = _find_node(nodes, TREE_PAGE_ID)
+        assert page_node is not None, "ACTIVE 的父页面因不满足 status 被裁掉了"
+        assert _child_ids(page_node) == [_key(TREE_DISABLED_BUTTON_ID)], (
+            "未命中的兄弟节点没有被裁掉"
+        )
+        assert _find_node(nodes, TREE_BUTTON_ID) is None
+
+    async def test_keyword_matches_the_same_rows_in_list_and_tree(
+        self, api: AsyncClient, db_session
+    ) -> None:
+        """同一关键词在**列表**（SQL `ILIKE`）与**树**（内存匹配）里必须命中同一集合。
+
+        这条是为"筛选有两套实现"专门加的：列表在 SQL 里筛，树必须取全量再在
+        内存里裁（否则父节点被筛掉、层级丢失），于是同一条规则被写了两遍。
+        两遍不一致时，用户会看到"列表里搜得到、树上搜不到"这种无法解释的现象
+        —— 见 `app/repositories/permission.py` 的 `matches_keyword()`。
+
+        搜索用**不同大小写**发起，一并把两边的"大小写不敏感"钉住：
+        手写内存匹配最容易漏掉的就是 `.lower()`。
+        """
         await _seed(db_session)
         token = await _login(api)
-        response = await api.get(f"{ADMIN_PREFIX}/permission-resources/tree", headers=_auth(token))
-        assert response.status_code == 400
+
+        by_code = await make_permission_resource(
+            db_session,
+            resource_id=SAME_KEY_A_ID,
+            resource_type=PermissionResourceType.PAGE,
+            resource_code=SAME_KEY_CODE,
+            resource_name="CR 同口径甲",
+            route_path="/cr-same-a",
+            component_path="cr/same-a.vue",
+        )
+        by_name = await make_permission_resource(
+            db_session,
+            resource_id=SAME_KEY_B_ID,
+            resource_type=PermissionResourceType.PAGE,
+            resource_code="cr-same:beta",
+            resource_name=SAME_KEY_NAME,
+            route_path="/cr-same-b",
+            component_path="cr/same-b.vue",
+        )
+        unrelated = await make_permission_resource(
+            db_session,
+            resource_id=UNRELATED_PAGE_ID,
+            resource_type=PermissionResourceType.PAGE,
+            resource_code="cr-other:gamma",
+            resource_name="CR 无关丙",
+            route_path="/cr-other-g",
+            component_path="cr/other-g.vue",
+        )
+
+        # 只看本次建的三个：共享库里还有别的数据，不能对全量集合下断言。
+        # `by_code` 按编码命中、`by_name` 按名称命中 —— 顺带证明两个字段都参与匹配。
+        watched = {_key(by_code.id), _key(by_name.id), _key(unrelated.id)}
+        expected = {_key(by_code.id), _key(by_name.id)}
+
+        # **两个方向都要测**：
+        # - 存大写、搜小写 → 需要把**待查文本**降大小写；
+        # - 存小写、搜大写 → 需要把**关键词**降大小写。
+        # 只测一个方向的话，漏掉另一半 `.lower()` 的实现也能全绿
+        # （这是实测出来的：先只写了第一个方向，一个只摘掉关键词侧 `.lower()`
+        # 的变异没被检出，用例其实是漏的）。
+        for spelling in ("cr-same-key", "CR-SAME-KEY"):
+            list_response = await api.get(
+                f"{ADMIN_PREFIX}/permission-resources",
+                params={"keyword": spelling, "pageSize": 100},
+                headers=_auth(token),
+            )
+            tree_response = await api.get(
+                f"{ADMIN_PREFIX}/permission-resources/tree",
+                params={"keyword": spelling},
+                headers=_auth(token),
+            )
+            assert list_response.status_code == 200, list_response.text
+            assert tree_response.status_code == 200, tree_response.text
+
+            list_hits = watched & {_key(item["id"]) for item in _data(list_response)["list"]}
+            tree_hits = watched & {
+                _key(node["resource"]["id"]) for node in _walk(_data(tree_response))
+            }
+            assert list_hits == expected, f"列表端点对 {spelling!r} 的匹配不符合预期"
+            assert tree_hits == expected, f"树端点对 {spelling!r} 的匹配与列表不一致"

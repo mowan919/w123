@@ -60,12 +60,17 @@ from app.repositories.permission import (
     PermissionResourceRepository,
     PermissionVersionRepository,
     RolePermissionRepository,
+    matches_keyword,
 )
 from app.services.audit_guard import AuditGuard
 from app.services.authorization import AuthorizationService
 
 #: 审计资源类型。
 RESOURCE_TYPE = "PERMISSION_RESOURCE"
+
+#: 构树时每次向仓储取多少条。树必须取得**完整**节点集才能正确解析父子，
+#: 所以这里是一个内部翻页的批大小，不是"树只显示前 N 条"。
+_TREE_PAGE_SIZE = 100
 
 #: 各类型允许的父资源类型（DD-20 冻结的树形语义）。
 #:
@@ -109,10 +114,55 @@ class ResourcePage:
 
 @dataclass(frozen=True, slots=True)
 class ResourceTreeNode:
-    """资源的树节点（仅用于 `MENU` 导航树）。"""
+    """资源的树节点。"""
 
     resource: PermissionResource
     children: tuple[ResourceTreeNode, ...]
+
+
+def _visible_resource_ids(
+    resources: list[PermissionResource],
+    by_id: dict[int, PermissionResource],
+    *,
+    status: PermissionStatus | None,
+    keyword: str | None,
+) -> set[int] | None:
+    """筛选后应当保留的节点 ID 集合；无筛选时返回 `None`（表示"全部可见"）。
+
+    返回 `None` 而不是全集，是为了让"没有筛选"这条最常见路径不付出建集合的
+    代价，同时让调用点读起来是"不裁剪"而不是"裁剪到全部"。
+
+    保留祖先
+    -------
+    命中节点**连同它的全部祖先**一起保留。两个理由：
+
+    1. 只留命中项的话，"搜一个按钮"会得到一排没有归属的按钮 —— 而
+       "这个按钮挂在哪个页面下"正是这一页要回答的问题，反而看不见了。
+    2. 父节点被裁掉后，子节点会因为"父不在结果里"被提升为根，
+       结果集合看着像"筛选生效了"，实际层级已经错了。
+
+    祖先一定在 `by_id` 里（只统计本次取回范围内的父），因此沿
+    `parent_id` 上溯必然终止：每轮都往 `visible` 里加一个范围内节点。
+    """
+    has_keyword = bool(keyword)
+    if status is None and not has_keyword:
+        return None
+
+    parent_of = {resource.id: resource.parent_id for resource in resources}
+    matched = {
+        resource.id
+        for resource in resources
+        if (status is None or resource.status == status)
+        and (not has_keyword or matches_keyword(resource, keyword or ""))
+    }
+
+    visible = set(matched)
+    for resource_id in matched:
+        current = parent_of.get(resource_id)
+        while current is not None and current in by_id and current not in visible:
+            visible.add(current)
+            current = parent_of.get(current)
+    return visible
 
 
 def _snapshot(resource: PermissionResource) -> dict[str, Any]:
@@ -329,32 +379,52 @@ class PermissionResourceService:
         return ResourcePage(items=items, total=total, page_num=page_num, page_size=page_size)
 
     async def tree(
-        self, *, actor: CurrentActor, resource_type: PermissionResourceType
+        self,
+        *,
+        actor: CurrentActor,
+        resource_type: PermissionResourceType | None = None,
+        status: PermissionStatus | None = None,
+        keyword: str | None = None,
     ) -> tuple[ResourceTreeNode, ...]:
-        """构建资源树（DD-20 冻结：主要用于 `MENU` 导航树）。
+        """构建资源树。
+
+        `resource_type` 省略时返回**五类资源合成的完整树**
+        -------------------------------------------------
+        父子规则本身就是跨类型的：`BUTTON → PAGE`、`API → PAGE`、`MENU → MENU`
+        （见 `_PARENT_TYPE_RULES`）。所以"五种类型的树彼此独立"并不成立 ——
+        只取 `BUTTON` 一类时，按钮的父页面不在同一批数据里，
+        每个按钮都会因为"父不在范围内"被提升为根，
+        "按钮挂在哪一页"这个层级信息在不报错的情况下直接消失。
+        因此不指定类型时按全类型取，让跨类型父子真正连上。
+
+        传了 `resource_type` 时行为与从前一致（单类型树），既有调用方不受影响。
+
+        筛选在内存里做，且保留祖先
+        ------------------------
+        `status` / `keyword` 不能下推到 SQL：树需要完整节点集才能解析父子，
+        在 SQL 里筛掉父节点 → 子节点被提升为根 → 层级丢失。
+        因此先取全量、再按 `_visible_resource_ids()` 裁（含保留祖先）。
 
         环路安全
         -------
-        单纯按 `parent_id` 递归构造，一旦数据里出现环（A 的父是 B、B 的父是 A）
-        就会无限递归。因此本方法按"从根 BFS + visited 去重"构造：
-        任何指向已访问节点的边都会被丢弃，无法到达根的节点被提升为根。
-        结果是：**即使数据损坏，本方法也一定终止**，且不静默丢失节点。
+        按"从根 BFS + visited 去重"构造：任何指向已访问节点的边都会被丢弃，
+        无法到达根的节点被提升为根。**即使数据损坏，本方法也一定终止**，
+        且不静默丢失节点。
         """
         await self._assert_can_manage(
             actor=actor, action=AuditAction.PERMISSION_RESOURCE_READ, resource_id=None
         )
-        # 用同一分页上限循环取完该类型的全部资源（导航树规模有限，
-        # 且必须完整才能正确构树）。
+        # 用同一批大小循环取完范围内的全部资源：必须完整才能正确构树。
         resources: list[PermissionResource] = []
         page_num = 1
         while True:
             batch = await self._resources.list_resources(
-                resource_type=resource_type, page_num=page_num, page_size=100
+                resource_type=resource_type, page_num=page_num, page_size=_TREE_PAGE_SIZE
             )
             if not batch:
                 break
             resources.extend(batch)
-            if len(batch) < 100:
+            if len(batch) < _TREE_PAGE_SIZE:
                 break
             page_num += 1
 
@@ -368,22 +438,29 @@ class PermissionResourceService:
             else:
                 children_map.setdefault(parent_id, []).append(resource.id)
 
+        visible = _visible_resource_ids(resources, by_id, status=status, keyword=keyword)
+
+        def kept(resource_id: int) -> bool:
+            return visible is None or resource_id in visible
+
         visited: set[int] = set()
 
         def build(resource_id: int) -> ResourceTreeNode:
             visited.add(resource_id)
             child_nodes: list[ResourceTreeNode] = []
             for child_id in children_map.get(resource_id, []):
-                if child_id in visited:
-                    # 环上的回边 → 丢弃该边，保证终止。
+                if child_id in visited or not kept(child_id):
+                    # 环上的回边 → 丢弃该边，保证终止；被筛掉的子树整支不展开。
                     continue
                 child_nodes.append(build(child_id))
             return ResourceTreeNode(resource=by_id[resource_id], children=tuple(child_nodes))
 
-        nodes: list[ResourceTreeNode] = [build(root_id) for root_id in sorted(roots)]
+        nodes: list[ResourceTreeNode] = [
+            build(root_id) for root_id in sorted(roots) if kept(root_id)
+        ]
         # 不可达根的节点（环内节点）提升为根，避免静默丢失。
         for resource_id in sorted(by_id):
-            if resource_id not in visited:
+            if resource_id not in visited and kept(resource_id):
                 nodes.append(build(resource_id))
         return tuple(nodes)
 

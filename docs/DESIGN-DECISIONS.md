@@ -861,7 +861,7 @@ Seed 行   700001 / BOOL / ACTIVE / param_value=NULL / default_value='false'
 | **INTERIM-8-01** | `endpoints/permission_resources.py` 的路径 `/admin/permission-resources*` | kebab-case 复数资源名 | `08 §3–§9` **未列出**资源 CRUD 端点（DD-20 只说"HTTP 暴露属 008 范围"）。取与 `08 §5/§8` 既有复数资源（`sessions`、`dicts`、`audit/logs`）一致的命名 |
 | **INTERIM-8-02** | `GET /auth/permissions` **不写**审计 | 只读本人快照、每次开页面都调 | 与 INTERIM-7-05（公开字典查询）同一取向：逐次审计会把审计表变成访问日志并稀释 FAILURE 信号 |
 | **INTERIM-8-03** | 契约**不裁剪**空菜单 | 菜单本身是已授权资源 | 是否渲染"无可访问子页面的菜单"属前端策略；后端只保证下发的每一项都已授权，不替前端做渲染决策 |
-| **INTERIM-8-04** | `GET /permission-resources/tree` 的 `resourceType` 缺失 → **400**而非返回空树 | 五种类型的树彼此独立 | 不指定类型时"构树"没有语义；返回空树会让调用方把"参数漏了"误读成"确实没有资源" |
+| ~~**INTERIM-8-04**~~ | ~~`GET /permission-resources/tree` 的 `resourceType` 缺失 → **400** 而非返回空树~~ | ~~五种类型的树彼此独立~~ | ⚠️ **已作废（2026-09-28）**：其"五种类型的树彼此独立"的前提**不成立** —— 父子规则本身跨类型（`BUTTON` / `API` 的父是 `PAGE`）。见 §27 `RESOLVED-27-01/02` |
 | **INTERIM-8-05** | 响应 DTO 用 `snake_case`；请求/查询用 camelCase | 与既有 `PermissionPreviewResponse` / `RolePermissionViewResponse` 一致 | `08 §2` 未冻结字段命名；本 Phase 不引入第二套口径 |
 | **INTERIM-8-06** | 六个角色授权端点写成**六条显式路由**而非 `/permissions/{kind}` | `08 §7` 冻结的是四条**具体路径** | 路径参数会让 OpenAPI 只出现一条，Phase 10 的契约比对将直接判缺失 |
 | **JUDGMENT-8-01** | `is_super_admin == True` 时契约输出**全部 ACTIVE 资源**；**字段权限不做 bypass** | `10 §3` 冻结集中式 bypass | 见 §15.2 |
@@ -2182,3 +2182,121 @@ naive 09:35  →  01:35+00:00      （差 -8 小时）
 因此 `applyBulkSelection` 先按 `collectKeys` 汇总**树上**的键，
 且某一类在树上为空时**整类跳过**（空集合不等于"应该清空"）。
 
+---
+
+## 27. 权限资源树的全类型范围 —— 实际落地口径（2026-09-28）
+
+用户诉求（原文，附权限资源页截图）：
+
+```text
+权限资源 树形结构报错
+```
+
+截图报错：`resourceType 为必填参数`。
+
+### 27.1 根因链（三段都在真实请求里核过）
+
+| 环节 | 事实 | 位置 |
+|---|---|---|
+| 后端 | 不传 `resourceType` → `400 "resourceType 为必填参数"` | `endpoints/permission_resources.py` |
+| 前端 | 「类型 = 全部」时传 `resourceType: null` | `PermissionResourceListView.vue` |
+| HTTP 客户端 | `null` / `undefined` / 空串**不拼进 URL** | `api/client.ts::buildUrl()` |
+| 结果 | 请求退化成 `/tree?status=&keyword=` → 后端判缺失 → 400 | 与截图一字不差 |
+
+同时查出第二个缺陷：树的服务层只把 `resource_type` 传给仓储，
+**`status` / `keyword` 被静默丢弃** —— 树形模式下筛选栏是摆设。
+
+### 27.2 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `RESOLVED-27-01` | `GET /permission-resources/tree` 的 `resourceType` **可省略**；省略时返回五类合成的完整树 | 已裁定（人类选定） |
+| `RESOLVED-27-02` | **作废 `INTERIM-8-04`**（见 §15.1 该行） | 已作废 |
+| `OPERATION-27-01` | 树的筛选在**内存**里做，且保留命中节点的**全部祖先** | 操作约定 |
+| `OPERATION-27-02` | 关键词匹配的 SQL 版与内存版必须同一口径，由真实请求比对钉住 | 操作约定 |
+| `FINDING-27-01` | 资源表单按类型的必填规则与后端不一致（见 §27.6） | **未修** |
+
+### 27.3 为什么省略类型必须有语义（`RESOLVED-27-01`）
+
+`INTERIM-8-04` 的理由是"五种类型的树彼此独立"。**这个前提不成立**：
+
+```text
+PAGE（不允许有父）
+  ├── BUTTON.parent_id  → PAGE
+  └── API.parent_id     → PAGE
+MENU.parent_id          → MENU
+FIELD                   → 归属靠 owner_resource_id → PAGE
+```
+
+父子规则**本身跨类型**。因此按单类型取树时，子节点的父不在同一批数据里，
+`by_id` 查不到父 → 子节点被**提升为根**：响应码 200、结构看着也像一棵树，
+"按钮挂在哪一页"这个层级信息在不报错的情况下直接消失。
+
+这也解释了为什么端点原来的 docstring 写着"主要用于 MENU 导航树"——
+只有 MENU → MENU 那一支是完整的。
+
+传 `resourceType` 时的行为**一字未改**（单类型树），既有调用方不受影响；
+只有原先报 400 的那种请求变成可用。这是加法，不是替换。
+
+⚠️ **单类型树会丢跨类型层级**，这是该模式的固有语义、不是缺陷。
+界面上按类型筛选时会明说一句，免得下次又被当成 bug 去"修"。
+
+### 27.4 筛选为什么不能下推到 SQL（`OPERATION-27-01`）
+
+树需要**完整节点集**才能解析父子。在 SQL 里按关键词筛掉父节点，
+子节点立刻变成根 —— 层级丢失，而调用方看不出来。
+
+祖先必须保留还有第二个理由：只留命中项的话，"搜一个按钮"会得到一排
+没有归属的按钮，而"这个按钮挂在哪个页面下"正是这一页要回答的问题，
+反而看不见了。
+
+「祖先保留」按**可达性**判定，不按"是否命中"：`status=DISABLED` 时那个 ACTIVE
+的父页面必须留下；同一父节点下未命中的兄弟节点则要裁掉。两者不能一起放过。
+
+### 27.5 两套匹配实现的代价（`OPERATION-27-02`）
+
+列表在 SQL 里筛（`resource_code ILIKE %kw% OR resource_name ILIKE %kw%`），
+树只能在内存里裁 → **同一条规则被写了两遍**。两遍不一致时，用户会看到
+"列表里搜得到、树上搜不到"这种无法解释的现象。
+
+因此：`app/repositories/permission.py` 的 `matches_keyword()` 与
+`_apply_filters()` 的 SQL 分支互相在注释里指名对方，
+并由 `test_keyword_matches_the_same_rows_in_list_and_tree` 以**真实请求**
+比对两个端点各自的命中集合（不是比对函数返回值）。
+
+⚠️ 大小写要**两个方向都测**：存大写搜小写考的是"降待查文本"，
+存小写搜大写考的是"降关键词"。只测一个方向时，漏掉另一半 `.lower()`
+的实现照样全绿 —— 这是实测出来的（第一版用例只测了一个方向，
+一个只摘掉关键词侧 `.lower()` 的变异没被检出）。
+
+### 27.6 FINDING-27-01（未修）—— 表单的按类型必填规则与后端不一致
+
+后端的形状规则（DD-20 冻结，数据库 CHECK 同一份）是：
+
+| 类型 | 必须非空 | 可选 | **不得携带** |
+|---|---|---|---|
+| PAGE | `route_path`, `component_path` | — | 其余 |
+| MENU | （无） | `parent_id`, `icon` | `route_path`, `component_path` 等 |
+| BUTTON | `parent_id` | — | 其余 |
+| API | `api_method`, `api_path` | `parent_id` | 其余 |
+| FIELD | `field_key`, `owner_resource_id` | — | 其余 |
+
+而 `PermissionResourceListView` 的表单：
+
+1. 把 `route_path` / `component_path` 做成了 **MENU 的必填项**，
+   提交时必然携带 → 后端 400（`MENU 类型不得携带 route_path`）；
+2. 没有 `parent_id` 输入 → **BUTTON 永远建不出来**（后端要求必填）；
+3. 没有 `owner_resource_id` 输入 → **FIELD 永远建不出来**。
+
+已用 `test_menu_must_not_carry_route_path` 与
+`test_button_requires_a_parent_page` 把**后端口径**钉住（两条都验证过：
+不带这些列会成功，带了会被拒）。表单侧的修复需要新增"上级资源 / 归属页面 /
+图标"输入，属独立的界面改动，**不在本轮越界实施**。
+
+### 27.7 本轮测得的两条工具教训
+
+1. **变异脚本里 `shell=True` + `./.venv/...` 是假绿制造机**。本机 shell 是 cmd，
+   既不认 `./` 也不认正斜杠 → 每条都是"命令找不到"，退出码非 0 被当成"变异被捕获"。
+   必须 `shell=False` + 参数列表。
+2. **vitest 非 TTY 输出带 ANSI 颜色码**，失败行前缀是 `\x1b[31m` 而不是 `×`；
+   不剥转义序列就提取不到失败用例名，摘要里只剩一行计数。

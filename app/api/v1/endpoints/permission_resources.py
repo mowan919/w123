@@ -26,6 +26,14 @@ FastAPI 按声明顺序匹配路径。若 `/{resource_id}` 先声明，
 这类顺序错误在评审时几乎看不出来（两个装饰器都正确），
 因此本文件把 `tree` 放在 `{id}` 之前，并在测试里**逐条钉住路径面**。
 
+`/tree` 的 `resourceType` 可省略
+-------------------------------
+父子规则是**跨类型**的（`BUTTON` / `API` 的父是 `PAGE`，`MENU` 的父是 `MENU`），
+所以省略类型时返回五类合成的完整树才有意义；按单类型取会让子节点因为
+"父不在同一批数据里"被提升为根，层级静默丢失。
+（Phase 8 曾把"省略即 400"登记为 INTERIM-8-04，其"五种类型的树彼此独立"
+的前提经查证不成立，已作废并改由本实现取代 —— 见 `docs/DESIGN-DECISIONS.md` §15.1。）
+
 删除用 `POST .../delete` 而不是 `DELETE`
 -------------------------------------
 这是 `08 §7` 既有风格（`POST /roles/{id}/delete`）与本项目"业务数据一律
@@ -52,7 +60,6 @@ from app.api.deps import (
     require_api_permission,
 )
 from app.audit import AuditAction
-from app.core.errors import BadRequestError
 from app.core.response import success_response
 from app.models.permission import PermissionResource
 from app.schemas.permission import (
@@ -200,7 +207,7 @@ async def create_permission_resource(
 # ⚠️ `/tree` 必须在 `/{resource_id}` **之前**声明，否则会被后者捕获（见模块说明）。
 @router.get(
     "/permission-resources/tree",
-    summary="权限资源树（主要用于 MENU 导航树）",
+    summary="权限资源树",
     dependencies=_manage_dependency(AuditAction.PERMISSION_RESOURCE_READ),
 )
 async def permission_resource_tree(
@@ -208,16 +215,25 @@ async def permission_resource_tree(
     actor: CurrentActorDep,
     service: PermissionResourceServiceDep,
 ) -> JSONResponse:
-    """返回某类型的资源树（`resourceType` 必填）。
+    """返回资源树；`resourceType` **可省略**。
+
+    省略 `resourceType` 时返回五类资源**合成**的完整树。这不是"没有类型就没有
+    语义"：父子规则本身跨类型（`BUTTON` / `API` 的父是 `PAGE`），
+    按单类型取会让这些子节点因为"父不在同一批数据里"被提升为根 ——
+    层级静默丢失，且响应里看不出任何异常。传 `resourceType` 时返回单类型树，
+    行为与从前一致（INTERIM-8-04 已作废，见 `docs/DESIGN-DECISIONS.md` §15.1）。
+
+    `status` / `keyword` 均生效，且**保留命中节点的祖先**（服务层实现说明）。
 
     数据里存在环时构树仍会终止并把环内节点提升为根（见服务层实现），
     因此本端点不会因为一条脏数据而挂死请求。
     """
-    if query.resourceType is None:
-        # 不指定类型时"构树"没有意义（五种类型的树彼此独立），
-        # 给一个明确的 400 而不是返回空数组 —— 后者会让调用方以为"确实没有资源"。
-        raise BadRequestError("resourceType 为必填参数")
-    nodes = await service.tree(actor=actor, resource_type=query.resourceType)
+    nodes = await service.tree(
+        actor=actor,
+        resource_type=query.resourceType,
+        status=query.status,
+        keyword=query.keyword,
+    )
     return success_response([_tree_response(node) for node in nodes])
 
 

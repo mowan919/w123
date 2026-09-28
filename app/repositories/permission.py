@@ -55,6 +55,28 @@ _RowT = TypeVar("_RowT", bound=tuple[Any, ...])
 GLOBAL_SCOPE = "GLOBAL"
 
 
+def matches_keyword(resource: PermissionResource, keyword: str) -> bool:
+    """关键词匹配的**内存版**：与 `PermissionResourceRepository._apply_filters`
+    里的 SQL 版（`resource_code ILIKE %kw% OR resource_name ILIKE %kw%`）同一口径。
+
+    为什么必须有第二个实现
+    --------------------
+    分页列表能在 SQL 里过滤，树不能：树要先拿到**完整节点集**才能解析父子，
+    在 SQL 里按关键词筛掉父节点，子节点就会因为"父不在结果里"被提升为根，
+    层级当场丢失。所以树只能先取全量、再在内存里裁。
+
+    两处口径必须一致 —— 同一个关键词在列表和树里筛出不同的集合，
+    是那种"看起来都实现了、就是结果对不上"的缺陷。一致性由
+    `tests/test_permission_resource_api.py::test_keyword_matches_the_same_rows_in_list_and_tree`
+    以**真实请求**钉住（对比两个端点各自的命中集合），而不是靠这里的注释。
+
+    `ilike` 的大小写不敏感由 `.lower()` 对齐；空关键词按"不筛"处理，
+    与 SQL 版的 `if keyword:` 保持一致。
+    """
+    needle = keyword.lower()
+    return needle in resource.resource_code.lower() or needle in resource.resource_name.lower()
+
+
 def _live_resource_filter() -> tuple[ColumnElement[bool], ColumnElement[bool]]:
     """有效资源过滤条件：未删除且 ACTIVE。
 
@@ -203,6 +225,9 @@ class PermissionResourceRepository:
         if status is not None:
             stmt = stmt.where(PermissionResource.status == status)
         if keyword:
+            # ⚠️ 这条规则有第二个实现：模块级的 `matches_keyword()`（内存版，
+            # 树的裁剪用）。改这里必须同步改那里 —— 两边口径不一致时，
+            # 同一个关键词会在列表和树里筛出不同的集合。
             pattern = f"%{keyword}%"
             stmt = stmt.where(
                 or_(

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import { NCheckbox, NTreeSelect } from 'naive-ui'
 import type { Component } from 'vue'
-import type { PageResult } from '@/types'
+import type { PageResult, PermissionResource } from '@/types'
 
 /**
  * 业务 store 的**消费端**冒烟（`08 §3` / `08 §4` / `08 §7` / `08 §9`）。
@@ -367,6 +368,112 @@ describe('权限资源维护页', () => {
 
     expect(useResourcesStore().rows).toHaveLength(1)
     expect(wrapper.text()).toContain('用户管理')
+  })
+
+  /**
+   * 树形模式的用例此前**一条都没有** —— 而"类型 = 全部 + 树形"在后端
+   * 直接 400（`resourceType` 必填），界面上表现为红条报错。
+   * 这一组把该模式的请求形状与渲染结果都钉住。
+   */
+  function treeButton(wrapper: VueWrapper): DOMWrapper<Element> {
+    const found = wrapper.findAll('button').find((item) => item.text().trim() === '树形')
+    if (found === undefined) throw new Error('找不到「树形」按钮')
+    return found
+  }
+
+  function searchButton(wrapper: VueWrapper): DOMWrapper<Element> {
+    const found = wrapper.findAll('button').find((item) => item.text().trim() === '查询')
+    if (found === undefined) throw new Error('找不到「查询」按钮')
+    return found
+  }
+
+  function treeNode(overrides: Partial<PermissionResource> & { id: string }): PermissionResource {
+    return {
+      resource_type: 'PAGE',
+      resource_code: `cr:${overrides.id}`,
+      resource_name: `资源 ${overrides.id}`,
+      parent_id: null,
+      sort_order: 0,
+      status: 'ACTIVE',
+      route_path: null,
+      component_path: null,
+      icon: null,
+      api_method: null,
+      api_path: null,
+      field_key: null,
+      owner_resource_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    }
+  }
+
+  it('树形 + 「类型 = 全部」不带 resourceType，且不报错', async () => {
+    resources.getResourceTree.mockResolvedValue([
+      {
+        resource: treeNode({ id: '7001', resource_type: 'PAGE', resource_name: '用户管理' }),
+        children: [
+          {
+            resource: treeNode({
+              id: '7002',
+              resource_type: 'BUTTON',
+              resource_name: '新建用户',
+              parent_id: '7001',
+            }),
+            children: [],
+          },
+        ],
+      },
+    ])
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    // `null` 会被 HTTP 客户端从 query 里去掉 —— 后端据此返回**全类型**树。
+    // 这里断言的是"没有替用户随便挑一种类型"，那是会丢层级的做法。
+    expect(resources.getResourceTree).toHaveBeenCalledTimes(1)
+    expect(resources.getResourceTree.mock.calls[0]?.[0]).toMatchObject({ resourceType: null })
+    expect(wrapper.find('.alert--error').exists()).toBe(false)
+    // 跨类型的子节点要真的渲染出来（按钮挂在页面下）。
+    const text = wrapper.text()
+    expect(text).toContain('用户管理')
+    expect(text).toContain('新建用户')
+  })
+
+  it('树形 + 选了类型时，明说该类型之外的分支不会出现', async () => {
+    resources.getResourceTree.mockResolvedValue([])
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await wrapper.findAll('select')[0]?.setValue('BUTTON')
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(resources.getResourceTree.mock.calls[0]?.[0]).toMatchObject({ resourceType: 'BUTTON' })
+    const hint = wrapper.find('.hint')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('已按类型筛选')
+    // 模板里写 `**强调**` 会**原样显示星号**（markdown 在 HTML 里不生效）。
+    // 这条是写这段提示时真踩过的，留一条断言免得又写回去。
+    expect(hint.text()).not.toContain('**')
+  })
+
+  it('树形把关键字与状态一起带给树端点（筛选不是摆设）', async () => {
+    resources.getResourceTree.mockResolvedValue([])
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="编码或名称"]').setValue('user')
+    await wrapper.findAll('select')[1]?.setValue('DISABLED')
+    await searchButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(resources.getResourceTree.mock.calls.at(-1)?.[0]).toMatchObject({
+      keyword: 'user',
+      status: 'DISABLED',
+    })
   })
 })
 
