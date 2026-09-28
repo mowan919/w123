@@ -49,6 +49,15 @@ export type {
 export type { Session, SessionPage } from './session'
 export type { Role, RolePage, RoleCreateRequest, RoleUpdateRequest, RoleDataScope, RoleFieldPermissionItem } from './role'
 export type { PermissionResourceUpdateRequest, PermissionStatus } from './permission'
+/**
+ * 例外：下面这两个是**运行时常量**，不是类型。
+ *
+ * 放在与 `GrantKind` 同一个文件里，是为了让"四类二元权限"这个概念
+ * 只有一处定义 —— 顺序数组与中文名散落到各个视图里，
+ * 迟早出现"权限树列了四类、提交时只提交三类"这种不报错的缺失。
+ */
+export { GRANT_KINDS, GRANT_KIND_LABEL, emptySelection } from './permission'
+export type { GrantKind, GrantSelection } from './permission'
 export type {
   DictType,
   DictTypePage,

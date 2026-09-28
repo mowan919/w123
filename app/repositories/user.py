@@ -4,15 +4,17 @@
 -------
 1. **范围下推到 SQL**（Spec 10 §10）：`list_in_scope` / `count_in_scope`
    均带 scope 条件，绝不在 Python 内存过滤。
-2. `department_id` 过滤与数据范围是**交集**关系：
-   调用方传入范围外的部门 ID 时结果必然为空，而不是绕过范围。
+2. 部门筛选与数据范围是**交集**关系：
+   调用方传入范围外的部门集合时结果必然为空，而不是绕过范围。
+   筛选接收的是**已展开的部门集合**（服务层负责把"含下级"展开），
+   空集合翻译为 `false()` 而非"不加条件"。
 3. 所有查询默认排除逻辑删除（Spec `02 §5`：删除后普通查询不得返回）。
 4. 密码历史（Spec 00 §2 "最近 5 个密码不可重复"）只存哈希，并保持最多 5 条。
 """
 
 from __future__ import annotations
 
-from sqlalchemy import ColumnElement, delete, func, or_, select
+from sqlalchemy import ColumnElement, delete, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.scope import ResolvedScope
@@ -60,17 +62,33 @@ class UserRepository:
         self,
         scope: ResolvedScope,
         *,
-        department_id: int | None,
+        department_ids: frozenset[int] | None,
         status: UserStatus | None,
         keyword: str | None,
     ) -> list[ColumnElement[bool]]:
+        """构造列表 / 计数的条件（唯一构造点）。
+
+        `department_ids` 是**已经展开好**的部门集合，不是单个 ID：
+        "本部门及下级"必须在服务层先用递归 CTE 展开成集合，
+        仓储层只负责"把人筛到这个集合里"。这样仓储不认识
+        `include_sub_departments` 这个界面概念，也就不可能
+        在别处被误用成"传了个部门就自动含下级"。
+
+        `department_ids` 为空集合时**显式返回 `false()`**，
+        绝不能退化成"不加条件"：空集合来自"所选部门不存在 / 无子部门"，
+        语义是"查不到人"；而"不加条件"是"看见所有人"。
+        这个方向搞反就是权限放大（与 `scope_filters` 的 fail-closed 同一条理由）。
+        """
         conditions: list[ColumnElement[bool]] = [
             AdminUser.deleted_at.is_(None),
             user_scope_condition(scope),
         ]
-        if department_id is not None:
-            # 与范围取交集：范围外的 department_id 会自然得到空结果
-            conditions.append(AdminUser.department_id == department_id)
+        if department_ids is not None:
+            if not department_ids:
+                conditions.append(false())
+            else:
+                # 与范围取交集：范围外的部门集合会自然得到空结果
+                conditions.append(AdminUser.department_id.in_(sorted(department_ids)))
         if status is not None:
             conditions.append(AdminUser.status == status)
         if keyword:
@@ -86,13 +104,13 @@ class UserRepository:
         *,
         page_num: int,
         page_size: int,
-        department_id: int | None = None,
+        department_ids: frozenset[int] | None = None,
         status: UserStatus | None = None,
         keyword: str | None = None,
     ) -> list[AdminUser]:
         """分页列出范围内用户（`pageNum` 从 1 开始）。"""
         conditions = self._scoped_conditions(
-            scope, department_id=department_id, status=status, keyword=keyword
+            scope, department_ids=department_ids, status=status, keyword=keyword
         )
         stmt = (
             select(AdminUser)
@@ -107,13 +125,13 @@ class UserRepository:
         self,
         scope: ResolvedScope,
         *,
-        department_id: int | None = None,
+        department_ids: frozenset[int] | None = None,
         status: UserStatus | None = None,
         keyword: str | None = None,
     ) -> int:
         """统计范围内用户总数（与列表使用完全相同的条件）。"""
         conditions = self._scoped_conditions(
-            scope, department_id=department_id, status=status, keyword=keyword
+            scope, department_ids=department_ids, status=status, keyword=keyword
         )
         stmt = select(func.count()).select_from(AdminUser).where(*conditions)
         return int((await self._session.execute(stmt)).scalar_one())

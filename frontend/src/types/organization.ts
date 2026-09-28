@@ -3,6 +3,8 @@ import type { DateTime, ID, PageParams, PageResult } from './common'
 
 export interface UserListQuery extends PageParams {
   department_id?: ID | null
+  /** 连带下级部门（DD-07 `DEPARTMENT_CHILDREN` 语义）；不传 `department_id` 时无作用。 */
+  include_sub_departments?: boolean
   status?: 'ACTIVE' | 'DISABLED' | 'LOCKED' | null
   keyword?: string | null
 }

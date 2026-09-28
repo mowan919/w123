@@ -100,14 +100,22 @@ async def list_sessions(
     `?online=true` 即 Spec `04 §5` 的"后台在线用户查询"：
     只返回在线会话（未撤销、会话总寿命未过、所属用户 ACTIVE）。
 
-    默认（`online=false`）返回**全部**会话，含已撤销 / 已过期 ——
-    排查"某个登录为什么失效"恰恰需要看到已结束的会话。
+    `?online=false` 返回它的**补集**（仅离线）；省略 `online`（默认）
+    返回**全部**会话，含已撤销 / 已过期 —— 排查"某个登录为什么失效"
+    恰恰需要看到已结束的会话。
+
+    其余筛选 `ip` / `device` / `login_from` / `login_to` 均可单独使用，
+    彼此以及与 `online` 之间都是 AND 关系，且与数据范围同处一个 `WHERE`。
     """
     page = await service.list_sessions(
         actor=actor,
         page_num=query.pageNum,
         page_size=query.pageSize,
-        online_only=query.online,
+        online=query.online,
+        ip=query.ip,
+        device=query.device,
+        login_from=query.login_from,
+        login_to=query.login_to,
     )
     return success_response(_page_response(page))
 
@@ -155,7 +163,11 @@ async def list_user_sessions(
         user_id=user_id,
         page_num=query.pageNum,
         page_size=query.pageSize,
-        online_only=query.online,
+        online=query.online,
+        ip=query.ip,
+        device=query.device,
+        login_from=query.login_from,
+        login_to=query.login_to,
     )
     return success_response(_page_response(page))
 

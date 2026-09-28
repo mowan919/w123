@@ -3,6 +3,7 @@ import type { ID, PageResult } from '@/types/common'
 import type {
   DataScopePolicy,
   FieldAccessLevel,
+  GrantKind,
   Role,
   RoleCreateRequest,
   RoleDataScope,
@@ -61,6 +62,20 @@ export function setRoleButtonPermissions(roleId: ID, resourceIds: ID[]): Promise
 
 export function setRoleApiPermissions(roleId: ID, resourceIds: ID[]): Promise<void> {
   return http.put<void>(`/admin/roles/${roleId}/permissions/apis`, { resourceIds })
+}
+
+/**
+ * 按类别整体替换角色授权。
+ *
+ * 四个端点（pages / menus / buttons / apis）**语义完全一致**，差异只在路径。
+ * 调用方按 `GrantKind` 分派时不该各自写一遍 if/else ——
+ * 漏掉一类不会报错，只会表现为"某一类权限怎么都存不上"。
+ */
+export function putRoleGrant(kind: GrantKind, roleId: ID, resourceIds: ID[]): Promise<void> {
+  if (kind === 'PAGE') return setRolePagePermissions(roleId, resourceIds)
+  if (kind === 'MENU') return setRoleMenuPermissions(roleId, resourceIds)
+  if (kind === 'BUTTON') return setRoleButtonPermissions(roleId, resourceIds)
+  return setRoleApiPermissions(roleId, resourceIds)
 }
 
 export interface RoleFieldPermissionItem {

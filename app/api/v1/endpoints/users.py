@@ -69,12 +69,17 @@ async def list_users(
     service: UserServiceDep,
     query: Annotated[UserListQuery, Query()],
 ) -> object:
-    """分页列出**数据范围内**的用户。"""
+    """分页列出**数据范围内**的用户。
+
+    `include_sub_departments=true` 时 `department_id` 连带其全部后代
+    （与角色数据范围的 `DEPARTMENT_CHILDREN` 走同一段递归展开实现）。
+    """
     page = await service.list_users(
         actor=actor,
         page_num=query.pageNum,
         page_size=query.pageSize,
         department_id=query.department_id,
+        include_sub_departments=query.include_sub_departments,
         status=query.status,
         keyword=query.keyword,
     )

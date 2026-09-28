@@ -58,7 +58,7 @@ from app.models.enums import SessionRevokeReason, UserStatus
 from app.models.session import UserSession
 from app.models.user import AdminUser
 from app.repositories.department import DepartmentRepository
-from app.repositories.session import SessionRepository
+from app.repositories.session import SessionListFilters, SessionRepository
 from app.repositories.user import UserRepository
 from app.services.audit_guard import AuditGuard
 from app.services.authorization import AuthorizationService
@@ -148,14 +148,31 @@ class SessionManagementService:
         actor: CurrentActor,
         page_num: int = 1,
         page_size: int = 20,
-        online_only: bool = False,
+        online: bool | None = None,
+        ip: str | None = None,
+        device: str | None = None,
+        login_from: datetime | None = None,
+        login_to: datetime | None = None,
     ) -> SessionPage:
         """分页列出**数据范围内**的全部会话（含已撤销 / 已过期）。
 
-        `online_only=True` 时只返回在线会话 —— 这就是 Spec `04 §5` 的
-        "后台在线用户查询"（每行都带 `username` 与 `online`）。
+        `online=True` 时只返回在线会话 —— 这就是 Spec `04 §5` 的
+        "后台在线用户查询"（每行都带 `username` 与 `online`）；
+        `online=False` 时返回其**补集**（已撤销 / 已过期 / 用户非 ACTIVE）；
+        `online=None`（默认）不按在线状态筛选。
+
+        其余筛选（`ip` / `device` / `login_from` / `login_to`）是
+        **查询便利**，不改变可见集合的形状：它们在 SQL 层与数据范围
+        同处一个 `WHERE`，因此不可能出现"筛选把范围外的人捞出来"。
         """
         _validate_paging(page_num=page_num, page_size=page_size)
+        filters = _build_filters(
+            online=online,
+            ip=ip,
+            device=device,
+            login_from=login_from,
+            login_to=login_to,
+        )
         with self._audit.denial_audited(
             actor=actor, action=AuditAction.SESSION_READ, resource_id=None
         ):
@@ -166,14 +183,14 @@ class SessionManagementService:
             scope,
             page_num=page_num,
             page_size=page_size,
-            online_only=online_only,
+            filters=filters,
             user_id=None,
         )
         self._audit.success(
             actor=actor,
             action=AuditAction.SESSION_READ,
             resource_id=None,
-            after={"scope": "ALL", "online_only": online_only, "total": page.total},
+            after={"scope": "ALL", "filters": filters.audit_summary(), "total": page.total},
         )
         return page
 
@@ -184,15 +201,29 @@ class SessionManagementService:
         user_id: int,
         page_num: int = 1,
         page_size: int = 20,
-        online_only: bool = False,
+        online: bool | None = None,
+        ip: str | None = None,
+        device: str | None = None,
+        login_from: datetime | None = None,
+        login_to: datetime | None = None,
     ) -> SessionPage:
         """分页列出**指定用户**的会话（`08 §4` 的 `GET /users/{id}/sessions`）。
+
+        筛选口径与 `list_sessions` 完全一致 —— 两个端点共用 `_collect`，
+        因此不存在"全局列表能按 IP 搜、单用户列表搜不了"这种能力差异。
 
         Raises:
             NotFoundError: 用户不存在或已逻辑删除。
             PermissionDeniedError: 用户不在操作者数据范围内。
         """
         _validate_paging(page_num=page_num, page_size=page_size)
+        filters = _build_filters(
+            online=online,
+            ip=ip,
+            device=device,
+            login_from=login_from,
+            login_to=login_to,
+        )
         with self._audit.denial_audited(
             actor=actor, action=AuditAction.SESSION_READ, resource_id=user_id
         ):
@@ -204,14 +235,14 @@ class SessionManagementService:
             scope,
             page_num=page_num,
             page_size=page_size,
-            online_only=online_only,
+            filters=filters,
             user_id=user_id,
         )
         self._audit.success(
             actor=actor,
             action=AuditAction.SESSION_READ,
             resource_id=user_id,
-            after={"scope": "USER", "online_only": online_only, "total": page.total},
+            after={"scope": "USER", "filters": filters.audit_summary(), "total": page.total},
         )
         return page
 
@@ -311,23 +342,28 @@ class SessionManagementService:
         *,
         page_num: int,
         page_size: int,
-        online_only: bool,
+        filters: SessionListFilters,
         user_id: int | None,
     ) -> SessionPage:
-        """执行列表 + 计数（两者使用**完全相同**的条件）。"""
+        """执行列表 + 计数（两者使用**完全相同**的条件）。
+
+        `now` 只取一次并同时喂给两处：在线判定是"与当前时刻比较"，
+        若列表与计数各取一次 `utc_now()`，恰好跨过某个会话的
+        `refresh_expires_at` 时就会出现"总数里算了它、页内却没有"。
+        """
         now = utc_now()
         rows = await self._sessions.list_for_admin(
             scope,
             now=now,
             page_num=page_num,
             page_size=page_size,
-            online_only=online_only,
+            filters=filters,
             user_id=user_id,
         )
         total = await self._sessions.count_for_admin(
             scope,
             now=now,
-            online_only=online_only,
+            filters=filters,
             user_id=user_id,
         )
         items = tuple(
@@ -359,6 +395,45 @@ class SessionManagementService:
         if not scope.allows_user(user_id=user.id, department_id=user.department_id):
             raise PermissionDeniedError("用户不在当前数据范围内")
         return user
+
+
+def _build_filters(
+    *,
+    online: bool | None,
+    ip: str | None,
+    device: str | None,
+    login_from: datetime | None,
+    login_to: datetime | None,
+) -> SessionListFilters:
+    """归一化筛选条件（空串 → None，并做区间兜底校验）。
+
+    空串必须转 `None`：HTTP 查询串里"字段在但值为空"（`?ip=`）与"字段不在"
+    在语义上都是"没填"，但如果把空串原样带下去，`ilike('%%')` 会匹配一切
+    —— 界面上表现为"填了个空就查出了全部"，看起来像筛选失效。
+
+    区间顺序在 Schema 层已校验（`SessionListQuery`），这里是**纵深防御**：
+    Service 是公共入口，直接以 `login_from > login_to` 调用会静默返回空集，
+    而空集会被读成"这段时间确实没有登录"。
+    """
+    normalized_ip = _blank_to_none(ip)
+    normalized_device = _blank_to_none(device)
+    if login_from is not None and login_to is not None and login_from > login_to:
+        raise BadRequestError("login_from 不能晚于 login_to")
+    return SessionListFilters(
+        online=online,
+        ip=normalized_ip,
+        device=normalized_device,
+        login_from=login_from,
+        login_to=login_to,
+    )
+
+
+def _blank_to_none(value: str | None) -> str | None:
+    """去掉首尾空白；结果为空串时返回 `None`（= 该筛选项未施加）。"""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def _validate_paging(*, page_num: int, page_size: int) -> None:

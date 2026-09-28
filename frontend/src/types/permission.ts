@@ -9,6 +9,41 @@ export type ResourceType = 'PAGE' | 'MENU' | 'BUTTON' | 'API' | 'FIELD'
 /** 字段访问级别（`FieldAccessLevel`）—— FE-05 §3 的四态。 */
 export type FieldAccessLevel = 'VISIBLE' | 'HIDDEN' | 'READ_ONLY' | 'EDITABLE'
 
+/**
+ * 参与"有没有"判定的四类权限资源。
+ *
+ * `03` 的资源模型有五值，`FIELD` **不在**这里：它表达的是四态访问级别
+ * （VISIBLE / HIDDEN / READ_ONLY / EDITABLE），不是"授没授"。
+ * 把两类语义压进同一个二态勾选框，就得在界面上额外发明一个
+ * "半选 = 只读"的约定 —— 那是自造规则。
+ *
+ * 四类二元授权与后端 `role_permissions` 的存储形状一一对应。
+ */
+export type GrantKind = 'PAGE' | 'MENU' | 'BUTTON' | 'API'
+
+/** 固定顺序：遍历、逐类提交、结果提示都用它，避免各处各写一遍数组。 */
+export const GRANT_KINDS: GrantKind[] = ['PAGE', 'MENU', 'BUTTON', 'API']
+
+/** 四类已授权 id 集合（与后端 `RolePermissionView` 同形）。 */
+export interface GrantSelection {
+  PAGE: ID[]
+  MENU: ID[]
+  BUTTON: ID[]
+  API: ID[]
+}
+
+export function emptySelection(): GrantSelection {
+  return { PAGE: [], MENU: [], BUTTON: [], API: [] }
+}
+
+/** 类别的中文名（权限树标签、逐类保存的成败提示共用一份）。 */
+export const GRANT_KIND_LABEL: Record<GrantKind, string> = {
+  PAGE: '页面',
+  MENU: '菜单',
+  BUTTON: '按钮',
+  API: '接口',
+}
+
 export interface PermissionPageItem {
   id: ID
   /** 资源编码，权限判定用的就是这个值。 */

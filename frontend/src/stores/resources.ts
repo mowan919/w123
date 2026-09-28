@@ -9,6 +9,7 @@ import type { ID } from '@/types/common'
 import {
   createResource,
   deleteResource,
+  getMenuPages,
   listResources,
   updateResource,
 } from '@/api/endpoints/resources'
@@ -45,6 +46,17 @@ function emptyGrantable(): GrantableCache {
 /** 授权页每类资源取多少条。`GRANTABLE_LIMIT` 不是"分页大小"，详见 `ensureGrantable`。 */
 const GRANTABLE_LIMIT = 100
 
+/**
+ * 取"菜单 → 挂载页面"映射时最多并行请求多少个菜单。
+ *
+ * 后端只有单菜单版本的 `GET /admin/permission-resources/{id}/pages`，
+ * 没有批量端点，所以这里必然是一批并行请求。超过上限时**放弃加载**
+ * 并置错：界面会退化成把页面统一放进「未挂载菜单的页面」分组，
+ * 但**授权能力完好**（页面清单仍来自 grantable 缓存）。
+ * 宁可少一层分组，也不要为了凑出层级而发明映射。
+ */
+const MENU_PAGES_MAX = 50
+
 export const useResourcesStore = defineStore('resources', {
   state: () => ({
     // ---- 分页列表（权限资源维护页） ----
@@ -63,6 +75,12 @@ export const useResourcesStore = defineStore('resources', {
     grantableLoaded: false,
     grantableLoading: false,
     grantableError: null as string | null,
+
+    // ---- 菜单 → 挂载页面（权限树的分组依据） ----
+    menuPages: {} as Record<ID, ID[]>,
+    menuPagesLoaded: false,
+    menuPagesLoading: false,
+    menuPagesError: null as string | null,
   }),
 
   getters: {
@@ -155,9 +173,68 @@ export const useResourcesStore = defineStore('resources', {
       }
     },
 
-    /** 资源增删改后调用：分页列表重拉，分组清单作废。 */
+    /** 资源增删改后调用：分页列表重拉，分组清单与菜单映射一起作废。 */
     invalidateGrantable(): void {
       this.grantableLoaded = false
+      // 菜单映射的键是资源 ID：资源一旦增删改（尤其是菜单与挂载关系），
+      // 旧的映射可能指向已不存在的菜单或漏掉新页面。一起作废最省心，
+      // 代价只是下一次进入权限配置页多发几个请求。
+      this.menuPagesLoaded = false
+    },
+
+    /**
+     * 取"菜单 → 挂载页面"映射（权限树的层级依据）。
+     *
+     * ⚠️ 这份数据只能来自后端 `menu_pages`（`GET .../{menu_id}/pages`）。
+     * 曾经想过按资源编码的命名规律推（`system:user` ↔ `system:user:page`）：
+     * 那样零请求、看着也"对"，但它把一份**约定**当成了事实 ——
+     * 只要有一个页面不按这个规律编码，它在树上就会凭空消失，
+     * 且没有任何报错。授权页最不该出现的就是"资源静默不见"。
+     */
+    async ensureMenuPages(): Promise<void> {
+      if (this.menuPagesLoaded) return
+      await this.ensureGrantable()
+      const menus = this.grantable?.MENU ?? []
+      // ⚠️ 清单没取到（`ensureGrantable` 失败）时，"没有菜单"不是结论：
+      // 若在这里置 `menuPagesLoaded = true`，重试路径就被永久封死 ——
+      // 网络恢复后再次进入权限配置页会直接 return，权限树永远缺层级，
+      // 而界面上只有一次性的错误提示。宁可不置位，让下次调用重试。
+      if (!this.grantableLoaded) {
+        this.menuPages = {}
+        this.menuPagesLoaded = false
+        return
+      }
+      if (menus.length === 0) {
+        this.menuPages = {}
+        this.menuPagesLoaded = true
+        return
+      }
+      if (menus.length > MENU_PAGES_MAX) {
+        this.menuPages = {}
+        this.menuPagesError = `菜单数量超过 ${MENU_PAGES_MAX}，本次未加载菜单层级；资源授权不受影响`
+        this.menuPagesLoaded = false
+        return
+      }
+      this.menuPagesLoading = true
+      this.menuPagesError = null
+      try {
+        const results = await Promise.all(menus.map((menu) => getMenuPages(menu.id)))
+        const next: Record<ID, ID[]> = {}
+        for (const result of results) {
+          // 返回 `{menu_id, pages}`：用**响应里的** menu_id 作键，
+          // 而不是循环下标对应的 `menu.id` —— 两者不一致时（例如后端
+          // 归一化了 ID），按请求参数索引会把页面挂到错误的菜单上。
+          next[result.menu_id] = result.pages.map((page) => page.id)
+        }
+        this.menuPages = next
+        this.menuPagesLoaded = true
+      } catch (cause) {
+        this.menuPagesError = cause instanceof Error ? cause.message : '菜单层级加载失败'
+        this.menuPages = {}
+        this.menuPagesLoaded = false
+      } finally {
+        this.menuPagesLoading = false
+      }
     },
 
     async create(payload: Parameters<typeof createResource>[0]): Promise<PermissionResource> {
@@ -198,6 +275,10 @@ export const useResourcesStore = defineStore('resources', {
       this.grantableLoaded = false
       this.grantableLoading = false
       this.grantableError = null
+      this.menuPages = {}
+      this.menuPagesLoaded = false
+      this.menuPagesLoading = false
+      this.menuPagesError = null
     },
   },
 })

@@ -297,7 +297,7 @@ class TestOnlineStatus:
     async def test_online_filter_keeps_only_usable_sessions(self, db_session) -> None:
         fixture = await _seed(db_session)
         page = await _service(db_session).list_user_sessions(
-            actor=fixture.actors["global"], user_id=U_IN_PARENT, online_only=True
+            actor=fixture.actors["global"], user_id=U_IN_PARENT, online=True
         )
         # U_IN_PARENT 有 3 条会话：有效 / 已撤销 / 已过期
         assert _ids(page) == {S_VALID}
@@ -308,7 +308,7 @@ class TestOnlineStatus:
         """用户被禁用时其会话不可用（`authenticate` 会拒绝），故不算在线。"""
         fixture = await _seed(db_session)
         page = await _service(db_session).list_user_sessions(
-            actor=fixture.actors["global"], user_id=U_DISABLED, online_only=True
+            actor=fixture.actors["global"], user_id=U_DISABLED, online=True
         )
         assert page.items == ()
         assert page.total == 0
@@ -331,14 +331,14 @@ class TestOnlineStatus:
             actor=fixture.actors["global"], user_id=U_IN_PARENT
         )
         filtered = await service.list_user_sessions(
-            actor=fixture.actors["global"], user_id=U_IN_PARENT, online_only=True
+            actor=fixture.actors["global"], user_id=U_IN_PARENT, online=True
         )
         assert {view.session.id for view in unfiltered.items if view.online} == _ids(filtered)
 
     async def test_global_list_covers_all_users_in_scope(self, db_session) -> None:
         fixture = await _seed(db_session)
         page = await _service(db_session).list_sessions(
-            actor=fixture.actors["global"], online_only=True, page_size=100
+            actor=fixture.actors["global"], online=True, page_size=100
         )
         # 全范围在线会话：U_IN_PARENT / U_IN_CHILD(×1 each) + 各管理员自身
         assert S_VALID in _ids(page)

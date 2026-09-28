@@ -3,9 +3,10 @@
  * 角色管理（FE-05 §1 / `08 §7`）。
  *
  * 只做角色本体（CRUD）：编码、名称、描述、状态。
- * **权限配置与数据范围配置不在这里** —— 它们属于"权限配置"页：
- * 一是职责不同（这里是角色实体，那里是角色 × 资源的授权），
- * 二是授权页需要反复读取资源清单，放在同一屏会让两边都变慢。
+ * 权限配置与数据范围配置主体上属于「权限配置」页（那里可以反复调整、并逐类保存），
+ * 但**新增角色时**在这里直接勾初始权限更顺手 —— 建一个"什么都看不到"的角色
+ * 再跳到另一页授权，是这个页面最常见的两步操作。初始授权走的是与权限配置页
+ * 完全相同的资源树与提交逻辑，两处不存在第二套权限模型。
  *
  * 角色继承由后端递归展开（`role_inheritances` + 深度上限 32），
  * 前端既不展示继承树也不参与展开（FE-03 §4）。
@@ -20,17 +21,24 @@ import DataTable from '@/components/data/DataTable.vue'
 import Pagination from '@/components/data/Pagination.vue'
 import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
+import PermissionTree from '@/components/permission/PermissionTree.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import FormDialog from '@/components/feedback/FormDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { useColumnSettings } from '@/composables/useColumnSettings'
 import { useRolesStore } from '@/stores/roles'
+import { useResourcesStore } from '@/stores/resources'
+import { resolveSubmission, universeOf } from '@/composables/usePermissionTree'
+import type { PermissionTreeInput } from '@/composables/usePermissionTree'
+import { putRoleGrant } from '@/api/endpoints/roles'
+import { GRANT_KINDS, GRANT_KIND_LABEL, emptySelection } from '@/types'
 import type { DataTableColumn } from '@/components/data/types'
-import type { Role } from '@/types'
+import type { GrantSelection, Role } from '@/types'
 import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
 const rolesStore = useRolesStore()
+const resourcesStore = useResourcesStore()
 
 interface RoleDraft {
   id: ID | null
@@ -78,6 +86,14 @@ const saving = ref(false)
 const pendingDelete = ref<Role | null>(null)
 const deleting = ref(false)
 
+/**
+ * 新建角色时的初始授权勾选。
+ *
+ * 只有"新增"会用：编辑角色时不展示权限树（调整授权是「权限配置」页的职责），
+ * 每次打开弹窗都会重置为 `emptySelection()`。
+ */
+const selection = ref<GrantSelection>(emptySelection())
+
 const isEditing = computed(() => draft.value.id !== null)
 
 const draftError = computed<string | null>(() => {
@@ -104,7 +120,10 @@ async function resetFilters(): Promise<void> {
 
 function startCreate(): void {
   draft.value = emptyDraft()
+  selection.value = emptySelection()
   draftOpen.value = true
+  // 资源清单与菜单层级是懒加载的（不在首屏拉），打开弹窗时才要。
+  void ensureResources()
 }
 
 function startEdit(role: Role): void {
@@ -115,7 +134,54 @@ function startEdit(role: Role): void {
     description: role.description ?? '',
     status: role.status,
   }
+  // 编辑时不展示权限树（权限配置页才是调整授权的地方），
+  // 但仍要把选择清空 —— 否则上一次"新增"里勾的东西会留在内存里，
+  // 下次打开新增弹窗时凭空出现。
+  selection.value = emptySelection()
   draftOpen.value = true
+}
+
+/** 取授权候选清单与菜单层级；失败只影响勾选框的可选项，不影响角色本体。 */
+async function ensureResources(): Promise<void> {
+  await resourcesStore.ensureGrantable()
+  await resourcesStore.ensureMenuPages()
+}
+
+const treeInput = computed<PermissionTreeInput>(() => ({
+  menus: resourcesStore.grantable?.MENU ?? [],
+  pages: resourcesStore.grantable?.PAGE ?? [],
+  buttons: resourcesStore.grantable?.BUTTON ?? [],
+  apis: resourcesStore.grantable?.API ?? [],
+  menuPages: resourcesStore.menuPages,
+}))
+
+const universe = computed(() => universeOf(treeInput.value))
+
+/**
+ * 提交新建角色的初始授权。
+ *
+ * 后端 `POST /roles` 的请求体**有意**不含权限字段（授权与数据范围各有独立
+ * 端点，以保证各自的审计不可被绕过），所以这里必然是"先建角色、再逐类提交"
+ * 两步。这不是绕开契约，而是照契约的分工做。
+ *
+ * 四类里没勾任何东西就不发请求：新角色的四类授权在库里都是空的，
+ * 提交空数组是纯粹的空操作，只会平白多出四条审计。
+ *
+ * 返回**失败的类别名** —— 角色已经建好了，"整体失败"是假话，
+ * "整体成功"更假。管理员需要知道去「权限配置」页补哪一类。
+ */
+async function applyInitialGrants(roleId: ID): Promise<string[]> {
+  const failed: string[] = []
+  for (const kind of GRANT_KINDS) {
+    const ids = resolveSubmission(kind, selection.value, universe.value[kind], [])
+    if (ids.length === 0) continue
+    try {
+      await putRoleGrant(kind, roleId, ids)
+    } catch {
+      failed.push(GRANT_KIND_LABEL[kind])
+    }
+  }
+  return failed
 }
 
 async function save(): Promise<void> {
@@ -124,12 +190,22 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     if (current.id === null) {
-      await rolesStore.create({
+      const role = await rolesStore.create({
         role_code: current.role_code.trim(),
         role_name: current.role_name.trim(),
         description: current.description || null,
         status: current.status,
       })
+      const failed = await applyInitialGrants(role.id)
+      draftOpen.value = false
+      if (failed.length === 0) {
+        appStore.showNotice('success', `角色「${current.role_name.trim()}」已创建`)
+      } else {
+        appStore.showNotice(
+          'error',
+          `角色已创建，但 ${failed.join(' / ')} 授权未保存成功；请到「权限配置」页重试。`,
+        )
+      }
     } else {
       // 只发真正改动的字段：后端按 `model_fields_set` 分派，
       // 把没改的字段也塞进去会被当成"显式清空"（角色编码只读）。
@@ -138,9 +214,9 @@ async function save(): Promise<void> {
         description: current.description || null,
         status: current.status,
       })
+      draftOpen.value = false
+      appStore.showNotice('success', '角色已更新')
     }
-    draftOpen.value = false
-    appStore.showNotice('success', current.id === null ? '角色已创建' : '角色已更新')
   } catch (cause) {
     appStore.showNotice('error', cause instanceof Error ? cause.message : '保存失败')
   } finally {
@@ -259,6 +335,7 @@ onMounted(() => {
       :title="isEditing ? '编辑角色' : '新增角色'"
       :loading="saving"
       :error="draftError"
+      :width="isEditing ? 560 : 820"
       @cancel="draftOpen = false"
       @submit="save"
     >
@@ -289,12 +366,35 @@ onMounted(() => {
         </label>
       </div>
 
+      <template v-if="!isEditing">
+        <h4 class="grant-title">拥有哪些权限</h4>
+        <p class="hint">
+          不勾选也可以：角色会先建立起来，之后在「权限配置」页继续授权。
+          这里勾的就是该角色**直接持有**的授权。
+        </p>
+        <div v-if="resourcesStore.grantableLoading" class="state">
+          <span class="spinner" aria-hidden="true" /><span>加载资源清单…</span>
+        </div>
+        <PermissionTree
+          v-else
+          v-model="selection"
+          :menus="treeInput.menus"
+          :pages="treeInput.pages"
+          :buttons="treeInput.buttons"
+          :apis="treeInput.apis"
+          :menu-pages="treeInput.menuPages"
+        />
+        <p v-if="resourcesStore.grantableError !== null" class="hint">
+          资源清单加载失败（{{ resourcesStore.grantableError }}），暂时无法勾选权限；角色仍可正常创建。
+        </p>
+      </template>
+
       <p class="hint">
         <template v-if="isEditing">
           角色编码是权限判定的标识，创建后不可修改；数据范围与资源授权请在「权限配置」页调整。
         </template>
         <template v-else>
-          新建的角色默认没有任何权限，创建后请到「权限配置」页为它授权。
+          创建后可在「权限配置」页调整该角色的授权与数据范围。
         </template>
       </p>
     </FormDialog>
@@ -311,3 +411,13 @@ onMounted(() => {
     />
   </PageContainer>
 </template>
+
+<style scoped>
+/* 弹窗里的小节标题（普通用法在 `.fieldset` 里，这里只有一处，不为此新建全局类）。 */
+.grant-title {
+  margin: 16px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vctn-text-weak);
+}
+</style>

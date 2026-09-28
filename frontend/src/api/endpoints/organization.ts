@@ -28,6 +28,8 @@ export function listUsers(query: {
   pageNum: number
   pageSize: number
   department_id?: ID | null
+  /** `department_id` 是否连带其全部下级部门（DD-07 `DEPARTMENT_CHILDREN` 语义）。 */
+  include_sub_departments?: boolean
   status?: string | null
   keyword?: string | null
 }): Promise<UserPage> {
@@ -100,7 +102,25 @@ export function disableDepartment(departmentId: ID): Promise<void> {
 export interface SessionListQuery {
   pageNum: number
   pageSize: number
-  online?: boolean
+  /**
+   * 在线状态三态。
+   *
+   * `null` / 省略 = **不筛选**（返回全部，含已撤销与已过期）；`true` = 仅在线；
+   * `false` = 仅离线（在线条件的补集）。
+   *
+   * ⚠️ 这里必须用 `null` 表示"全部"，不能用 `false` —— `false` 在后端是
+   * "只要离线的"，与"不筛选"是两回事。界面上的 `<select>` 空选项 value 只能是
+   * 空串，因此下面 `listSessions` 里做了 `''` → `null` 的显式映射。
+   */
+  online?: boolean | null
+  /** IP 子串（模糊，大小写不敏感）。 */
+  ip?: string | null
+  /** 设备 / User-Agent 子串（同时匹配两者）。 */
+  device?: string | null
+  /** 登录时间下界（含），ISO 8601。 */
+  login_from?: string | null
+  /** 登录时间上界（含），ISO 8601。 */
+  login_to?: string | null
 }
 
 export function listSessions(query: SessionListQuery): Promise<SessionPage> {

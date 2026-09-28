@@ -35,14 +35,23 @@ API 层既不返回明文（`10 §4`），也**不返回哈希**：
 from __future__ import annotations
 
 import builtins
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import SessionRevokeReason
 from app.schemas.types import SnowflakeId
 
 _PAGE_SIZE_MAX = 100
+
+#: 筛选用的自由文本长度上界（IP / 设备关键字）。
+#:
+#: 只做上限，不做格式校验：`ip` 是**模糊**匹配的一段子串（用户可能只输入
+#: `192.168` 或 `10.`），`device` 匹配的是启发式粗分类与原始 UA，
+#: 都不存在可判定的"合法格式"。但必须有上界 —— 未限长的 ilike 参数
+#: 会退化成全表扫描 + 超长 pattern。
+_IP_FILTER_MAX = 64
+_DEVICE_FILTER_MAX = 128
 
 
 class SessionListQuery(BaseModel):
@@ -50,21 +59,80 @@ class SessionListQuery(BaseModel):
 
     `pageNum` / `pageSize` 为人类裁定的驼峰命名（DD-13 未冻结），
     其余字段遵循 AGENTS.md §6 的 snake_case。
+
+    筛选条件之间是 **AND** 关系；每个字段的"不筛选"表达方式不同，
+    这是刻意的，因为它决定了**默认行为**：
+
+    | 字段 | 不筛选的取值 | 理由 |
+    |---|---|---|
+    | `online` | `null`（省略） | 三态：null / true / false 分别是全部 / 仅在线 / 仅离线 |
+    | `ip` / `device` | `null`（省略） | 空串会被前端当成"填了但没填内容"，无法与"没填"区分 |
+    | `login_from` / `login_to` | `null`（省略） | 区间两端可独立给出（只给下界 = "某天之后"） |
     """
 
     model_config = ConfigDict(extra="forbid")
 
     pageNum: int = Field(default=1, ge=1, description="页码，从 1 开始")
     pageSize: int = Field(default=20, ge=1, le=_PAGE_SIZE_MAX, description="每页条数，1..100")
-    online: bool = Field(
-        default=False,
+    online: bool | None = Field(
+        default=None,
         description=(
-            "true=只返回**在线**会话（未撤销且会话总寿命未过，且所属用户为 ACTIVE）；"
-            "false=不筛选，返回全部会话（含已撤销 / 已过期）。默认 false，"
-            "因为会话列表的主要用途之一是排查'某个登录为什么失效了'，"
-            "那种场景下恰恰需要看到已结束的会话。"
+            "在线状态三态筛选：省略 / null=**不筛选**（返回全部会话，含已撤销与已过期）；"
+            "true=仅在线（未撤销且会话总寿命未过，且所属用户为 ACTIVE）；"
+            "false=仅离线 —— 在线的**补集**，即已撤销、会话总寿命已过、"
+            "或所属用户不是 ACTIVE 三者之一。\n\n"
+            "默认不筛选，因为会话列表的主要用途之一是排查"
+            "'某个登录为什么失效了'，那种场景下恰恰需要看到已结束的会话。"
         ),
     )
+    ip: str | None = Field(
+        default=None,
+        max_length=_IP_FILTER_MAX,
+        description="按登录来源 IP **模糊**匹配（子串，大小写不敏感）",
+    )
+    device: str | None = Field(
+        default=None,
+        max_length=_DEVICE_FILTER_MAX,
+        description=(
+            "按设备 / User-Agent **模糊**匹配（子串）。刻意只有一个输入框："
+            "操作系统与浏览器都落在 `device`（启发式粗分类）与 `user_agent`（原始串）"
+            "这两个字段里，任何把「系统」与「浏览器」切开来的二分都会在真实数据上给出错误答案。"
+        ),
+    )
+    login_from: datetime | None = Field(
+        default=None, description="登录时间下界（**含**边界，ISO 8601；不带时区时按 UTC 解释）"
+    )
+    login_to: datetime | None = Field(
+        default=None, description="登录时间上界（**含**边界，ISO 8601；不带时区时按 UTC 解释）"
+    )
+
+    @field_validator("login_from", "login_to")
+    @classmethod
+    def _normalize_naive_datetime(cls, value: datetime | None) -> datetime | None:
+        """把不带时区的时间按 UTC 解释。
+
+        `login_at` 是 `timestamptz`，与 naive datetime 比较时 PostgreSQL 会
+        按**服务器时区**（本实例为 UTC，但不能依赖这一点）隐式转换 ——
+        那等于让查询结果取决于部署环境的一个配置项。这里显式补 UTC，
+        使"我传的时间"与"库里存的时间"一定是同一个参照系。
+        """
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    @model_validator(mode="after")
+    def _check_login_range(self) -> SessionListQuery:
+        """区间必须有序。
+
+        不静默交换两端：静默纠正会让调用方以为筛选生效了，
+        实际拿到的却是另一个区间 —— 空结果比"看起来正常但错的结果"好排查。
+        """
+        start, end = self.login_from, self.login_to
+        if start is not None and end is not None and start > end:
+            raise ValueError("login_from 不能晚于 login_to")
+        return self
 
 
 class SessionResponse(BaseModel):

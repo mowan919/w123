@@ -21,9 +21,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import ColumnElement, and_, func, select, update
+from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +45,54 @@ from app.repositories.scope_filters import user_scope_condition
 #: 更细的粒度换不到可观测收益，却让每个请求都产生一次 UPDATE。
 #: 该值只影响"最近的活跃时间戳有多新"，**不影响**任何鉴权判定。
 SESSION_ACTIVITY_WRITE_INTERVAL = timedelta(seconds=60)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionListFilters:
+    """管理侧会话列表的**筛选条件集合**。
+
+    为什么不把六个参数一路透传：`_admin_conditions` 是列表与计数的
+    **唯一条件构造点**，而条件数量会随界面演进增加。"每个方法各加一个
+    同名参数"的写法只要漏掉一层（列表加了、计数忘了），
+    就会出现"总数与页内条数对不上"——那是最难被发现的一类分页缺陷。
+    收敛成一个值对象后，漏传在类型层面就是不可能的。
+
+    `online` 是三态（`None` / `True` / `False`），不是布尔：
+    它必须能表达"不筛选"，而 `False` 已经被"仅离线"占用。
+    """
+
+    online: bool | None = None
+    ip: str | None = None
+    device: str | None = None
+    login_from: datetime | None = None
+    login_to: datetime | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        """是否所有筛选项都未施加（审计里用它表示"没有任何筛选"）。"""
+        return (
+            self.online is None
+            and self.ip is None
+            and self.device is None
+            and self.login_from is None
+            and self.login_to is None
+        )
+
+    def audit_summary(self) -> dict[str, object]:
+        """审计用的**存在性**摘要 —— 刻意不含任何查询值。
+
+        与 `Phase 7` 对系统参数的裁定同一口径（参数审计只记
+        `value_is_set` / 长度，不记值）：审计是 append-only 且保留两年，
+        把管理员**搜过哪个 IP**写进去，等于给审计表积累一批
+        "谁在排查谁的登录"的画像数据，而它对追责没有用途 ——
+        真正要追责的动作是 `revoke`，那条事件自带完整 before/after。
+        """
+        return {
+            "online": self.online,
+            "ip_filter": self.ip is not None,
+            "device_filter": self.device is not None,
+            "login_range_filter": self.login_from is not None or self.login_to is not None,
+        }
 
 
 def online_session_condition(now: datetime) -> ColumnElement[bool]:
@@ -330,15 +379,32 @@ class SessionRepository:
         scope: ResolvedScope,
         *,
         now: datetime,
-        online_only: bool,
+        filters: SessionListFilters,
         user_id: int | None,
     ) -> list[ColumnElement[bool]]:
         """管理侧列表 / 计数的查询条件（唯一构造点，保证两者口径一致）。
 
-        `online_only` 为什么还要带 `AdminUser.status == ACTIVE`：
-        在线与否是**用户与会话的联合状态**（见 `online_session_condition`），
-        用户被禁用时其会话不可用，因此不能计入在线。
-        这一条与 `authenticate()` 的校验链完全同源。
+        ## 在线三态
+
+        "在线"是**用户与会话的联合状态**（见 `online_session_condition`），
+        因此判定的完整形态是：
+
+        ```text
+        online_condition = 会话未撤销 且 会话总寿命未过 且 用户 ACTIVE
+        ```
+
+        `online=False`（仅离线）**直接取上面这个条件的逻辑非**，而不是另写一组
+        `撤销 OR 过期 OR 非 ACTIVE`。后者看起来等价，实际是两个必然漂移的
+        表达式：将来只要给"在线"补一条（比如把某种会话排除在外），
+        忘记同步另一个，就会出现"既不在在线列表、也不在离线列表里"的会话
+        —— 分页总数对不上，且没有任何报错。用 `~` 之后，
+        "离线 = 在线的补集"变成结构性事实，不依赖维护者的记性。
+
+        ## 为什么筛选条件都在 SQL 层
+
+        `10 §10` 要求带数据范围的查询真正约束在 SQL 层。这些筛选项与
+        数据范围走的是**同一个** `WHERE`，因此不存在"先按范围取一页、
+        再在内存里挑出符合筛选的那几条"这种做法导致的"页内只剩 2 条"。
         """
         conditions: list[ColumnElement[bool]] = [
             # 逻辑删除的用户不得出现在普通查询中（`02 §5`）；
@@ -348,9 +414,28 @@ class SessionRepository:
         ]
         if user_id is not None:
             conditions.append(UserSession.user_id == user_id)
-        if online_only:
-            conditions.append(online_session_condition(now))
-            conditions.append(AdminUser.status == UserStatus.ACTIVE)
+
+        if filters.online is not None:
+            online_condition = and_(
+                online_session_condition(now),
+                AdminUser.status == UserStatus.ACTIVE,
+            )
+            conditions.append(online_condition if filters.online else ~online_condition)
+
+        if filters.ip:
+            conditions.append(UserSession.ip.ilike(f"%{filters.ip}%"))
+        if filters.device:
+            # 一个输入框同时匹配设备粗分类与原始 UA：真实数据里
+            # "Windows 10 / Chrome" 这类串只存在其中一个字段上，
+            # 只查 device 会漏掉 UA 里才有的浏览器名。
+            pattern = f"%{filters.device}%"
+            conditions.append(
+                or_(UserSession.device.ilike(pattern), UserSession.user_agent.ilike(pattern))
+            )
+        if filters.login_from is not None:
+            conditions.append(UserSession.login_at >= filters.login_from)
+        if filters.login_to is not None:
+            conditions.append(UserSession.login_at <= filters.login_to)
         return conditions
 
     async def list_for_admin(
@@ -360,7 +445,7 @@ class SessionRepository:
         now: datetime,
         page_num: int,
         page_size: int,
-        online_only: bool = False,
+        filters: SessionListFilters | None = None,
         user_id: int | None = None,
     ) -> list[tuple[UserSession, AdminUser]]:
         """分页列出**范围内**用户的会话（含已撤销 / 已过期）。
@@ -373,7 +458,7 @@ class SessionRepository:
         没有第二排序键时，分页在并列数据上可能出现重复 / 漏行。
         """
         conditions = self._admin_conditions(
-            scope, now=now, online_only=online_only, user_id=user_id
+            scope, now=now, filters=filters or SessionListFilters(), user_id=user_id
         )
         stmt = (
             select(UserSession, AdminUser)
@@ -391,12 +476,12 @@ class SessionRepository:
         scope: ResolvedScope,
         *,
         now: datetime,
-        online_only: bool = False,
+        filters: SessionListFilters | None = None,
         user_id: int | None = None,
     ) -> int:
         """统计范围内会话总数（与 `list_for_admin` 使用**完全相同**的条件）。"""
         conditions = self._admin_conditions(
-            scope, now=now, online_only=online_only, user_id=user_id
+            scope, now=now, filters=filters or SessionListFilters(), user_id=user_id
         )
         stmt = (
             select(func.count())
@@ -421,4 +506,9 @@ class SessionRepository:
         return list((await self._session.execute(stmt)).scalars().all())
 
 
-__all__ = ["SESSION_ACTIVITY_WRITE_INTERVAL", "SessionRepository", "online_session_condition"]
+__all__ = [
+    "SESSION_ACTIVITY_WRITE_INTERVAL",
+    "SessionListFilters",
+    "SessionRepository",
+    "online_session_condition",
+]

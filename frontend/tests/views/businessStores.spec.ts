@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { NCheckbox, NTreeSelect } from 'naive-ui'
 import type { Component } from 'vue'
 import type { PageResult } from '@/types'
 
@@ -211,21 +212,38 @@ describe('部门管理页', () => {
 })
 
 describe('用户管理页', () => {
-  it('部门下拉来自 organizationStore，不是自己再拉一次树', async () => {
-    org.listUsers.mockResolvedValue({
-      list: [],
-      total: 0,
-      pageNum: 1,
-      pageSize: 20,
-    })
-
+  it('部门筛选用树形下拉，候选直接来自 organizationStore 的树', async () => {
+    const departments = useOrganizationStore()
     const wrapper = await mountView(UserListView)
 
+    // 部门树只由 store 取一次（后端没有扁平列表端点）。
     expect(org.getDepartmentTree).toHaveBeenCalledTimes(1)
-    const options = wrapper.findAll('option').map((option) => option.text())
-    // 标签是完整继承路径，子部门也在选项里。
-    expect(options).toContain('总公司')
-    expect(options).toContain('总公司 / 华东区')
+    expect(departments.loaded).toBe(true)
+
+    // ⚠️ 这里**不能**再用 `wrapper.findAll('option')`：部门筛选改成
+    // `NTreeSelect` 后，候选不在 DOM 里（naive 的树形下拉展开时才渲染
+    // 虚拟列表），而筛选区仍有一个原生 `<select>`（状态），它的 option
+    // 会让断言"看起来通过"，实际什么都没验证到。
+    const treeSelects = wrapper.findAllComponents(NTreeSelect)
+    expect(treeSelects.length).toBeGreaterThan(0)
+    const picker = treeSelects[0]
+
+    // 传下去的就是 store 的树本身（引用相等），没有第二份层级真相。
+    expect(picker?.props('options')).toBe(departments.tree)
+    // 字段名写错**不会报错**，只会让所有标签空着、或者子节点根本不展开。
+    expect(picker?.props('keyField')).toBe('id')
+    expect(picker?.props('labelField')).toBe('department_name')
+    expect(picker?.props('childrenField')).toBe('children')
+    // 层级没被压平：子部门在父节点的 children 里。
+    expect(departments.tree[0]?.children?.map((child) => child.department_name)).toEqual(['华东区'])
+  })
+
+  it('清空部门会同时关掉「包含下级部门」', async () => {
+    const wrapper = await mountView(UserListView)
+    // 「包含下级部门」在未选部门时不可用 —— 没有部门就没有"下级"可言，
+    // 让它保持可勾选会造出一个不影响请求的假开关。
+    const checkbox = wrapper.findComponent(NCheckbox)
+    expect(checkbox.props('disabled')).toBe(true)
   })
 })
 

@@ -55,7 +55,25 @@ const pageNum = ref(1)
 const pageSize = ref(20)
 const loading = ref(false)
 const error = ref<string | null>(null)
-const onlineOnly = ref(false)
+
+/**
+ * 筛选条件。
+ *
+ * `status` 显式用三个字符串，而不是布尔 —— 早先这里是
+ * `const onlineOnly = ref(false)` 直接绑在 `<select>` 上，于是一个字段同时
+ * 装着 `boolean`（`false`）与 `string`（空串 / `"true"`）两种值：
+ * "全部"与"仅在线"之所以看起来能用，靠的是"空串刚好为假、`'true'` 刚好为真"
+ * 这种巧合。只要有人加一个 `value="false"`（字符串，也是真）就会立刻错乱。
+ * 这里把三态写成三态，再在发请求时映射成后端的 `null / true / false`。
+ */
+const statusFilter = ref<'' | 'online' | 'offline'>('')
+const ipFilter = ref('')
+const systemFilter = ref('')
+
+/** 登录时间区间边界（`YYYY-MM-DD`，本地日期）。空串表示该端不限。 */
+const loginFrom = ref('')
+const loginTo = ref('')
+
 const selected = ref<string[]>([])
 
 const pendingRevoke = ref<Session | null>(null)
@@ -63,16 +81,57 @@ const revoking = ref(false)
 const pendingRevokeAll = ref<Session | null>(null)
 const revokingAll = ref(false)
 
+const loginRangeInvalid = computed<boolean>(
+  () => loginFrom.value !== '' && loginTo.value !== '' && loginFrom.value > loginTo.value,
+)
+
+/**
+ * 本地日期 → 当天的起点 / 终点，再转成 UTC 的 ISO 8601。
+ *
+ * `<input type="date">` 给的是**本地**日期，而 `login_at` 是 UTC 时间戳。
+ * 直接拼 `T00:00:00Z` 会把"本地的 9 月 1 日"当成"UTC 的 9 月 1 日"，
+ * 在东八区就是漏掉 8 小时的数据（表现为"选了昨天却查不到昨天的登录"）。
+ * 因此这里先构造本地零点 / 当日末刻，再由 `toISOString()` 做真正的换算。
+ *
+ * 终止端取 `23:59:59.999` 而不是下一天的零点：后端条件是 `login_at <= login_to`，
+ * 用下一天零点会把次日 00:00:00.000 这条也放进来。
+ */
+function toIsoBoundary(date: string, edge: 'start' | 'end'): string | null {
+  if (date === '') return null
+  const [year, month, day] = date.split('-').map(Number)
+  if (year === undefined || month === undefined || day === undefined) return null
+  if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null
+  const local =
+    edge === 'start'
+      ? new Date(year, month - 1, day, 0, 0, 0, 0)
+      : new Date(year, month - 1, day, 23, 59, 59, 999)
+  return local.toISOString()
+}
+
 /** 选中的会话对应的用户：批量撤销是"按用户"生效的，先解出用户名再确认。 */
 const selectedUser = computed<Session | null>(
   () => rows.value.find((row) => row.id === selected.value[0]) ?? null,
 )
 
+function blankToNull(value: string): string | null {
+  const trimmed = value.trim()
+  return trimmed === '' ? null : trimmed
+}
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const result = await listSessions({ pageNum: pageNum.value, pageSize: pageSize.value, online: onlineOnly.value })
+    const result = await listSessions({
+      pageNum: pageNum.value,
+      pageSize: pageSize.value,
+      // 三态：空串 = 全部，必须映射成 null；`false` 在后端是"仅离线"。
+      online: statusFilter.value === '' ? null : statusFilter.value === 'online',
+      ip: blankToNull(ipFilter.value),
+      device: blankToNull(systemFilter.value),
+      login_from: toIsoBoundary(loginFrom.value, 'start'),
+      login_to: toIsoBoundary(loginTo.value, 'end'),
+    })
     rows.value = result.list
     total.value = result.total
     pageNum.value = result.pageNum
@@ -87,13 +146,22 @@ async function load(): Promise<void> {
 }
 
 function search(): void {
+  // 区间反了就如实拒绝，不静默交换两端：静默交换会让用户以为筛的就是他填的区间。
+  if (loginRangeInvalid.value) {
+    appStore.showNotice('error', '登录时间的起始日期不能晚于结束日期')
+    return
+  }
   pageNum.value = 1
   selected.value = []
   void load()
 }
 
 function resetFilters(): void {
-  onlineOnly.value = false
+  statusFilter.value = ''
+  ipFilter.value = ''
+  systemFilter.value = ''
+  loginFrom.value = ''
+  loginTo.value = ''
   pageNum.value = 1
   selected.value = []
   void load()
@@ -150,12 +218,36 @@ onMounted(() => {
     <SearchForm @search="search" @reset="resetFilters">
       <label class="field">
         <span class="field__label">在线状态</span>
-        <select v-model="onlineOnly" class="field__control">
+        <select v-model="statusFilter" class="field__control">
           <option value="">全部</option>
-          <option value="true">仅在线</option>
+          <option value="online">仅在线</option>
+          <option value="offline">仅离线</option>
         </select>
       </label>
+      <label class="field">
+        <span class="field__label">IP</span>
+        <input v-model.trim="ipFilter" class="field__control" placeholder="如 192.168" />
+      </label>
+      <label class="field">
+        <span class="field__label">系统 / 浏览器</span>
+        <input
+          v-model.trim="systemFilter"
+          class="field__control"
+          placeholder="如 Windows / Chrome"
+        />
+      </label>
+      <label class="field">
+        <span class="field__label">登录时间从</span>
+        <input v-model="loginFrom" type="date" class="field__control" />
+      </label>
+      <label class="field">
+        <span class="field__label">登录时间到</span>
+        <input v-model="loginTo" type="date" class="field__control" />
+      </label>
     </SearchForm>
+    <p v-if="loginRangeInvalid" class="hint">
+      起始日期晚于结束日期，修改后再查询（查询会被拒绝，不会静默交换两端）。
+    </p>
 
     <div class="toolbar">
       <NButton size="small" :loading="loading" @click="load">

@@ -263,6 +263,7 @@ class UserService:
         page_num: int = 1,
         page_size: int = 20,
         department_id: int | None = None,
+        include_sub_departments: bool = False,
         status: UserStatus | None = None,
         keyword: str | None = None,
     ) -> UserPage:
@@ -270,23 +271,42 @@ class UserService:
 
         `department_id` 过滤与数据范围取交集，
         因此传入范围外的部门 ID 会得到空结果而非越权数据。
+
+        `include_sub_departments=True` 时把该部门**及其全部后代**一起纳入筛选
+        （DD-07 的 `DEPARTMENT_CHILDREN` 语义）。展开走
+        `DepartmentRepository.descendant_ids`（单条递归 CTE，与数据范围
+        用的是同一段实现），因此"筛选含下级"与"角色数据范围含下级"
+        在任何时候都指向同一棵子树。
+
+        ⚠️ 部门不存在（或已被逻辑删除）时展开结果是**空集合**，
+        必须表现为"查不到人"，而不是"这个筛选项没生效" ——
+        后者会把一次笔误变成一次全量导出。该不变量在
+        `UserRepository._scoped_conditions` 里由显式 `false()` 兜住。
         """
         if page_num < 1:
             raise BadRequestError("pageNum 必须大于等于 1")
         if not 1 <= page_size <= 100:
             raise BadRequestError("pageSize 必须在 1..100 之间")
 
+        department_ids: frozenset[int] | None = None
+        if department_id is not None:
+            department_ids = (
+                await self._departments.descendant_ids(department_id, include_self=True)
+                if include_sub_departments
+                else frozenset({department_id})
+            )
+
         scope = await self._scope.resolve(actor)
         items = await self._users.list_in_scope(
             scope,
             page_num=page_num,
             page_size=page_size,
-            department_id=department_id,
+            department_ids=department_ids,
             status=status,
             keyword=keyword,
         )
         total = await self._users.count_in_scope(
-            scope, department_id=department_id, status=status, keyword=keyword
+            scope, department_ids=department_ids, status=status, keyword=keyword
         )
         return UserPage(items=items, total=total, page_num=page_num, page_size=page_size)
 

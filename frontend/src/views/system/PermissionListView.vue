@@ -2,14 +2,14 @@
 /**
  * 角色权限配置（FE-05 §1 / `08 §7` / DD-20 / FE-03 §5）。
  *
- * 三类配置分别保存，不搞"一个按钮保存全部"：
- * 1. 四类二元权限（PAGE / MENU / BUTTON / API）—— 提交语义是**整体替换**，
- *    空数组表示清空该类别（其余类别不受影响）。
- * 2. 字段权限四态（VISIBLE / HIDDEN / READ_ONLY / EDITABLE）—— 逐字段提交。
- * 3. 数据范围五值（DD-07 已冻结）。
- *
- * 整批替换意味着"取消一个勾就提交一次"，这与后端 `RolePermissionIdsRequest`
- * 的语义一致；前端不做增量 PATCH，因为后端没有提供该协议。
+ * 三块配置分别保存，职责不同：
+ * 1. **页面 / 菜单 / 按钮 / 接口** 的四类二元权限 —— 用一棵资源层级树呈现
+ *    （菜单 → 页面 → 按钮 / 接口），点父项可把状态带给子项。
+ *    提交语义是**按类别整体替换**（后端没有增量 PATCH 协议）。
+ * 2. **字段权限**四态（VISIBLE / HIDDEN / READ_ONLY / EDITABLE）—— 逐字段提交。
+ *    它不进树：字段表达的是"访问级别"，不是"有没有"，塞进二态勾选框里
+ *    必然要在界面上额外发明一个"半选=只读"的约定。
+ * 3. **数据范围**五值（DD-07 已冻结）。
  *
  * 授权的目标资源清单来自 `/admin/permission-resources`，而不是当前用户的
  * 权限契约 —— 目标角色可能持有当前管理员看不到的资源，
@@ -23,29 +23,24 @@ import { NIcon } from 'naive-ui'
 import { KeyOutline, SaveOutline } from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
+import PermissionTree from '@/components/permission/PermissionTree.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { usePermissionStore } from '@/stores/permission'
 import { useOrganizationStore } from '@/stores/organization'
 import { useRolesStore } from '@/stores/roles'
 import { useResourcesStore } from '@/stores/resources'
+import { resolveSubmission, unavailableCount, universeOf } from '@/composables/usePermissionTree'
+import type { PermissionTreeInput } from '@/composables/usePermissionTree'
 import {
   getRoleDataScope,
   getRolePermissions,
-  setRoleApiPermissions,
-  setRoleButtonPermissions,
+  putRoleGrant,
   setRoleDataScope,
   setRoleFieldPermissions,
-  setRoleMenuPermissions,
-  setRolePagePermissions,
 } from '@/api/endpoints/roles'
-import type {
-  DataScopePolicy,
-  FieldAccessLevel,
-  PermissionResource,
-  Role,
-  RolePermissionView,
-} from '@/types'
+import { GRANT_KINDS, GRANT_KIND_LABEL, emptySelection } from '@/types'
+import type { DataScopePolicy, FieldAccessLevel, GrantKind, GrantSelection, Role, RolePermissionView } from '@/types'
 import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
@@ -53,8 +48,6 @@ const permissionStore = usePermissionStore()
 const organizationStore = useOrganizationStore()
 const rolesStore = useRolesStore()
 const resourcesStore = useResourcesStore()
-
-type ResourceKind = 'PAGE' | 'MENU' | 'BUTTON' | 'API'
 
 const DATA_SCOPE_OPTIONS: Array<{ value: DataScopePolicy; label: string }> = [
   { value: 'ALL', label: '全部数据' },
@@ -68,12 +61,18 @@ const FIELD_LEVELS: FieldAccessLevel[] = ['VISIBLE', 'HIDDEN', 'READ_ONLY', 'EDI
 
 const selectedRoleId = ref<ID | null>(null)
 
-const checked = ref<Record<ResourceKind, Set<ID>>>({
-  PAGE: new Set(),
-  MENU: new Set(),
-  BUTTON: new Set(),
-  API: new Set(),
-})
+/** 界面上正在编辑的四类授权。 */
+const selection = ref<GrantSelection>(emptySelection())
+
+/**
+ * 该角色在库里的**现状**。
+ *
+ * 它有两个用途，都不是"备份"：
+ * 1. 判断有没有改动（没改就不提交 —— 一次无改动提交会写一条审计并递增
+ *    权限版本，纯噪音）。
+ * 2. 保留"候选清单之外"的既有授权（见 `resolveSubmission`）。
+ */
+const original = ref<GrantSelection>(emptySelection())
 
 const fieldLevels = ref<Record<ID, FieldAccessLevel>>({})
 
@@ -81,32 +80,63 @@ const dataScope = ref<DataScopePolicy>('ALL')
 const customDepartments = ref<ID[]>([])
 
 const loadingConfig = ref(false)
-const saving = ref<ResourceKind | 'FIELDS' | 'DATA_SCOPE' | null>(null)
+const savingGrants = ref(false)
+const savingFields = ref(false)
+const savingScope = ref(false)
 const pendingReset = ref(false)
 const confirmText = ref('')
 
-/**
- * 授权用的候选清单来自 store，不是当前用户的权限契约。
- *
- * 原因写在 resourcesStore 里：被授权的角色可能持有当前管理员看不到的资源，
- * 拿契约当候选来源会静默丢掉它们。
- */
-const options = computed<Record<ResourceKind, PermissionResource[]>>(() => ({
-  PAGE: resourcesStore.grantable?.PAGE ?? [],
-  MENU: resourcesStore.grantable?.MENU ?? [],
-  BUTTON: resourcesStore.grantable?.BUTTON ?? [],
-  API: resourcesStore.grantable?.API ?? [],
+/** 权限树的输入：四类资源清单 + 真实的菜单挂载关系。 */
+const treeInput = computed<PermissionTreeInput>(() => ({
+  menus: resourcesStore.grantable?.MENU ?? [],
+  pages: resourcesStore.grantable?.PAGE ?? [],
+  buttons: resourcesStore.grantable?.BUTTON ?? [],
+  apis: resourcesStore.grantable?.API ?? [],
+  menuPages: resourcesStore.menuPages,
 }))
 
-/** 字段权限的四个选项定义在 store 之外是因为它同时被下拉框复用。 */
-const grantable = computed<PermissionResource[]>(() => resourcesStore.grantable?.FIELD ?? [])
+const universe = computed(() => universeOf(treeInput.value))
+
+/**
+ * 候选清单之外的既有授权数量（>0 时必须在界面上说出来）。
+ *
+ * 资源清单是**分类取回且有上限**的，角色可能持有没被取回的资源。
+ * 保存时这些会被原样保留（`resolveSubmission`），但管理员有权知道
+ * "这个角色的授权不是你在上面看到的全部"。
+ */
+const preservedCounts = computed<Record<GrantKind, number>>(() => {
+  const scope = universe.value
+  return {
+    PAGE: unavailableCount(scope.PAGE, original.value.PAGE),
+    MENU: unavailableCount(scope.MENU, original.value.MENU),
+    BUTTON: unavailableCount(scope.BUTTON, original.value.BUTTON),
+    API: unavailableCount(scope.API, original.value.API),
+  }
+})
+
+const preservedTotal = computed(() =>
+  GRANT_KINDS.reduce((sum, kind) => sum + preservedCounts.value[kind], 0),
+)
+
+/** 字段权限的候选（FIELD 与二元授权分开管理）。 */
+const grantableFields = computed(() => resourcesStore.grantable?.FIELD ?? [])
+
+/** 角色清单来自 store：它与角色管理页共享同一份缓存，不各自发请求。 */
+const roles = computed<Role[]>(() => rolesStore.picker)
+
+function sameIdSet(left: readonly ID[], right: readonly ID[]): boolean {
+  if (left.length !== right.length) return false
+  const seen = new Set(left)
+  return right.every((id) => seen.has(id))
+}
+
+const grantsDirty = computed(() =>
+  GRANT_KINDS.some((kind) => !sameIdSet(selection.value[kind], original.value[kind])),
+)
 
 function notice(cause: unknown, fallback: string): void {
   appStore.showNotice('error', cause instanceof Error ? cause.message : fallback)
 }
-
-/** 角色清单来自 store：它与角色管理页共享同一份缓存，不各自发请求。 */
-const roles = computed<Role[]>(() => rolesStore.picker)
 
 async function loadRoles(): Promise<void> {
   await rolesStore.ensurePicker()
@@ -115,20 +145,30 @@ async function loadRoles(): Promise<void> {
   }
 }
 
+/**
+ * 取授权候选清单与菜单层级。
+ *
+ * 两者的失败**互不牵连**：菜单层级取不到只是树上少一层分组
+ * （页面会落到「未挂载菜单的页面」下），授权能力完全不受影响。
+ */
 async function loadResources(): Promise<void> {
   await resourcesStore.ensureGrantable()
-}
-
-function toIdSet(ids: ID[]): Set<ID> {
-  return new Set(ids)
+  await resourcesStore.ensureMenuPages()
 }
 
 function applyView(view: RolePermissionView): void {
-  checked.value = {
-    PAGE: toIdSet(view.page_ids),
-    MENU: toIdSet(view.menu_ids),
-    BUTTON: toIdSet(view.button_ids),
-    API: toIdSet(view.api_ids),
+  const next: GrantSelection = {
+    PAGE: [...view.page_ids],
+    MENU: [...view.menu_ids],
+    BUTTON: [...view.button_ids],
+    API: [...view.api_ids],
+  }
+  selection.value = next
+  original.value = {
+    PAGE: [...next.PAGE],
+    MENU: [...next.MENU],
+    BUTTON: [...next.BUTTON],
+    API: [...next.API],
   }
   const levels: Record<ID, FieldAccessLevel> = {}
   // `field_levels` 的键是 FIELD 资源 ID（后端 `RolePermissionViewResponse` 明确说明）。
@@ -174,18 +214,6 @@ function cancelSelect(): void {
   if (selectedRoleId.value !== null) void loadConfig(selectedRoleId.value)
 }
 
-function toggle(kind: ResourceKind, id: ID): void {
-  const current = checked.value[kind]
-  const next = new Set(current)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  checked.value = { ...checked.value, [kind]: next }
-}
-
-function isChecked(kind: ResourceKind, id: ID): boolean {
-  return checked.value[kind].has(id)
-}
-
 /**
  * 保存成功后同步一次自己的权限契约（FE-03 §5）。
  *
@@ -202,30 +230,55 @@ async function refreshSelfIfAffected(roleId: ID): Promise<void> {
   }
 }
 
-async function saveKind(kind: ResourceKind): Promise<void> {
+/**
+ * 保存四类授权。
+ *
+ * **顺序执行、逐个记录成败**，不用 `Promise.all`：四类各自是一次
+ * "整体替换"，任何一个失败都必须能被准确地说出来是哪一类。
+ * `Promise.all` 只给第一个错误，其余类别是成是败无从得知，
+ * 而界面此时显示的是本地勾选状态 —— 那正是"界面说授权了、库里没有"
+ * 这类最难排查的问题的温床。
+ *
+ * 无论成败，最后都重拉一次真实配置：宁可让管理员在界面上看到
+ * "有一类没保存上"，也不要让他对着一个与库不一致的界面继续改。
+ */
+async function saveGrants(): Promise<void> {
   const roleId = selectedRoleId.value
-  if (roleId === null) return
-  saving.value = kind
-  const ids = [...checked.value[kind]]
+  if (roleId === null || !grantsDirty.value) return
+  savingGrants.value = true
+  const failed: string[] = []
   try {
-    if (kind === 'PAGE') await setRolePagePermissions(roleId, ids)
-    else if (kind === 'MENU') await setRoleMenuPermissions(roleId, ids)
-    else if (kind === 'BUTTON') await setRoleButtonPermissions(roleId, ids)
-    else await setRoleApiPermissions(roleId, ids)
-    appStore.showNotice('success', '已保存')
+    for (const kind of GRANT_KINDS) {
+      const ids = resolveSubmission(
+        kind,
+        selection.value,
+        universe.value[kind],
+        original.value[kind],
+      )
+      try {
+        await putRoleGrant(kind, roleId, ids)
+      } catch (cause) {
+        failed.push(GRANT_KIND_LABEL[kind])
+        notice(cause, `${GRANT_KIND_LABEL[kind]}保存失败`)
+      }
+    }
+    if (failed.length === 0) appStore.showNotice('success', '权限已保存')
+    else
+      appStore.showNotice(
+        'error',
+        `${failed.join(' / ')} 未保存成功，其余类别已生效。请修正后重试。`,
+      )
+  } finally {
+    savingGrants.value = false
     await loadConfig(roleId)
     await refreshSelfIfAffected(roleId)
-  } catch (cause) {
-    notice(cause, '保存失败')
-  } finally {
-    saving.value = null
   }
 }
 
 async function saveFields(): Promise<void> {
   const roleId = selectedRoleId.value
   if (roleId === null) return
-  saving.value = 'FIELDS'
+  savingFields.value = true
   try {
     const fields = Object.entries(fieldLevels.value).map(([resourceId, accessLevel]) => ({
       resourceId,
@@ -238,14 +291,14 @@ async function saveFields(): Promise<void> {
   } catch (cause) {
     notice(cause, '字段权限保存失败')
   } finally {
-    saving.value = null
+    savingFields.value = false
   }
 }
 
 async function saveDataScope(): Promise<void> {
   const roleId = selectedRoleId.value
   if (roleId === null) return
-  saving.value = 'DATA_SCOPE'
+  savingScope.value = true
   try {
     // 非 CUSTOM 必须提交空数组：后端 `RoleDataScopeRequest` 会把非空集合视为
     // "以为已限定、实际未限定"并直接拒绝。
@@ -259,7 +312,7 @@ async function saveDataScope(): Promise<void> {
   } catch (cause) {
     notice(cause, '数据范围保存失败')
   } finally {
-    saving.value = null
+    savingScope.value = false
   }
 }
 
@@ -320,7 +373,7 @@ void boot()
       <PermissionButton code="role:assign-permission" @click="selectedRoleId !== null && loadConfig(selectedRoleId)">
         重新加载
       </PermissionButton>
-      <span class="muted">修改会按类别即时保存，没有「全部保存」按钮。</span>
+      <span class="muted">上方为资源授权，修改后点「保存权限」；字段权限与数据范围各自单独保存。</span>
     </div>
     <p v-if="rolesStore.pickerMightBeTruncated" class="hint">
       角色数量较多，这里的下拉可能未取全；查不到目标角色时可到「角色管理」页按关键字检索。
@@ -331,34 +384,44 @@ void boot()
     <template v-else>
       <section class="panel">
         <h3 class="panel__title">页面 / 菜单 / 按钮 / 接口授权</h3>
-        <div class="grid">
-          <div v-for="kind in (['PAGE', 'MENU', 'BUTTON', 'API'] as ResourceKind[])" :key="kind" class="group">
-            <div class="group__head">
-              <span>{{ kind }}</span>
-              <PermissionButton
-                code="role:assign-permission"
-                :loading="saving === kind"
-                @click="saveKind(kind)"
-              >
-                <NIcon :component="SaveOutline" />
-                保存
-              </PermissionButton>
-            </div>
-            <label v-for="item in options[kind]" :key="item.id" class="check">
-              <input
-                type="checkbox"
-                :checked="isChecked(kind, item.id)"
-                @change="toggle(kind, item.id)"
-              />
-              <span>{{ item.resource_name }}</span>
-              <code class="muted">{{ item.resource_code }}</code>
-            </label>
-            <p v-if="options[kind].length === 0" class="muted">该类别还没有资源</p>
-          </div>
+        <PermissionTree
+          v-model="selection"
+          :menus="treeInput.menus"
+          :pages="treeInput.pages"
+          :buttons="treeInput.buttons"
+          :apis="treeInput.apis"
+          :menu-pages="treeInput.menuPages"
+        />
+
+        <div class="panel__actions">
+          <PermissionButton
+            code="role:assign-permission"
+            type="primary"
+            :disabled="!grantsDirty"
+            :loading="savingGrants"
+            @click="saveGrants"
+          >
+            <NIcon :component="SaveOutline" />
+            保存权限
+          </PermissionButton>
+          <span v-if="!grantsDirty" class="muted">没有改动</span>
         </div>
-        <p class="hint">取消某类别的全部勾选并保存，即清空该类别的授权；其他类别不受影响。</p>
+
+        <p class="hint">
+          取消某类别的全部勾选并保存，即清空该类别的授权；其他类别不受影响。
+          角色继承由后端递归展开，这里改的是**本角色直接持有**的授权。
+        </p>
+        <p v-if="preservedTotal > 0" class="hint">
+          该角色还持有 {{ preservedTotal }} 项未出现在上方清单中的授权
+          （页面 {{ preservedCounts.PAGE }} / 菜单 {{ preservedCounts.MENU }} /
+          按钮 {{ preservedCounts.BUTTON }} / 接口 {{ preservedCounts.API }}）——
+          它们不在候选范围内，保存时会**原样保留**，不会被这次提交清掉。
+        </p>
         <p v-if="resourcesStore.grantableMightBeTruncated" class="hint">
           资源数量较多，这里的清单可能未取全；可到「权限资源」页按类型检索后再授权。
+        </p>
+        <p v-if="resourcesStore.menuPagesError !== null" class="hint">
+          菜单层级未加载（{{ resourcesStore.menuPagesError }}）；页面统一列在「未挂载菜单的页面」下，授权不受影响。
         </p>
       </section>
 
@@ -373,7 +436,7 @@ void boot()
             </tr>
           </thead>
           <tbody>
-            <tr v-for="field in grantable" :key="field.id">
+            <tr v-for="field in grantableFields" :key="field.id">
               <td>{{ field.resource_name }}</td>
               <td><code>{{ field.field_key }}</code></td>
               <td>
@@ -392,7 +455,7 @@ void boot()
             </tr>
           </tbody>
         </table>
-        <PermissionButton code="role:assign-permission" :loading="saving === 'FIELDS'" @click="saveFields">
+        <PermissionButton code="role:assign-permission" :loading="savingFields" @click="saveFields">
           <NIcon :component="SaveOutline" />
           保存字段权限
         </PermissionButton>
@@ -427,7 +490,7 @@ void boot()
           <p v-if="organizationStore.flat.length === 0" class="muted">部门树加载失败，暂时无法选择自定义部门</p>
         </div>
 
-        <PermissionButton code="role:config-data-scope" :loading="saving === 'DATA_SCOPE'" @click="saveDataScope">
+        <PermissionButton code="role:config-data-scope" :loading="savingScope" @click="saveDataScope">
           <NIcon :component="SaveOutline" />
           保存数据范围
         </PermissionButton>
@@ -463,18 +526,11 @@ void boot()
   margin-bottom: 12px;
 }
 
-.group {
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-  padding: 10px;
-}
-
-.group__head {
+.panel__actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-weight: 600;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .depts {

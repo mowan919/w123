@@ -12,7 +12,7 @@
  * 一个不存在的接口去显示"可编辑"。
  */
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NIcon } from 'naive-ui'
+import { NButton, NCheckbox, NIcon, NSelect, NTreeSelect } from 'naive-ui'
 import {
   AddOutline,
   CreateOutline,
@@ -49,10 +49,34 @@ const dictionaryStore = useDictionaryStore()
 const organizationStore = useOrganizationStore()
 const rolesStore = useRolesStore()
 
-const filters = ref<{ keyword: string; status: string; department_id: string }>({
+/**
+ * 部门下拉的候选直接取**后端返回的树**，不做压平。
+ *
+ * 筛选项与表单里的"所属部门"共用同一份 `organizationStore.tree`：
+ * 层级展开是唯一的（由 NTreeSelect 按 `children-field` 递归渲染），
+ * 页面不再自己压平一层 —— 那会变成第二份层级真相，
+ * 一旦压平写错，"层级下拉里看到的父子关系"与"包含下级实际展开的子树"
+ * 就会不一致，而这种不一致只在特定数据上才看得出来。
+ */
+const DEPARTMENT_TREE_FIELDS = {
+  keyField: 'id',
+  labelField: 'department_name',
+  childrenField: 'children',
+} as const
+
+/** NTreeSelect / NSelect 的 `update:value` 载荷（库声明的联合类型，需自行收窄）。 */
+type SelectValue = string | number | Array<string | number> | null
+
+const filters = ref<{
+  keyword: string
+  status: string
+  department_id: ID | null
+  include_sub_departments: boolean
+}>({
   keyword: '',
   status: '',
-  department_id: '',
+  department_id: null,
+  include_sub_departments: false,
 })
 
 const { rows, total, pageNum, pageSize, loading, error, reload, onPageChange } = usePageQuery<User>(
@@ -81,12 +105,21 @@ function onSearch(): void {
   reload({
     keyword: filters.value.keyword || null,
     status: filters.value.status || null,
-    department_id: filters.value.department_id || null,
+    department_id: filters.value.department_id,
+    // 没选部门时"包含下级"没有意义：后端会忽略它，但少发一个无意义参数
+    // 能让请求日志里"这次到底按什么筛的"一眼可读。
+    include_sub_departments:
+      filters.value.department_id !== null && filters.value.include_sub_departments,
   })
 }
 
 function onReset(): void {
-  filters.value = { keyword: '', status: '', department_id: '' }
+  filters.value = {
+    keyword: '',
+    status: '',
+    department_id: null,
+    include_sub_departments: false,
+  }
   reload({})
 }
 
@@ -110,7 +143,8 @@ interface UserDraft {
   username: string
   password: string
   display_name: string
-  department_id: string
+  /** `null` 表示未分配部门（而不是空串）—— 与后端 `department_id: null` 同义。 */
+  department_id: ID | null
   phone: string
   email: string
   role_ids: ID[]
@@ -122,12 +156,20 @@ function emptyDraft(): UserDraft {
     username: '',
     password: '',
     display_name: '',
-    department_id: '',
+    department_id: null,
     phone: '',
     email: '',
     role_ids: [],
   }
 }
+
+/** 角色下拉的选项。带上编码，因为同名角色只能靠它区分。 */
+const roleOptions = computed<Array<{ label: string; value: ID }>>(() =>
+  rolesStore.picker.map((role) => ({
+    label: `${role.role_name}（${role.role_code}）`,
+    value: role.id,
+  })),
+)
 
 /**
  * 草稿**始终是对象**，另用 `draftOpen` 控制显隐。
@@ -152,8 +194,50 @@ const draftError = computed<string | null>(() => {
   return null
 })
 
+/**
+ * 把 NSelect / NTreeSelect 的联合类型收窄回 `ID`。
+ *
+ * 选项的 `value` 全部是后端下发的 ID **字符串**，所以 `String(item)` 是恒等映射，
+ * 不做任何数值转换（`types/common.ts` 明确禁止把业务 ID 落到 `number` 上，
+ * 超过 `Number.MAX_SAFE_INTEGER` 会静默丢位）。
+ */
+function toIdList(value: SelectValue): ID[] {
+  if (Array.isArray(value)) return value.map((item) => String(item))
+  return value === null ? [] : [String(value)]
+}
+
+function toSingleId(value: SelectValue): ID | null {
+  if (Array.isArray(value)) {
+    const first = value[0]
+    return first === undefined ? null : String(first)
+  }
+  return value === null ? null : String(value)
+}
+
+/**
+ * 筛选器里的部门变化。
+ *
+ * 清空部门时必须**同时**关掉"包含下级"：否则开关看起来还是打开的，
+ * 但请求里已经不带 `include_sub_departments`（`onSearch` 会忽略它），
+ * 界面状态与实际生效的筛选条件不一致 —— 下次有人接着说
+ * "勾着包含下级呢，怎么没查出来"，问题就会指向后端。
+ */
+function onFilterDepartment(value: SelectValue): void {
+  filters.value.department_id = toSingleId(value)
+  if (filters.value.department_id === null) filters.value.include_sub_departments = false
+}
+
+function onDraftDepartment(value: SelectValue): void {
+  draft.value.department_id = toSingleId(value)
+}
+
+function onDraftRoles(value: SelectValue): void {
+  draft.value.role_ids = toIdList(value)
+}
+
 function startCreate(): void {
   draft.value = emptyDraft()
+  // 沿用当前筛选的部门：在"某部门"筛选下新建用户，多半就是想建在那个部门。
   draft.value.department_id = filters.value.department_id
   draftOpen.value = true
   // 角色清单是懒加载的（不在首屏拉），打开弹窗时才要。
@@ -166,7 +250,7 @@ function startEdit(user: User): void {
     username: user.username,
     password: '',
     display_name: user.display_name,
-    department_id: user.department_id ?? '',
+    department_id: user.department_id ?? null,
     phone: user.phone ?? '',
     email: user.email ?? '',
     role_ids: [],
@@ -190,7 +274,7 @@ async function saveDraft(): Promise<void> {
         username: current.username.trim(),
         password: current.password,
         display_name: current.display_name.trim(),
-        department_id: current.department_id === '' ? null : current.department_id,
+        department_id: current.department_id,
         phone: nullable(current.phone),
         email: nullable(current.email),
         role_ids: current.role_ids.length > 0 ? current.role_ids : undefined,
@@ -199,7 +283,7 @@ async function saveDraft(): Promise<void> {
     } else {
       await api.updateUser(current.id, {
         display_name: current.display_name.trim(),
-        department_id: current.department_id === '' ? null : current.department_id,
+        department_id: current.department_id,
         phone: nullable(current.phone),
         email: nullable(current.email),
       })
@@ -213,13 +297,6 @@ async function saveDraft(): Promise<void> {
   } finally {
     saving.value = false
   }
-}
-
-function toggleRole(id: ID): void {
-  const current = draft.value
-  current.role_ids = current.role_ids.includes(id)
-    ? current.role_ids.filter((item) => item !== id)
-    : [...current.role_ids, id]
 }
 
 // ---------------------------------------------------------------- 禁用 / 启用 / 重置口令
@@ -312,16 +389,25 @@ onMounted(async () => {
       </label>
       <label class="field">
         <span class="field__label">部门</span>
-        <select v-model="filters.department_id" class="field__control">
-          <option value="">全部</option>
-          <option
-            v-for="option in organizationStore.options"
-            :key="option.id"
-            :value="option.id"
-          >
-            {{ option.label }}
-          </option>
-        </select>
+        <NTreeSelect
+          v-bind="DEPARTMENT_TREE_FIELDS"
+          :value="filters.department_id"
+          :options="organizationStore.tree"
+          clearable
+          filterable
+          placeholder="全部"
+          @update:value="onFilterDepartment"
+        />
+      </label>
+      <label class="field">
+        <span class="field__label">部门范围</span>
+        <NCheckbox
+          :checked="filters.include_sub_departments"
+          :disabled="filters.department_id === null"
+          @update:checked="(checked: boolean) => (filters.include_sub_departments = checked)"
+        >
+          包含下级部门
+        </NCheckbox>
       </label>
     </SearchForm>
 
@@ -462,12 +548,15 @@ onMounted(async () => {
         </label>
         <label class="field">
           <span class="field__label">所属部门</span>
-          <select v-model="draft.department_id" class="field__control">
-            <option value="">未分配</option>
-            <option v-for="option in organizationStore.options" :key="option.id" :value="option.id">
-              {{ option.label }}
-            </option>
-          </select>
+          <NTreeSelect
+            v-bind="DEPARTMENT_TREE_FIELDS"
+            :value="draft.department_id"
+            :options="organizationStore.tree"
+            clearable
+            filterable
+            placeholder="未分配"
+            @update:value="onDraftDepartment"
+          />
         </label>
 
         <label class="field">
@@ -478,23 +567,23 @@ onMounted(async () => {
           <span class="field__label">邮箱</span>
           <input v-model.trim="draft.email" class="field__control" placeholder="选填" />
         </label>
-      </div>
 
-      <div v-if="!isEditing" class="fieldset">
-        <div class="fieldset__title">初始角色</div>
-        <div class="fieldset__checks">
-          <label v-for="role in rolesStore.picker" :key="role.id" class="check">
-            <input
-              type="checkbox"
-              :checked="draft.role_ids.includes(role.id)"
-              @change="toggleRole(role.id)"
-            />
-            <span>{{ role.role_name }}</span>
-            <code class="muted">{{ role.role_code }}</code>
-          </label>
-          <p v-if="rolesStore.pickerLoading" class="muted">加载中…</p>
-          <p v-else-if="rolesStore.picker.length === 0" class="muted">没有可选角色</p>
-        </div>
+        <label v-if="!isEditing" class="field field--full">
+          <span class="field__label">角色</span>
+          <NSelect
+            :value="draft.role_ids"
+            multiple
+            filterable
+            :options="roleOptions"
+            :loading="rolesStore.pickerLoading"
+            :max-tag-count="3"
+            placeholder="可多选"
+            @update:value="onDraftRoles"
+          />
+          <span class="hint">
+            为账号指定一个或多个角色；不选表示暂不授予任何权限。角色较多时可直接输入名称筛选。
+          </span>
+        </label>
       </div>
 
       <p class="hint">
@@ -548,25 +637,3 @@ onMounted(async () => {
     </FormDialog>
   </PageContainer>
 </template>
-
-<style scoped>
-.fieldset {
-  padding: 12px 14px;
-  border: 1px solid var(--vctn-border);
-  border-radius: var(--vctn-radius);
-  background: var(--vctn-fill-muted);
-}
-
-.fieldset__title {
-  margin-bottom: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--vctn-text-weak);
-}
-
-.fieldset__checks {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-</style>

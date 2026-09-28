@@ -23,7 +23,9 @@ export function usePageQuery<T>(fetcher: (query: PageQuery) => Promise<PageResul
   let latestToken = 0
 
   /** 触发一次加载。`filters` 变化后先回到第 1 页。 */
-  async function reload(filters: Record<string, string | number | null> = {}): Promise<void> {
+  async function reload(
+    filters: Record<string, string | number | boolean | null> = {},
+  ): Promise<void> {
     const token = latestToken + 1
     latestToken = token
     loading.value = true

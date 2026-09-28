@@ -63,6 +63,14 @@ class UserListQuery(BaseModel):
     department_id: SnowflakeId | None = Field(
         default=None, description="按部门过滤（与数据范围取交集）"
     )
+    include_sub_departments: bool = Field(
+        default=False,
+        description=(
+            "`department_id` 是否连带其全部下级部门。默认 `false`（精确匹配该部门），"
+            "`true` 时按「该部门及其所有后代」筛选（DD-07 `DEPARTMENT_CHILDREN` 语义）。"
+            "不传 `department_id` 时本字段无任何作用。"
+        ),
+    )
     status: UserStatus | None = Field(default=None, description="按状态过滤")
     keyword: str | None = Field(
         default=None, max_length=64, description="按登录名 / 显示名模糊匹配"
