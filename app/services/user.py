@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -266,6 +267,8 @@ class UserService:
         include_sub_departments: bool = False,
         status: UserStatus | None = None,
         keyword: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> UserPage:
         """分页列出范围内用户。
 
@@ -282,11 +285,19 @@ class UserService:
         必须表现为"查不到人"，而不是"这个筛选项没生效" ——
         后者会把一次笔误变成一次全量导出。该不变量在
         `UserRepository._scoped_conditions` 里由显式 `false()` 兜住。
+
+        `created_from` / `created_to` 按 `created_at` 过滤，两端**含**边界。
+        区间反了直接 400：与 `LogQueryService` 的
+        `created_from 不能晚于 created_to` 保持同一口径 ——
+        "查不到人"和"参数写反了"是两件事，前者会让人反复调条件，
+        后者一次就能说清。
         """
         if page_num < 1:
             raise BadRequestError("pageNum 必须大于等于 1")
         if not 1 <= page_size <= 100:
             raise BadRequestError("pageSize 必须在 1..100 之间")
+        if created_from is not None and created_to is not None and created_from > created_to:
+            raise BadRequestError("created_from 不能晚于 created_to")
 
         department_ids: frozenset[int] | None = None
         if department_id is not None:
@@ -304,9 +315,16 @@ class UserService:
             department_ids=department_ids,
             status=status,
             keyword=keyword,
+            created_from=created_from,
+            created_to=created_to,
         )
         total = await self._users.count_in_scope(
-            scope, department_ids=department_ids, status=status, keyword=keyword
+            scope,
+            department_ids=department_ids,
+            status=status,
+            keyword=keyword,
+            created_from=created_from,
+            created_to=created_to,
         )
         return UserPage(items=items, total=total, page_num=page_num, page_size=page_size)
 

@@ -437,11 +437,11 @@ onMounted(() => {
 
       <template #actions="{ row }">
         <span class="table-actions">
-          <PermissionButton code="dictionary:update" type="text" @click="startEditType(row)">
+          <PermissionButton code="dictionary:update" type="text-primary" @click="startEditType(row)">
             <NIcon :component="CreateOutline" />
             编辑
           </PermissionButton>
-          <PermissionButton code="dictionary:delete" type="text" @click="pendingDelete = row">
+          <PermissionButton code="dictionary:delete" type="text-danger" @click="pendingDelete = row">
             <NIcon :component="TrashOutline" />
             删除
           </PermissionButton>
@@ -510,8 +510,8 @@ onMounted(() => {
             <td><code class="muted">{{ item.id }}</code></td>
             <td>
               <span class="table-actions">
-                <PermissionButton code="dictionary:item-update" type="text" @click="startEditItem(item)">编辑</PermissionButton>
-                <PermissionButton code="dictionary:item-delete" type="text" @click="pendingDeleteItem = item">删除</PermissionButton>
+                <PermissionButton code="dictionary:item-update" type="text-primary" @click="startEditItem(item)">编辑</PermissionButton>
+                <PermissionButton code="dictionary:item-delete" type="text-danger" @click="pendingDeleteItem = item">删除</PermissionButton>
               </span>
             </td>
           </tr>

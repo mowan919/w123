@@ -330,11 +330,11 @@ onMounted(() => {
 
       <template #actions="{ row }">
         <span class="table-actions">
-          <PermissionButton code="role:update" type="text" @click="startEdit(row)">
+          <PermissionButton code="role:update" type="text-primary" @click="startEdit(row)">
             <NIcon :component="CreateOutline" />
             编辑
           </PermissionButton>
-          <PermissionButton code="role:delete" type="text" @click="pendingDelete = row">
+          <PermissionButton code="role:delete" type="text-danger" @click="pendingDelete = row">
             <NIcon :component="TrashOutline" />
             删除
           </PermissionButton>

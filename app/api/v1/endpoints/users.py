@@ -73,6 +73,9 @@ async def list_users(
 
     `include_sub_departments=true` 时 `department_id` 连带其全部后代
     （与角色数据范围的 `DEPARTMENT_CHILDREN` 走同一段递归展开实现）。
+
+    `created_from` / `created_to` 按创建时间过滤（两端含边界，UTC）。
+    区间反了返回 400 而不是空列表 —— 见 `UserService.list_users`。
     """
     page = await service.list_users(
         actor=actor,
@@ -82,6 +85,8 @@ async def list_users(
         include_sub_departments=query.include_sub_departments,
         status=query.status,
         keyword=query.keyword,
+        created_from=query.created_from,
+        created_to=query.created_to,
     )
     # 领域对象 → 响应 DTO：分页协议（`{list,total,pageNum,pageSize}`）是
     # **对外契约**，不能让服务层的 `items/page_num/...` 直接漏到 HTTP 层。

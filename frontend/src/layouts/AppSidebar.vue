@@ -54,6 +54,10 @@ const ICON_BY_NAME: Record<string, Component> = {
   department: BusinessOutline,
   role: ShieldCheckmarkOutline,
   permission: KeyOutline,
+  // 「权限资源」与「权限配置」是相邻的两件事（前者定义资源、后者把资源授给角色），
+  // 用两个不同图标，扫一眼就能分清。名称必须与 `seed_data.MENUS` 里写的
+  // `icon` 字段逐字一致 —— 对不上只会静默回退到编码表，看不出配错了。
+  'permission-resource': AlbumsOutline,
   session: DesktopOutline,
   dictionary: BookOutline,
   param: OptionsOutline,

@@ -90,6 +90,7 @@ async def make_user(
     must_change_password: bool = False,
     failed_login_count: int = 0,
     locked_until: datetime | None = None,
+    created_at: datetime | None = None,
 ) -> AdminUser:
     """创建用户（直接写库，不走 Service）。
 
@@ -100,6 +101,11 @@ async def make_user(
     `password_changed_at` 默认 **None**，即"改密时间未知"。
     按 `is_password_expired` 的口径这会被视为**已过期**（fail-closed），
     因此认证相关用例应显式传入 `utc_now()` 表示"刚改过密码"。
+
+    `created_at` 默认 **None**，即交给模型默认值（`utc_now()`）。
+    需要"创建时间筛选"这类**按时间取边界**的用例必须显式给值：
+    依赖 `utc_now()` 只能测出"大约在某个区间"，而边界是否**含端点**
+    恰恰是这类筛选最容易写错、也最难在界面上发现的地方。
     """
     resolved_hash = password_hash_for(password) if password is not None else password_hash
     user = AdminUser(
@@ -113,6 +119,7 @@ async def make_user(
         locked_until=locked_until,
         password_changed_at=password_changed_at,
         must_change_password=must_change_password,
+        **({} if created_at is None else {"created_at": created_at}),
     )
     session.add(user)
     await session.flush()

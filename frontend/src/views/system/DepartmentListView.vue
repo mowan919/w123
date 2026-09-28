@@ -253,26 +253,20 @@ boot()
         <span class="tag" :class="row.node.status === 'ACTIVE' ? 'tag--active' : 'tag--disabled'">
           {{ row.node.status === 'ACTIVE' ? '启用' : '禁用' }}
         </span>
-        <!--
-          `id` 与 `parent_id` 后端一直在返回，此前只被内部当成 key / 草稿字段。
-          它们对外是**沟通坐标**：报障时"把部门 ID 发我"比"第三层左边那个"
-          可靠得多。层级本身已由缩进表达，这里给的是原始值。
-        -->
-        <code class="tree__code">ID {{ row.node.id }} · 上级 {{ row.node.parent_id ?? '—' }}</code>
 
         <span class="tree__actions">
-          <PermissionButton code="department:create" type="text" @click="startCreate(row.node.id)">
+          <PermissionButton code="department:create" type="text-primary" @click="startCreate(row.node.id)">
             <NIcon :component="GitBranchOutline" />
             新增下级
           </PermissionButton>
-          <PermissionButton code="department:update" type="text" @click="startEdit(row.node)">
+          <PermissionButton code="department:update" type="text-primary" @click="startEdit(row.node)">
             <NIcon :component="CreateOutline" />
             编辑
           </PermissionButton>
           <PermissionButton
             v-if="row.node.status === 'ACTIVE'"
             code="department:disable"
-            type="text"
+            type="text-danger"
             @click="pendingDisable = row.node"
           >
             <NIcon :component="RemoveCircleOutline" />

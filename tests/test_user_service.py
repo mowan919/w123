@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -228,6 +229,159 @@ class TestUserListScope:
         page = await UserService(db_session).list_users(actor=actor, page_size=100)
         assert page.total == 1
         assert page.items[0].username == "self-user"
+
+
+# ---------------------------------------------------------------------------
+# 创建时间筛选
+# ---------------------------------------------------------------------------
+
+#: 本组用例自用的 ID 段。
+#:
+#: 刻意避开 `_seed_tree` 用的部门 1..6 / 角色 9001..9003 —— 那些是**共享远程库**
+#: 里种子数据也会占用的值，撞上就是 `uq_roles_role_code_active` 之类的唯一键冲突
+#: （已在 `docs/DESIGN-DECISIONS.md` 记为 OPERATION-11-01）。
+#: 时间筛选这一组不需要角色，只要部门与用户，因此自建一份即可，
+#: 不受那件事影响，也不去动既有的 `_seed_tree`。
+_CR_DEPT_ROOT = 880101
+_CR_DEPT_CHILD = 880102
+_CR_USER_BASE = 880201
+
+
+class TestUserListCreatedRange:
+    """`created_from` / `created_to`。
+
+    这一组钉的是三件**不会报错**的事：
+
+    1. **两端含边界**。时间比较里 `>` 与 `>=` 只差一个字符，
+       用 `>` 时"筛 3 月 1 日到 3 月 1 日"会返回空 ——
+       用户只会以为那天没人创建账号，而不是怀疑比较符号。
+    2. **区间反了要 400**，不是空列表。空列表会让人反复调条件；
+       400 一次就能说清是参数写反了（与 `LogQueryService` 同一口径）。
+    3. **与数据范围是"与"的关系**。时间条件写在 `_scoped_conditions` 里，
+       任何一条都不能把范围条件顶掉 —— 否则"按时间筛"会变成一次越权导出。
+    """
+
+    #: 固定锚点，不取 `utc_now()`：边界用例必须能精确复现。
+    ANCHOR = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+    async def _seed(self, db_session) -> None:
+        """一棵两层部门 + 三个创建时间相差 1 秒的用户（都在子部门下）。
+
+        时间条件单测时必须让结果集**只由本用例的数据决定**，
+        所以要有一个能与库里既有数据区分开的维度。这里用部门：
+        种子数据里的用户不会落在 `_CR_DEPT_CHILD` 下。
+        """
+        await make_department(db_session, department_id=_CR_DEPT_ROOT, department_code="CR-ROOT")
+        await make_department(
+            db_session,
+            department_id=_CR_DEPT_CHILD,
+            department_code="CR-CHILD",
+            parent_id=_CR_DEPT_ROOT,
+        )
+        await make_user(
+            db_session,
+            user_id=_CR_USER_BASE + 1,
+            username="cr-before",
+            department_id=_CR_DEPT_CHILD,
+            created_at=self.ANCHOR - timedelta(seconds=1),
+        )
+        await make_user(
+            db_session,
+            user_id=_CR_USER_BASE + 2,
+            username="cr-exact",
+            department_id=_CR_DEPT_CHILD,
+            created_at=self.ANCHOR,
+        )
+        await make_user(
+            db_session,
+            user_id=_CR_USER_BASE + 3,
+            username="cr-after",
+            department_id=_CR_DEPT_CHILD,
+            created_at=self.ANCHOR + timedelta(seconds=1),
+        )
+
+    async def test_both_ends_are_inclusive(self, db_session) -> None:
+        """区间只覆盖锚点这一瞬间时，命中**恰好等于**锚点的那一条。"""
+        await self._seed(db_session)
+        page = await UserService(db_session).list_users(
+            actor=ROOT_ACTOR,
+            department_id=_CR_DEPT_CHILD,
+            created_from=self.ANCHOR,
+            created_to=self.ANCHOR,
+            page_size=100,
+        )
+
+        assert [user.username for user in page.items] == ["cr-exact"]
+        # `total` 必须与列表同条件 —— 用 `>` / `<` 写错时两边会一起错，
+        # 所以这里同时断言分页总数，防止"列表对了但计数没跟着变"。
+        assert page.total == 1
+
+    async def test_from_only_excludes_earlier_users(self, db_session) -> None:
+        await self._seed(db_session)
+        page = await UserService(db_session).list_users(
+            actor=ROOT_ACTOR,
+            department_id=_CR_DEPT_CHILD,
+            created_from=self.ANCHOR,
+            page_size=100,
+        )
+
+        assert {user.username for user in page.items} == {"cr-exact", "cr-after"}
+
+    async def test_to_only_excludes_later_users(self, db_session) -> None:
+        await self._seed(db_session)
+        page = await UserService(db_session).list_users(
+            actor=ROOT_ACTOR,
+            department_id=_CR_DEPT_CHILD,
+            created_to=self.ANCHOR,
+            page_size=100,
+        )
+
+        assert {user.username for user in page.items} == {"cr-before", "cr-exact"}
+
+    async def test_no_range_returns_everything_in_scope(self, db_session) -> None:
+        await self._seed(db_session)
+        page = await UserService(db_session).list_users(
+            actor=ROOT_ACTOR, department_id=_CR_DEPT_CHILD, page_size=100
+        )
+
+        assert page.total == 3
+
+    async def test_reversed_range_is_rejected_not_silently_swapped(self, db_session) -> None:
+        """区间反了要 400。
+
+        静默交换两端是最糟的处理：用户以为筛的是自己填的区间，
+        实际筛的是另一个，而界面上没有任何迹象。
+        """
+        await self._seed(db_session)
+        service = UserService(db_session)
+
+        with pytest.raises(BadRequestError, match="created_from"):
+            await service.list_users(
+                actor=ROOT_ACTOR,
+                created_from=self.ANCHOR + timedelta(days=1),
+                created_to=self.ANCHOR,
+                page_size=100,
+            )
+
+    @pytest.mark.security
+    async def test_range_does_not_widen_data_scope(self, db_session) -> None:
+        """时间条件与数据范围取交集：放宽时间不能把范围外的人拉进来。
+
+        三个用户都在**子部门**里；操作者的范围是父部门的 `DEPARTMENT`（不含下级）。
+        时间窗口开到前后一年都覆盖它们，但只要范围条件还在，就一条都不该返回。
+        """
+        await self._seed(db_session)
+        service = UserService(db_session)
+
+        page = await service.list_users(
+            actor=_dept_admin(_CR_DEPT_ROOT, scope=DataScope.DEPARTMENT),
+            created_from=self.ANCHOR - timedelta(days=365),
+            created_to=self.ANCHOR + timedelta(days=365),
+            page_size=100,
+        )
+
+        assert page.items == []
+        assert page.total == 0
 
 
 # ---------------------------------------------------------------------------

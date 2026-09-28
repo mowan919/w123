@@ -157,7 +157,7 @@ onMounted(() => {
       </template>
 
       <template #actions="{ row }">
-        <PermissionButton code="trace:read" type="text" @click="openDetail(row.trace_id)">
+        <PermissionButton code="trace:read" type="text-primary" @click="openDetail(row.trace_id)">
           <NIcon :component="EyeOutline" />
           明细
         </PermissionButton>

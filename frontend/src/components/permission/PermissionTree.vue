@@ -20,15 +20,22 @@ import { computed, ref } from 'vue'
 import { NButton, NCheckbox, NIcon } from 'naive-ui'
 import { ChevronDownOutline, ChevronForwardOutline } from '@vicons/ionicons5'
 import {
+  ANOMALY_HINT,
+  applyBulkSelection,
   applyCascade,
   buildPermissionTree,
+  collectAnomalies,
   expandableRowKeys,
   flattenTree,
   grantKey,
   keysOfTree,
   selectionToSet,
 } from '@/composables/usePermissionTree'
-import type { PermissionTreeNode } from '@/composables/usePermissionTree'
+import type {
+  BulkSelectionMode,
+  PermissionTreeNode,
+  TreeAnomaly,
+} from '@/composables/usePermissionTree'
 import { GRANT_KIND_LABEL } from '@/types'
 import type { GrantSelection } from '@/types'
 import type { ID } from '@/types/common'
@@ -69,6 +76,28 @@ const grantedSet = computed(() => selectionToSet(props.modelValue))
 const allKeys = computed(() => keysOfTree(tree.value))
 const grantedTotal = computed(() => allKeys.value.filter((key) => grantedSet.value.has(key)).length)
 
+/**
+ * 批量按钮是否不可用。
+ *
+ * 清单为空（资源还没取回来）时也必须禁用：此时"全选"什么都不会发生，
+ * 但用户会以为已经选完了 —— 点完看不到变化比按钮灰着更难排查。
+ */
+const bulkDisabled = computed(() => props.disabled || allKeys.value.length === 0)
+
+/**
+ * 数据异常分组（无导航入口的页面 / 上级不存在的菜单）。
+ *
+ * 空数组是**正常状态**。非空时要主动说清楚，因为这两组出现在树里
+ * 看起来像是"系统自带的分组"，实际是需要管理员去修的配置问题 ——
+ * 不说的话，用户只会看到一个名叫「未挂载菜单的页面」的组，然后来问
+ * "为什么会有这个"。
+ */
+const anomalies = computed(() => collectAnomalies(tree.value))
+
+function anomalyText(kind: TreeAnomaly, count: number): string {
+  return `${ANOMALY_HINT[kind]}（${count} 项）`
+}
+
 function kindLabel(kind: PermissionTreeNode['kind']): string {
   return kind === null ? '分组' : GRANT_KIND_LABEL[kind]
 }
@@ -99,6 +128,18 @@ function expandAll(): void {
   collapsed.value = new Set()
 }
 
+/**
+ * 批量选择。
+ *
+ * 与单点勾选一样**只改本地选择、不直接提交** —— 是否落库仍由页面的
+ * 「保存权限」决定。这里若顺手提交，一次误点"取消全部"就会立刻清空
+ * 一个角色的全部授权，而这类操作没有撤销入口。
+ */
+function bulk(mode: BulkSelectionMode): void {
+  if (props.disabled) return
+  emit('update:modelValue', applyBulkSelection(props.modelValue, tree.value, mode))
+}
+
 /** 分支的授权计数：`已授权/总数`，含该分支自身。 */
 function countText(row: { grantedCount: number; totalCount: number }): string {
   return `${row.grantedCount}/${row.totalCount}`
@@ -111,6 +152,15 @@ function countText(row: { grantedCount: number; totalCount: number }): string {
       <span class="ptree-head__summary">
         已授权 <strong>{{ grantedTotal }}</strong> / {{ allKeys.length }} 项
       </span>
+      <span class="ptree-head__bulk">
+        <NButton size="tiny" quaternary :disabled="bulkDisabled" @click="bulk('all')">全选</NButton>
+        <NButton size="tiny" quaternary :disabled="bulkDisabled" @click="bulk('none')">
+          取消全部
+        </NButton>
+        <NButton size="tiny" quaternary :disabled="bulkDisabled" @click="bulk('invert')">
+          反选
+        </NButton>
+      </span>
       <span class="ptree-head__spacer" />
       <NButton size="tiny" quaternary :disabled="disabled" @click="expandAll">展开全部</NButton>
       <NButton size="tiny" quaternary :disabled="disabled" @click="collapseAll">收起全部</NButton>
@@ -120,6 +170,18 @@ function countText(row: { grantedCount: number; totalCount: number }): string {
       勾选框表示该资源「自身」是否授权；点一次会把同一状态带给它下面的所有资源。
       分支后的计数（如 <code>5/6</code>）表示该分支下已授权的项数，含它自己 ——
       页面已授权但按钮只勾了一部分时，这里就会显示成这样。
+      「全选 / 取消全部 / 反选」作用于**上方清单里的全部资源**，改完仍需点「保存权限」才会生效。
+    </p>
+
+    <!--
+      异常分组说明。只在真的出现异常时渲染 —— 正常情况下这一段根本不存在，
+      而不是渲染一个空壳。
+    -->
+    <p v-if="anomalies.length > 0" class="ptree-anomaly">
+      <strong>配置需要处理：</strong>
+      <span v-for="item in anomalies" :key="item.kind" class="ptree-anomaly__item">
+        {{ anomalyText(item.kind, item.count) }}
+      </span>
     </p>
 
     <div v-if="rows.length === 0" class="ptree-empty">没有可授权的资源</div>
@@ -129,7 +191,10 @@ function countText(row: { grantedCount: number; totalCount: number }): string {
         v-for="row in rows"
         :key="row.key"
         class="ptree__row"
-        :class="{ 'ptree__row--group': row.node.kind === null }"
+        :class="{
+          'ptree__row--group': row.node.kind === null,
+          'ptree__row--anomaly': row.node.anomaly !== undefined,
+        }"
         :style="{ paddingLeft: `${8 + row.depth * 22}px` }"
       >
         <button
@@ -155,6 +220,13 @@ function countText(row: { grantedCount: number; totalCount: number }): string {
 
         <span class="ptree__kind" :class="`ptree__kind--${(row.node.kind ?? 'GROUP').toLowerCase()}`">
           {{ kindLabel(row.node.kind) }}
+        </span>
+        <span
+          v-if="row.node.anomaly !== undefined"
+          class="ptree__flag"
+          title="这不是一个正常分组，而是需要处理的配置问题"
+        >
+          待处理
         </span>
         <span class="ptree__name">{{ row.node.name }}</span>
         <code v-if="row.node.code" class="ptree__code">{{ row.node.code }}</code>
@@ -193,11 +265,51 @@ function countText(row: { grantedCount: number; totalCount: number }): string {
   flex: 1;
 }
 
+/* 左侧「已授权 N / M 项」是只读读数，右侧三个按钮会**改内容**
+   （其中"取消全部"还是破坏性的），中间用 1px 竖线把"读数"与"能点的东西"分开。
+   没有这条线，一行里五个同款小号按钮挨在一起，看不出哪几个会动数据。
+
+   ⚠️ 这条线加在 `.ptree-head__bulk` 的**左边**，所以它实际落在
+   「摘要 | 批量」之间，而不是「批量 | 展开/收起」之间 —— DOM 顺序是
+   摘要 → 批量 → 弹性空白 → 展开/收起。展开/收起 已被弹性空白推到最右，
+   中间隔着整行空白，本来就不需要再加线；窄到弹性空白被压没时，
+   这条线顺带成了「批量 | 展开/收起」的边界。
+   两种情形下它都不会落在某一组**内部**，这正是它的作用。
+   （`grantTrees.spec.ts` 有一条用例钉住这个 DOM 顺序 —— 顺序一变，线就跑到别处去了。） */
+.ptree-head__bulk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--vctn-border);
+}
+
 .ptree-head__hint {
   margin: 0 0 8px;
   font-size: 12px;
   color: var(--vctn-text-weak);
   line-height: 1.6;
+}
+
+/* 异常分组的说明条。用 warn 色而不是 danger：
+   这两组不影响授权能否保存（页面照样可勾、可授权），
+   只是"配置没配完"，用报错色会让人以为保存会失败。 */
+.ptree-anomaly {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: var(--vctn-radius-sm);
+  background: var(--vctn-warn-weak);
+  color: var(--vctn-warn);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ptree-anomaly__item {
+  flex: none;
 }
 
 .ptree-empty {
@@ -230,8 +342,35 @@ function countText(row: { grantedCount: number; totalCount: number }): string {
   background: var(--vctn-fill-muted);
 }
 
+/* 分组节点。树里 `kind === null` 的**只可能是**异常分组 ——
+   菜单分组（系统管理 / 日志管理）是 MENU 资源，走的是 `kind === 'MENU'`。
+   所以这里不需要"普通分组"的样式分支，加粗即是异常分组的外观。 */
 .ptree__row--group {
   font-weight: 600;
+}
+
+/* 异常分组整行加底色，扫一眼就能找到它在哪一段 ——
+   列表可能很长（十几个菜单 + 几十个资源），只靠加粗在滚动时容易错过。 */
+.ptree__row--anomaly {
+  background: var(--vctn-warn-weak);
+}
+
+/* 这条不是冗余：`.ptree__row:hover` 是 (0,2,0)，比 `.ptree__row--anomaly`
+   的 (0,1,0) 权重高 —— 不写它，鼠标一划过这行底色就被 hover 色顶掉，
+   而"鼠标停在上面"恰恰是管理员准备处理它的时候。 */
+.ptree__row--anomaly:hover {
+  background: var(--vctn-warn-weak);
+}
+
+.ptree__flag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--vctn-radius-sm);
+  background: var(--vctn-warn);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
 }
 
 .ptree__caret {

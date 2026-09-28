@@ -185,6 +185,15 @@ MENUS: list[tuple[str, str, str | None, str | None, int]] = [
     ("system:department", "部门管理", "system:system", "department", 30),
     ("system:role", "角色管理", "system:system", "role", 40),
     ("system:permission", "权限配置", "system:system", "permission", 50),
+    # ⚠️ 这一行曾经**整条缺失**。`PAGES` 里有 `system:permission-resource:page`，
+    # 但没有任何 MENU 挂载它 —— 后果有两层：
+    #   1. 侧边栏里没有入口，`/system/permission-resources` 只能手敲 URL 进
+    #      （路由本身照旧存在：动态路由是按 PAGE 契约生成的，不看菜单）；
+    #   2. 权限配置页的授权树把它归进「未挂载菜单的页面」分组 ——
+    #      看起来像数据坏了，其实只是少了一行。
+    # 排序 55 落在「权限配置」(50) 与「会话管理」(60) 之间：资源定义与
+    # 角色授权是相邻的两步操作，中间不该夹别的菜单。
+    ("system:permission-resource", "权限资源", "system:system", "permission-resource", 55),
     ("system:session", "会话管理", "system:system", "session", 60),
     ("system:dictionary", "字典管理", "system:system", "dictionary", 70),
     ("system:param", "系统参数", "system:system", "param", 80),
@@ -194,11 +203,17 @@ MENUS: list[tuple[str, str, str | None, str | None, int]] = [
 ]
 
 #: 菜单 ↔ 页面关联。菜单点进去若没有任何关联 PAGE，守卫会直接 403。
+#:
+#: ⚠️ 这份清单必须覆盖 `PAGES` 里的**每一个**页面，否则该页面会在权限配置页
+#: 掉进「未挂载菜单的页面」分组、并且在侧边栏里没有任何入口。
+#: `tests/test_seed_data.py::test_every_page_is_mounted_by_some_menu` 钉住这一条 ——
+#: 本轮之前正是它缺失，`system:permission-resource:page` 静静少了一个入口。
 MENU_PAGES: list[tuple[str, str]] = [
     ("system:user", "system:user:page"),
     ("system:department", "system:department:page"),
     ("system:role", "system:role:page"),
     ("system:permission", "system:permission:page"),
+    ("system:permission-resource", "system:permission-resource:page"),
     ("system:session", "system:session:page"),
     ("system:dictionary", "system:dictionary:page"),
     ("system:param", "system:param:page"),

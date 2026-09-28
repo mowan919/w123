@@ -35,6 +35,32 @@ import type { GrantKind, GrantSelection, PermissionResource } from '@/types'
  * 它们是领域概念（四类二元权限），不是这个模块私有的形状。
  */
 
+/**
+ * 数据异常分组。
+ *
+ * 树里 `kind === null` 的节点**只可能是**这两类分组 —— 菜单分组本身
+ *（`系统管理` / `日志管理`）是 MENU 资源，`kind` 为 `'MENU'`。
+ * 因此"是不是异常"不需要额外的布尔字段去猜。
+ *
+ * - `UNMOUNTED_PAGE`：页面没有被任何菜单挂载 ⇒ 侧边栏里没有入口，
+ *   只能直接输入 URL 访问（判权只认 Page，所以授权本身有效）；
+ * - `ORPHAN_MENU`：菜单的上级不存在（分类清单被截断或数据里有坏引用）
+ *   ⇒ 它会被前端提到根层，导航层级与配置的不一致。
+ */
+export type TreeAnomaly = 'UNMOUNTED_PAGE' | 'ORPHAN_MENU'
+
+/** 异常分组的显示名。**唯一来源** —— 组件与用例都从这里取或钉住它。 */
+export const ANOMALY_GROUP_NAME: Record<TreeAnomaly, string> = {
+  UNMOUNTED_PAGE: '未挂载菜单的页面',
+  ORPHAN_MENU: '未归入上级菜单的菜单',
+}
+
+/** 一句话说明"这组东西为什么在这里、要怎么办"，直接渲染给管理员看。 */
+export const ANOMALY_HINT: Record<TreeAnomaly, string> = {
+  UNMOUNTED_PAGE: '没有导航入口，只能直接输入地址访问；需要入口请到「权限资源」页把它挂到某个菜单下',
+  ORPHAN_MENU: '上级菜单不存在，导航里会被提到顶层；请到「权限资源」页修正它的上级',
+}
+
 export interface PermissionTreeNode {
   /**
    * `null` 表示**纯分组标签**（例如「未挂载菜单的页面」）：
@@ -46,6 +72,8 @@ export interface PermissionTreeNode {
   name: string
   /** 副标题：接口显示 `GET /sessions`，其余为空串。 */
   meta: string
+  /** 见 `TreeAnomaly`。只有分组节点可能带它。 */
+  anomaly?: TreeAnomaly
   children: PermissionTreeNode[]
 }
 
@@ -182,8 +210,9 @@ export function buildPermissionTree(input: PermissionTreeInput): PermissionTreeN
       kind: null,
       id: null,
       code: '',
-      name: '未归入上级菜单的菜单',
-      meta: '',
+      name: ANOMALY_GROUP_NAME.ORPHAN_MENU,
+      meta: '上级菜单缺失',
+      anomaly: 'ORPHAN_MENU',
       children: [],
     }
     for (const menu of leftovers) {
@@ -192,6 +221,17 @@ export function buildPermissionTree(input: PermissionTreeInput): PermissionTreeN
     roots.push(orphanGroup)
   }
 
+  // 没有被任何菜单挂载的页面单独归到「未挂载菜单的页面」分组下 ——
+  // 它们依然是可授权的 PAGE（`09 §4` 判权只认 Page），
+  // 只是当前没有导航入口，漏掉它们会让"页面明明授权了却不生效"无从排查。
+  //
+  // ⚠️ 这一组**正常情况应当是空的**。它出现只有两种可能：
+  //   1. 后端确实有意让某个页面不挂菜单（少见）；
+  //   2. 配置漏了（多数）—— `scripts/seed_data.py` 的 `MENU_PAGES`
+  //      曾经漏掉 `system:permission-resource:page`，于是「权限资源」页
+  //      在侧栏里没有任何入口，只能手敲 URL。
+  // 所以这一组不是"又一个分组"，而是**待处理的配置问题**，
+  // 组件侧会额外渲染一句说明（见 `ANOMALY_HINT`）。
   const unmounted = input.pages
     .filter((page) => !mountedPageIds.has(page.id))
     .sort(bySortOrder)
@@ -200,8 +240,9 @@ export function buildPermissionTree(input: PermissionTreeInput): PermissionTreeN
       kind: null,
       id: null,
       code: '',
-      name: '未挂载菜单的页面',
-      meta: '',
+      name: ANOMALY_GROUP_NAME.UNMOUNTED_PAGE,
+      meta: '没有导航入口',
+      anomaly: 'UNMOUNTED_PAGE',
       children: unmounted.map(pageNodeOf),
     })
   }
@@ -289,6 +330,25 @@ export function expandableRowKeys(nodes: PermissionTreeNode[]): string[] {
   return out
 }
 
+/**
+ * 树里的数据异常分组及其**受影响条数**（无异常时返回空数组）。
+ *
+ * 只扫**根层**：两个异常分组都挂在根上（见 `buildPermissionTree`），
+ * 递归扫一遍只是多花时间，不会多找到东西。
+ *
+ * 返回条数而不是布尔值：界面要说"有 N 个页面没有导航入口"，
+ * 而这个 N 只有这里知道（`children.length`）。
+ */
+export function collectAnomalies(
+  nodes: PermissionTreeNode[],
+): Array<{ kind: TreeAnomaly; count: number }> {
+  const out: Array<{ kind: TreeAnomaly; count: number }> = []
+  for (const node of nodes) {
+    if (node.anomaly !== undefined) out.push({ kind: node.anomaly, count: node.children.length })
+  }
+  return out
+}
+
 /** 该节点自身 + 全部后代中的可授权项（分组节点自身不计）。 */
 export function collectKeys(node: PermissionTreeNode): Array<{ kind: GrantKind; id: ID }> {
   const out: Array<{ kind: GrantKind; id: ID }> = []
@@ -343,6 +403,79 @@ export function universeOf(input: PermissionTreeInput): Record<GrantKind, Set<ID
   // 就被视为"看得见"，用户对它的取舍就是有意的。
   const apiIds = new Set(input.apis.map((item) => item.id))
   return { PAGE: pageIds, MENU: menuIds, BUTTON: buttonIds, API: apiIds }
+}
+
+/**
+ * 批量选择的三种模式。
+ *
+ * - `all`：把树上全部资源加入授权；
+ * - `none`：把树上全部资源移出授权；
+ * - `invert`：树上每项**逐个取反**（已授权 → 未授权，未授权 → 已授权）。
+ */
+export type BulkSelectionMode = 'all' | 'none' | 'invert'
+
+/**
+ * 对整棵树做一次批量选择。
+ *
+ * ## 只动"树上看得见的"资源
+ *
+ * 三种模式都**只遍历树里的资源 id**，不碰 `selection` 里那些不在树上的条目。
+ * 那些是"候选清单之外的既有授权"（资源清单分类取回且有上限，角色可能持有
+ * 没被取回的资源），它们在这棵树上根本看不见：
+ *
+ * - 若 `none` 顺手把它们也删掉，用户会看到"我按了取消全部，保存后还留着几条"
+ *   （保存时 `resolveSubmission` 会原样保留）—— 界面与实际不符；
+ * - 若 `invert` 去翻转它们，就等于**改动了画面上不存在的东西**：用户看见的
+ *   是"A 从勾变没勾"，数据库里却有十几条看不见的授权被翻转了。
+ *
+ * 所以这里与 `applyCascade` 同一条原则：能改的只有看得见的东西。
+ * 界面上另有提示说明"还有 N 项不在清单里、保存时原样保留"。
+ *
+ * 返回**新的**选择对象（不改入参），与 `applyCascade` / `useColumnSettings` 同一约定。
+ */
+export function applyBulkSelection(
+  selection: GrantSelection,
+  nodes: PermissionTreeNode[],
+  mode: BulkSelectionMode,
+): GrantSelection {
+  const inTree: Record<GrantKind, Set<ID>> = {
+    PAGE: new Set<ID>(),
+    MENU: new Set<ID>(),
+    BUTTON: new Set<ID>(),
+    API: new Set<ID>(),
+  }
+  for (const node of nodes) {
+    for (const entry of collectKeys(node)) inTree[entry.kind].add(entry.id)
+  }
+
+  const next: GrantSelection = {
+    PAGE: [...selection.PAGE],
+    MENU: [...selection.MENU],
+    BUTTON: [...selection.BUTTON],
+    API: [...selection.API],
+  }
+
+  for (const kind of GRANT_KINDS) {
+    const target = inTree[kind]
+    // 该类别在树上没有任何资源（例如候选清单里没有 FIELD/API）：不动它。
+    // 空集合直接返回"原样"，否则 `none` 会把该类别整体清空 —— 那不是用户的意图。
+    if (target.size === 0) continue
+    const current = new Set(next[kind])
+    for (const id of target) {
+      if (mode === 'all') {
+        current.add(id)
+      } else if (mode === 'none') {
+        current.delete(id)
+      } else if (current.has(id)) {
+        current.delete(id)
+      } else {
+        current.add(id)
+      }
+    }
+    next[kind] = [...current]
+  }
+
+  return next
 }
 
 /**

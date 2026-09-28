@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import ColumnElement, delete, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +67,8 @@ class UserRepository:
         department_ids: frozenset[int] | None,
         status: UserStatus | None,
         keyword: str | None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> list[ColumnElement[bool]]:
         """构造列表 / 计数的条件（唯一构造点）。
 
@@ -78,6 +82,10 @@ class UserRepository:
         绝不能退化成"不加条件"：空集合来自"所选部门不存在 / 无子部门"，
         语义是"查不到人"；而"不加条件"是"看见所有人"。
         这个方向搞反就是权限放大（与 `scope_filters` 的 fail-closed 同一条理由）。
+
+        `created_from` / `created_to` 落在 `AdminUser.created_at` 上，两端**含**边界。
+        它们与数据范围是**与**的关系（同 `department_ids`），
+        因此"按时间筛"永远筛不出范围外的人。
         """
         conditions: list[ColumnElement[bool]] = [
             AdminUser.deleted_at.is_(None),
@@ -96,6 +104,10 @@ class UserRepository:
             conditions.append(
                 or_(AdminUser.username.ilike(pattern), AdminUser.display_name.ilike(pattern))
             )
+        if created_from is not None:
+            conditions.append(AdminUser.created_at >= created_from)
+        if created_to is not None:
+            conditions.append(AdminUser.created_at <= created_to)
         return conditions
 
     async def list_in_scope(
@@ -107,10 +119,17 @@ class UserRepository:
         department_ids: frozenset[int] | None = None,
         status: UserStatus | None = None,
         keyword: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> list[AdminUser]:
         """分页列出范围内用户（`pageNum` 从 1 开始）。"""
         conditions = self._scoped_conditions(
-            scope, department_ids=department_ids, status=status, keyword=keyword
+            scope,
+            department_ids=department_ids,
+            status=status,
+            keyword=keyword,
+            created_from=created_from,
+            created_to=created_to,
         )
         stmt = (
             select(AdminUser)
@@ -128,10 +147,17 @@ class UserRepository:
         department_ids: frozenset[int] | None = None,
         status: UserStatus | None = None,
         keyword: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> int:
         """统计范围内用户总数（与列表使用完全相同的条件）。"""
         conditions = self._scoped_conditions(
-            scope, department_ids=department_ids, status=status, keyword=keyword
+            scope,
+            department_ids=department_ids,
+            status=status,
+            keyword=keyword,
+            created_from=created_from,
+            created_to=created_to,
         )
         stmt = select(func.count()).select_from(AdminUser).where(*conditions)
         return int((await self._session.execute(stmt)).scalar_one())

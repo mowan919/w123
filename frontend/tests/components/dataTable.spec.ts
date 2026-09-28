@@ -155,6 +155,24 @@ describe('DataTable —— 操作列', () => {
     expect(actions?.find('.clip').exists()).toBe(false)
     expect(actions?.find('button').exists()).toBe(true)
   })
+
+  it('操作列默认**居中**（表头与单元格都带 `is-center`）', () => {
+    // 居中的理由：左对齐时"编辑 / 重置口令 / 禁用"与只有"编辑"的行各自贴左，
+    // 每个动作的横向位置随该行按钮多少而变；居中后位置稳定。
+    const wrapper = render({ actionsTitle: '操作' })
+
+    expect(wrapper.findAll('thead th').at(-1)?.classes()).toContain('is-center')
+    expect(firstBodyRow(wrapper).findAll('td').at(-1)?.classes()).toContain('is-center')
+  })
+
+  it('显式传 `actions-align` 时以传入值为准（居中不是写死在 CSS 里的）', () => {
+    // 这条防的是"把 center 写进 base.css"：那样传 left 的页面会静默失效，
+    // 而且看不出是哪儿改的 —— 页面里的 prop 还在，只是不再起作用。
+    const wrapper = render({ actionsTitle: '操作', actionsAlign: 'left' })
+
+    expect(wrapper.findAll('thead th').at(-1)?.classes()).not.toContain('is-center')
+    expect(firstBodyRow(wrapper).findAll('td').at(-1)?.classes()).not.toContain('is-center')
+  })
 })
 
 describe('DataTable —— 四态', () => {
@@ -243,5 +261,62 @@ describe('DataTable —— 样式契约（base.css）', () => {
     expect(rule).toContain('overflow: hidden')
     expect(rule).toContain('text-overflow: ellipsis')
     expect(rule).toContain('white-space: nowrap')
+  })
+
+  it('单元格同时有横向与竖向分割线', () => {
+    const rule = body('.data-table__table th, .data-table__table td')
+
+    expect(rule).toContain('border-bottom: 1px solid var(--vctn-border)')
+    // 只用 border-left（不用 border-right）：`border-collapse: separate` 下
+    // 相邻单元格的两条边会并排出现、把界线变成 2px。
+    expect(rule).toContain('border-left: 1px solid var(--vctn-border)')
+    expect(rule).not.toContain('border-right')
+  })
+
+  it('首列不画左分割线（否则贴着容器边框会出现双线）', () => {
+    // 用 `tr > *:first-child` 而不是 `td:first-child`：有勾选列时首列是
+    // `th` / `td.col-select`，两种都要覆盖。
+    expect(body('.data-table__table tr > *:first-child')).toContain('border-left: none')
+  })
+
+  it('抽屉里的次级表格（`.mini-table`）同样横竖都画线', () => {
+    const rule = body('.mini-table th, .mini-table td')
+
+    expect(rule).toContain('border-bottom: 1px solid var(--vctn-border)')
+    expect(rule).toContain('border-left: 1px solid var(--vctn-border)')
+    expect(body('.mini-table tr > *:first-child')).toContain('border-left: none')
+  })
+
+  it('操作列不再整体压暗（"有权限的按钮要显眼"）', () => {
+    // 旧实现给整列 `opacity: 0.72`，把"有权限才渲染出来的按钮"和
+    // "没权限被隐藏"这两件事在观感上抹平了：能点的也灰着。
+    expect(flat).not.toContain('opacity: 0.72')
+  })
+})
+
+describe('base.css —— 文字按钮的彩色变体', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/styles/base.css'), 'utf8')
+  const flat = css.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ')
+
+  function body(selector: string): string {
+    const needle = `${selector.replace(/\s+/g, ' ')} {`
+    const start = flat.indexOf(needle)
+    if (start < 0) throw new Error(`base.css 里没有这条规则：${selector}`)
+    return flat.slice(start + needle.length, flat.indexOf('}', start))
+  }
+
+  it('四种语义色各自声明了颜色', () => {
+    expect(body('.btn--text-primary')).toContain('color: var(--vctn-primary)')
+    expect(body('.btn--text-success')).toContain('color: var(--vctn-success)')
+    expect(body('.btn--text-warn')).toContain('color: var(--vctn-warn)')
+    expect(body('.btn--text-danger')).toContain('color: var(--vctn-danger)')
+  })
+
+  it('每个彩色变体都有 `:hover` 覆盖', () => {
+    // 没有它时 `.btn:hover:not(.is-disabled)`（权重 0,3,0）会把所有彩色按钮
+    // 一悬停都染成主色蓝 —— 肉眼很容易当成"设计如此"。
+    for (const tone of ['primary', 'success', 'warn', 'danger']) {
+      expect(flat).toContain(`.btn--text-${tone}:hover:not(.is-disabled) {`)
+    }
   })
 })

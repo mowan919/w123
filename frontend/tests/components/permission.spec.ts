@@ -94,6 +94,45 @@ describe('PermissionButton', () => {
     expect(wrapper.emitted('click')).toBeUndefined()
   })
 
+  it('`text-*` 变体同时带上形态类与颜色类', () => {
+    // 拆成两个类是刻意的：`btn--text-*` 只声明颜色，形态仍由 `btn--text` 给。
+    // 若只在 `btn--text-danger` 里写颜色，`type="text-danger"` 的按钮会变成
+    // **带边框、带底色**的默认按钮 —— 一行三四个色块，把数据压成背景。
+    grant(['user:delete'])
+    const wrapper = mount(PermissionButton, {
+      props: { code: 'user:delete', type: 'text-danger' },
+      slots: { default: () => '删除' },
+    })
+    const classes = wrapper.find('button').classes()
+
+    expect(classes).toContain('btn--text')
+    expect(classes).toContain('btn--text-danger')
+  })
+
+  it('纯 `text` 不带任何颜色类（灰字是"无语义倾向"的默认）', () => {
+    grant(['user:read'])
+    const wrapper = mount(PermissionButton, {
+      props: { code: 'user:read', type: 'text' },
+      slots: { default: () => '查看' },
+    })
+    const classes = wrapper.find('button').classes()
+
+    expect(classes).toContain('btn--text')
+    expect(classes.filter((name) => name.startsWith('btn--text-'))).toEqual([])
+  })
+
+  it('实心 `danger` 不受文字变体影响（改的是新增值，没动旧值）', () => {
+    grant(['user:delete'])
+    const wrapper = mount(PermissionButton, {
+      props: { code: 'user:delete', type: 'danger' },
+      slots: { default: () => '删除' },
+    })
+    const classes = wrapper.find('button').classes()
+
+    expect(classes).toContain('btn--danger')
+    expect(classes).not.toContain('btn--text')
+  })
+
   it('没有权限的按钮不代表后端会放行：绕过组件直接请求依然会被拒', () => {
     // 这条用例锁的是 FE-03 §6：隐藏只是展示层，后端才是最终兜底。
     // 后端侧对应 `test_permission_matrix.py` 里的 403 用例。

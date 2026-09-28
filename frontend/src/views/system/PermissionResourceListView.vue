@@ -10,7 +10,7 @@
  * 1. 删除端点是 `POST /{id}/delete` 而不是 `DELETE` —— 后端冻结的路径。
  * 2. 树形查询 `/permission-resources/tree` 与 `/{resource_id}` 的路由顺序
  *    由后端注册顺序保证；前端只要别自己拼错路径。
- *
+ * *
  * 树形不做递归组件：模板不能自引用，用一个自定义递归组件反而更难测。
  * 这里先把树压平成带层级的行列表再渲染，与部门页同一套做法。
  */
@@ -448,20 +448,20 @@ onMounted(() => {
 
         <template #actions="{ row }">
           <span class="table-actions">
-            <PermissionButton code="permission:resource-update" type="text" @click="startEdit(row)">
+            <PermissionButton code="permission:resource-update" type="text-primary" @click="startEdit(row)">
               <NIcon :component="CreateOutline" />
               编辑
             </PermissionButton>
             <PermissionButton
               v-if="row.resource_type === 'MENU'"
               code="permission:resource-update"
-              type="text"
+              type="text-primary"
               @click="openMenuPages(row)"
             >
               <NIcon :component="GitBranchOutline" />
               挂载页面
             </PermissionButton>
-            <PermissionButton code="permission:resource-delete" type="text" @click="pendingDelete = row">
+            <PermissionButton code="permission:resource-delete" type="text-danger" @click="pendingDelete = row">
               <NIcon :component="TrashOutline" />
               删除
             </PermissionButton>
@@ -492,20 +492,20 @@ onMounted(() => {
           {{ entry.node.resource.status === 'ACTIVE' ? '启用' : '禁用' }}
         </span>
         <span class="tree__actions">
-          <PermissionButton code="permission:resource-update" type="text" @click="startEdit(entry.node.resource)">
+          <PermissionButton code="permission:resource-update" type="text-primary" @click="startEdit(entry.node.resource)">
             编辑
           </PermissionButton>
           <PermissionButton
             v-if="entry.node.resource.resource_type === 'MENU'"
             code="permission:resource-update"
-            type="text"
+            type="text-primary"
             @click="openMenuPages(entry.node.resource)"
           >
             挂载页面
           </PermissionButton>
           <PermissionButton
             code="permission:resource-delete"
-            type="text"
+            type="text-danger"
             @click="pendingDelete = entry.node.resource"
           >
             删除

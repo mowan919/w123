@@ -47,6 +47,13 @@ _GENERATE_TS = (
 )
 _REGISTRY_KEY_RE = re.compile(r"^\s{2}'(?P<key>[^']+)':\s*\(\)\s*=>", re.MULTILINE)
 
+#: 侧边栏的图标名称表。`MENUS[].icon` 写的是**名称**，不是可渲染字符 ——
+#: 名称对不上时前端会静默回退（先名称表、再编码表、最后默认图标），
+#: 于是"配了个不存在的图标名"这件事在界面上**完全看不出来**。
+_SIDEBAR_VUE = (
+    Path(__file__).resolve().parent.parent / "frontend" / "src" / "layouts" / "AppSidebar.vue"
+)
+
 
 def _registry_keys() -> set[str]:
     """从前端注册表源码里取出全部 `component_path` 合法取值。"""
@@ -178,6 +185,42 @@ def test_menu_pages_reference_existing_menus_and_pages() -> None:
         assert page_code in page_codes, f"MENU_PAGES 引用了不存在的页面 {page_code}"
 
 
+def test_every_page_is_mounted_by_some_menu() -> None:
+    """每个 PAGE 都必须被至少一个 MENU 挂载 —— 这是**导航入口的存在性**判据。
+
+    与授权无关：判权只认 Page（`09 §4`），所以漏挂菜单不会让谁 403。
+    它的后果更隐蔽 ——
+
+    1. 侧边栏里没有入口。路由照旧存在（前端动态路由按 **PAGE 契约**生成，
+       不看菜单），所以手敲 URL 能进去，表现为"这页能用，但没人找得到它"；
+    2. 权限配置页的授权树把它归进「未挂载菜单的页面」分组，
+       看起来像数据坏了，实际只是少了一行菜单。
+
+    本轮之前 `system:permission-resource:page` 正是这个状态：`PAGES` 里有它，
+    `MENUS` 里连对应的菜单行都不存在。这个缺口在既有断言里**完全测不到** ——
+    `test_menu_pages_reference_existing_menus_and_pages` 只验"写了的关联有效"，
+    不验"该有的关联有没有写"，方向正好相反。
+    """
+    mounted = {page_code for _menu_code, page_code in data.MENU_PAGES}
+    unmounted = sorted(entry[0] for entry in data.PAGES if entry[0] not in mounted)
+    assert not unmounted, f"这些页面没有任何菜单入口（会掉进「未挂载菜单的页面」）：{unmounted}"
+
+
+def test_leaf_menus_mount_at_least_one_page() -> None:
+    """没有子菜单的 MENU 必须挂至少一个 PAGE，否则那是一个点不动的死入口。
+
+    `AppSidebar` 对解不出路由的菜单渲染成不可点的标题（不是链接），所以它
+    不会报错、不会 403 —— 只会在侧边栏里占一行、永远点不开。
+    纯分组（`系统管理` / `日志管理`）因为**有子菜单**而不受这条约束。
+    """
+    child_menus = {entry[2] for entry in data.MENUS if entry[2] is not None}
+    mounted = {menu_code for menu_code, _page_code in data.MENU_PAGES}
+    leaves_without_page = sorted(
+        entry[0] for entry in data.MENUS if entry[0] not in child_menus and entry[0] not in mounted
+    )
+    assert not leaves_without_page, f"这些叶子菜单没有关联页面（点不动）：{leaves_without_page}"
+
+
 def test_field_access_levels_are_the_frozen_four_levels() -> None:
     """字段权限是 `03 §9` 冻结的四级取值，写错等级等于把 `HIDDEN` 当成 `EDITABLE`。
 
@@ -201,6 +244,41 @@ def test_department_tree_is_well_formed() -> None:
 
 
 # ---------------------------------------------------------------- 跨语言契约
+
+
+def _icon_names() -> set[str]:
+    """从 `AppSidebar.vue` 的 `ICON_BY_NAME` 表里取出前端认识的图标名称。
+
+    只截取 `const ICON_BY_NAME` 到该对象字面量的收尾 `}` 之间，并剥掉注释行 ——
+    不这样做会把后面 `ICON_BY_CODE` 的键也算进来，断言就永远为真了。
+    """
+    assert _SIDEBAR_VUE.is_file(), f"找不到侧边栏组件：{_SIDEBAR_VUE}"
+    text = _SIDEBAR_VUE.read_text(encoding="utf-8")
+    start = text.index("const ICON_BY_NAME")
+    block = text[start : text.index("\n}", start)]
+    lines = [line for line in block.splitlines() if not line.strip().startswith("//")]
+    keys = re.findall(r"^\s+'?([A-Za-z][\w-]*)'?:\s*[A-Za-z]", "\n".join(lines), re.MULTILINE)
+    assert keys, f"没解析出任何图标名称，AppSidebar.vue 的写法可能变了：{_SIDEBAR_VUE}"
+    return set(keys)
+
+
+def test_menu_icons_are_known_to_the_sidebar() -> None:
+    """`MENUS[].icon` 写的名称必须在前端 `ICON_BY_NAME` 表里存在。
+
+    名字对不上**不会报错**：`AppSidebar.iconOf()` 先查名称表、再按菜单编码兜底、
+    最后回退默认图标 —— 于是"配了个拼错的图标名"表现为"这个菜单用了默认图标"，
+    与"后端本来就没配图标"看起来一模一样，无从区分。
+
+    本轮新增的 `permission-resource` 正是这条边界上的一个真实取值：
+    它在编码兜底表里本来就有，名称表缺失时功能上没问题，
+    但"配了什么"与"渲染了什么"就对不上了 —— 这个用例让两边必须同时改。
+    """
+    known = _icon_names()
+    missing: dict[str, str] = {}
+    for code, _name, _parent, icon, _order in data.MENUS:
+        if icon is not None and icon not in known:
+            missing[code] = icon
+    assert not missing, f"这些菜单配了前端不认识的图标名：{missing}"
 
 
 def test_api_codes_match_the_authoritative_enum() -> None:

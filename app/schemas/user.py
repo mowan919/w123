@@ -75,6 +75,8 @@ class UserListQuery(BaseModel):
     keyword: str | None = Field(
         default=None, max_length=64, description="按登录名 / 显示名模糊匹配"
     )
+    created_from: datetime | None = Field(default=None, description="创建时间起始（含），UTC")
+    created_to: datetime | None = Field(default=None, description="创建时间结束（含），UTC")
 
 
 class UserCreateRequest(BaseModel):

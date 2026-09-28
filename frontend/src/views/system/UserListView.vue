@@ -40,7 +40,7 @@ import { useAppStore } from '@/stores/app'
 import { useDictionaryStore } from '@/stores/dictionaries'
 import { useOrganizationStore } from '@/stores/organization'
 import { useRolesStore } from '@/stores/roles'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, localInputToUtcIso, nowAsLocalInput } from '@/utils/format'
 import { PASSWORD_HINT, validatePassword } from '@/utils/validate'
 import type { DataTableColumn } from '@/components/data/types'
 
@@ -72,11 +72,16 @@ const filters = ref<{
   status: string
   department_id: ID | null
   include_sub_departments: boolean
+  /** `datetime-local` 的原始本地时间串（`''` = 不限）。发出前转 UTC。 */
+  created_from: string
+  created_to: string
 }>({
   keyword: '',
   status: '',
   department_id: null,
   include_sub_departments: false,
+  created_from: '',
+  created_to: '',
 })
 
 const { rows, total, pageNum, pageSize, loading, error, reload, onPageChange } = usePageQuery<User>(
@@ -110,7 +115,27 @@ const {
   reset: resetColumns,
 } = useColumnSettings<User>('users', dataColumns)
 
+/**
+ * 时间区间填反了。
+ *
+ * 本地时间串是按字典序可比的（`YYYY-MM-DDTHH:mm`，补零到固定宽度），
+ * 因此不需要先转 UTC 再比 —— 而且**必须**用本地串比：
+ * 转换会引入一次时区换算，比较时再出错就没人看得出来了。
+ */
+const createdRangeInvalid = computed<boolean>(
+  () =>
+    filters.value.created_from !== '' &&
+    filters.value.created_to !== '' &&
+    filters.value.created_from > filters.value.created_to,
+)
+
 function onSearch(): void {
+  // 区间反了就如实拒绝，不静默交换两端：静默交换会让用户以为筛的是自己填的区间。
+  // 后端同样会 400（`UserService.list_users`），但本地拦一次能给出一句人话。
+  if (createdRangeInvalid.value) {
+    appStore.showNotice('error', '创建时间的起始不能晚于结束')
+    return
+  }
   reload({
     keyword: filters.value.keyword || null,
     status: filters.value.status || null,
@@ -119,7 +144,23 @@ function onSearch(): void {
     // 能让请求日志里"这次到底按什么筛的"一眼可读。
     include_sub_departments:
       filters.value.department_id !== null && filters.value.include_sub_departments,
+    // 时间必须转成带时区的 UTC 串再发（详见 `localInputToUtcIso`）：
+    // 原样发本地串时，后端把它当 naive datetime 绑到 timestamptz 上，
+    // 解释权归服务端时区，服务器一旦不是 +08:00 就整块偏 8 小时且不报错。
+    created_from: localInputToUtcIso(filters.value.created_from),
+    created_to: localInputToUtcIso(filters.value.created_to),
   })
+}
+
+/**
+ * 把「结束时间」设为此刻。
+ *
+ * 只填结束时间，不动起始时间：最常见的用法是"看某天以来的用户"——
+ * 起始时间是自己选的，结束时间几乎总是"到现在"。两个一起覆盖会把手填的
+ * 起始时间冲掉，而那正是唯一需要人思考的值。
+ */
+function setCreatedToNow(): void {
+  filters.value.created_to = nowAsLocalInput()
 }
 
 function onReset(): void {
@@ -128,6 +169,8 @@ function onReset(): void {
     status: '',
     department_id: null,
     include_sub_departments: false,
+    created_from: '',
+    created_to: '',
   }
   reload({})
 }
@@ -418,7 +461,46 @@ onMounted(async () => {
           包含下级部门
         </NCheckbox>
       </label>
+      <div class="field">
+        <span class="field__label">创建时间</span>
+        <div class="field__row">
+          <!--
+            两端各自带 `aria-label` 而不是靠外层 `<span class="field__label">`：
+            一组日期输入只能有一个可见标签，"起/止"必须落到控件自身，
+            否则读屏软件把两个输入读成同一个字段。
+          -->
+          <input
+            v-model="filters.created_from"
+            class="field__control"
+            type="datetime-local"
+            aria-label="创建时间起始"
+          />
+          <span class="muted">~</span>
+          <input
+            v-model="filters.created_to"
+            class="field__control"
+            type="datetime-local"
+            aria-label="创建时间结束"
+          />
+          <!--
+            「此刻」是给"结束时间"用的快捷入口：起始时间几乎总要人自己选
+            （"看某天以来的"），结束时间则几乎总是"到现在"。
+          -->
+          <button
+            type="button"
+            class="btn btn--text btn--text-primary"
+            title="把结束时间设为当前时间"
+            @click="setCreatedToNow"
+          >
+            此刻
+          </button>
+        </div>
+      </div>
     </SearchForm>
+
+    <p v-if="createdRangeInvalid" class="hint">
+      创建时间的起始晚于结束，修改后再查询（查询会被拒绝，不会静默交换两端）。
+    </p>
 
     <div class="toolbar">
       <PermissionButton code="user:create" type="primary" @click="startCreate">
@@ -465,29 +547,22 @@ onMounted(async () => {
         -->
         <PermissionField code="phone">
           <template #default>
-            <!-- 列表里只读：改联系方式走「编辑」弹窗。这里原先绑
-                 `:readonly="!editable"`，而列表**没有**任何保存入口 ——
-                 有 EDITABLE 权限的人可以在这里改字，然后眼睁睁看它被刷新掉。 -->
-            <input
-              :value="row.phone ?? ''"
-              readonly
-              placeholder="未填写"
-              class="field__control"
-              style="min-width: 120px"
-            />
+            <!-- 纯文本，不是输入框。列表里既没有保存入口，把值渲染成
+                 `<input readonly placeholder="未填写">` 只会让空值看起来像
+                 "一个待填的框"（截图里它和真正的筛选框长得一模一样），
+                 长号码还会被输入框内边距截断。空值统一走 `—`。 -->
+            <span v-if="row.phone" class="clip" :title="row.phone">{{ row.phone }}</span>
+            <span v-else class="muted">—</span>
           </template>
         </PermissionField>
       </template>
       <template #cell-email="{ row }">
         <PermissionField code="email">
           <template #default>
-            <input
-              :value="row.email ?? ''"
-              readonly
-              placeholder="未填写"
-              class="field__control"
-              style="min-width: 200px"
-            />
+            <span v-if="row.email" class="clip" style="--clip-width: 220px" :title="row.email">
+              {{ row.email }}
+            </span>
+            <span v-else class="muted">—</span>
           </template>
         </PermissionField>
       </template>
@@ -522,18 +597,18 @@ onMounted(async () => {
 
       <template #actions="{ row }">
         <span class="table-actions">
-          <PermissionButton code="user:update" type="text" @click="startEdit(row)">
+          <PermissionButton code="user:update" type="text-primary" @click="startEdit(row)">
             <NIcon :component="CreateOutline" />
             编辑
           </PermissionButton>
-          <PermissionButton code="user:reset-password" type="text" @click="openReset(row)">
+          <PermissionButton code="user:reset-password" type="text-warn" @click="openReset(row)">
             <NIcon :component="KeyOutline" />
             重置口令
           </PermissionButton>
           <PermissionButton
             v-if="row.status !== 'ACTIVE'"
             code="user:enable"
-            type="text"
+            type="text-success"
             @click="enableTarget = row"
           >
             <NIcon :component="LockOpenOutline" />
@@ -542,7 +617,7 @@ onMounted(async () => {
           <PermissionButton
             v-else
             code="user:disable"
-            type="text"
+            type="text-danger"
             @click="disableTarget = row"
           >
             禁用

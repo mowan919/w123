@@ -2044,3 +2044,141 @@ jsdom **不做布局**，`nowrap` 与 `sticky` 的实际效果在那里测不出
 > 按"第一个 `}`"截断声明体的取法会被它提前截断 —— 第一版 `body()` 正是这么失效的。
 
 真实的渲染结果仍以 Chrome 实测为准（§24.6）。jsdom 里**不假装**测了布局。
+
+---
+
+## 25. 权限资源菜单挂载与权限树异常分组 —— 实际落地口径（2026-09-28）
+
+用户诉求（原文）：
+
+```text
+为什么有 未挂载菜单的页面 把这个优化一下
+```
+
+### 25.1 根因（只读探测，非推断）
+
+「权限配置」页的授权树里出现了分组「未挂载菜单的页面」。探测共享库后确认：
+**唯一**一个未挂载的 PAGE 是 `system:permission-resource:page`
+（Phase 8 交付的资源定义页），而 `scripts/seed_data.py` 的 `MENU_PAGES` 只有 9 条、
+`PAGES` 有 10 条 —— 差的那一条就是它。
+
+也就是说：**这个页面从 Phase 8 起就没有任何导航入口**，只能靠手输 URL 进入。
+树上的那个分组不是"树的毛病"，它是唯一一处把"数据缺口"如实说出来的地方。
+
+### 25.2 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `OPERATION-25-01` | 每个 PAGE 必须被至少一个 MENU 挂载（`MENU_PAGES` 与 `PAGES` 双向对齐） | 操作约定 |
+| `OPERATION-25-02` | 叶子菜单（无子菜单）必须挂载至少一个 PAGE，否则是"点不动的死入口" | 操作约定 |
+| `OPERATION-25-03` | 菜单的 `icon` 名称必须能在 `AppSidebar.ICON_BY_NAME` 里解析 | 操作约定 |
+| `OPERATION-25-04` | 给存量库补菜单时，**同时**给已持有该 PAGE 的角色补 MENU 授权 | 操作约定 |
+| `JUDGMENT-25-01` | 树的异常分组保留并显式标注（`anomaly` + 说明 + 醒目底色），不隐藏 | 已裁定 |
+
+### 25.3 为什么补菜单必须连授权一起补（`OPERATION-25-04`）
+
+`GET /auth/permissions` 下发的 `menus` 只包含**已授权**的菜单资源
+（`INTERIM-8-03`：菜单本身是已授权资源）。因此只 `INSERT` 一条 MENU 行
+而不补 `role_permissions`，结果是：树上有这个菜单、侧栏上却没有 ——
+"建了等于没建"，且没有任何报错。
+
+迁移 `20260928_1900_phase12_perm_resource_menu` 因此是三件事一起做：
+
+1. 插 MENU 行（固定 ID `720001`，空库时 no-op）；
+2. 插 `menu_pages` 关联；
+3. `INSERT ... SELECT` 把"持有该 PAGE 的角色"补上该 MENU 的授权。
+
+迁移内的 SQL 用 `WHERE NOT EXISTS` 而不是 `ON CONFLICT`：`menu_pages` 的主键是
+`(menu_id, page_id)`，但显式写条件让"已存在就跳过"在 SQL 里可读，也不依赖具体约束名。
+
+⚠️ `SELECT` 列表里的裸参数**必须显式 `CAST(:menu_id AS bigint)`**：
+没有类型上下文的占位符会让 PostgreSQL 直接报
+`could not determine data type of parameter`。子查询里的比较虽然给了类型，
+但同一参数在列表里先出现，不能指望它被回填。
+
+### 25.4 异常分组为什么保留而不是隐藏（`JUDGMENT-25-01`）
+
+两个分组 —— 「未挂载菜单的页面」与「未归入上级菜单的菜单」—— 都是**数据异常**，
+不是正常分组。隐藏它们会让"授权了却不生效"变成一个无从排查的现象：
+管理员在树上找不到那个页面，只会认为"这个权限不存在"。
+
+因此保留 + 显式标注：分组节点带 `anomaly` 种类、一句 `meta` 说明、行底色用
+`--vctn-warn-weak`。分组节点自身 `kind = null`（不可勾选、不参与级联）——
+它不对应任何资源。
+
+### 25.5 防再犯
+
+`tests/test_seed_data.py` 增加三条**清单级**断言（`OPERATION-25-01/02/03`）。
+上一轮交付的 `log:manage` 菜单组同样踩在 25-02 上：加了分组菜单却忘了挂页面。
+
+---
+
+## 26. 后台可用性七项 —— 实际落地口径（2026-09-28）
+
+用户诉求（原文，附用户管理页截图）：
+
+```text
+1、空的时候显示 - 不要显示输入框
+2、部门管理不要显示id
+3、用过管理增加时间筛选
+4、权限配置 可以权限 取消权限 反选
+5、列表需要分割线
+6、操作按钮居中显示，如果有权限 需要高亮显示
+7、时间筛选可以 可以设置当前时间
+```
+
+第 5 条经追问确认取「**横竖都要**」（截图里当时只有表头下方一条横线）。
+
+### 26.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `OPERATION-26-01` | 表格竖分割线只用 `border-left`，首列用 `tr > *:first-child` 取消 | 操作约定 |
+| `OPERATION-26-02` | 操作列 sticky 时必须**自己**持有 `border-left`（否则边线跟着滚走） | 操作约定 |
+| `OPERATION-26-03` | `DataTable.actionsAlign` 默认 `center`；居中由类控制，**不在 CSS 写死** | 操作约定 |
+| `OPERATION-26-04` | `PermissionButton` 把"形态"与"颜色"拆成两个类（`btn--text` + `btn--text-danger`） | 操作约定 |
+| `OPERATION-26-05` | `datetime-local` 的值必须经 `localInputToUtcIso()` 转 UTC 后才发给后端 | 操作约定 |
+| `JUDGMENT-26-01` | 权限树的批量选择**只作用于清单上可见的资源** | 已裁定 |
+| `JUDGMENT-26-02` | 空值渲染为纯文本 `—`，不用 `readonly` 输入框 | 已裁定 |
+
+### 26.2 竖分割线为什么不能用 `border-right`（`OPERATION-26-01`）
+
+相邻两个单元格如果各给一条边，中间会出现 **2px**（两条 1px 并排）而不是 1px。
+所以只给 `border-left`，再取消**每行首列**的那一条 —— 取消要用
+`tr > *:first-child` 而不是 `td:first-child`：后者漏掉 `th`，
+表头会出现一条悬空的左边线。
+
+### 26.3 彩色文字按钮的两处坑（`OPERATION-26-04`）
+
+1. **形态与颜色必须分离**。`type="text-danger"` 早先被直接映射成
+   `btn--text-danger` 一个类，于是"纯灰色文字按钮"和"彩色文字按钮"共用形态规则，
+   改一处必动另一处。
+2. **彩色变体必须自带 `:hover`**。`btn:hover:not(.is-disabled)` 的权重是 (0,3,0)，
+   高于 `btn--text-danger` 的 (0,1,0) —— 不显式覆盖的话，hover 时彩色会掉回通用灰。
+
+同时删掉了操作列的 `opacity: 0.72`：它把"有权限可点"的按钮整体压暗，
+与第 6 条要的"有权限要高亮"正相反。
+
+### 26.4 naive datetime 绑 `timestamptz` 的时区陷阱（`OPERATION-26-05`）
+
+`<input type="datetime-local">` 的 value 是**不带时区**的本地墙钟串
+（`2026-09-28T09:35`）。原样发给后端时 Pydantic 解析成 naive datetime，
+绑到 `DateTime(timezone=True)` 列上由**数据库/进程时区**解释：
+
+```text
+本机 TimeZone = Asia/Shanghai
+naive 09:35  →  01:35+00:00      （差 -8 小时）
+```
+
+用户"筛今天"会筛到昨天。因此前端一律 `new Date(value).toISOString()` 转 UTC 再发；
+后端照样做区间反转校验（`created_from > created_to` → 400）——
+前端校验只是友好提示，不是防线。
+
+### 26.5 批量选择只动看得见的资源（`JUDGMENT-26-01`）
+
+资源清单是分类取回的且有数量上限，`selection` 里可能存在**树上不可见**的既有授权
+（`resolveSubmission` 会把它们保留）。批量"取消全部"如果按 `selection` 整体清空，
+就会顺手删掉清单外的授权 —— 一次误点造成不可见的权限收缩。
+因此 `applyBulkSelection` 先按 `collectKeys` 汇总**树上**的键，
+且某一类在树上为空时**整类跳过**（空集合不等于"应该清空"）。
+

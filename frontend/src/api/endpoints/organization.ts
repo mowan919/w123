@@ -32,6 +32,10 @@ export function listUsers(query: {
   include_sub_departments?: boolean
   status?: string | null
   keyword?: string | null
+  /** 创建时间起始（含），**UTC ISO 串**（由 `localInputToUtcIso` 转换）。 */
+  created_from?: string | null
+  /** 创建时间结束（含），**UTC ISO 串**。 */
+  created_to?: string | null
 }): Promise<UserPage> {
   return http.get<UserPage>('/admin/users', query)
 }

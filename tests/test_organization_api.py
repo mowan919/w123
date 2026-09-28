@@ -25,11 +25,13 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.scope import DataScope
 from app.db.base import utc_now
 from app.db.session import get_db
 from app.models.enums import PermissionResourceType, PermissionStatus
+from app.models.permission import PermissionResource
 from tests.factories import (
     link_role_permission,
     link_user_role,
@@ -155,9 +157,16 @@ async def api(app: FastAPI, db_session) -> AsyncIterator[AsyncClient]:
         app.dependency_overrides.pop(get_db, None)
 
 
-async def _login(api: AsyncClient, username: str) -> str:
+async def _login(api: AsyncClient, username: str, password: str = PASSWORD) -> str:
+    """登录并取回 access_token。
+
+    `password` 默认取模块常量 `PASSWORD`（绝大多数用例的种子账号都用它），
+    自带种子的用例必须显式传入自己那份口令 —— 默认值只对 `_seed` / `_seed_tree`
+    建立的账号成立，硬编码会让"账号建了但登不上"退化成一个 401 断言失败，
+    看不到真正的根因。
+    """
     response = await api.post(
-        "/api/v1/auth/login", json={"username": username, "password": PASSWORD}
+        "/api/v1/auth/login", json={"username": username, "password": password}
     )
     assert response.status_code == 200, response.text
     return response.json()["data"]["access_token"]
@@ -385,6 +394,156 @@ class TestUserHttp:
         # （`must_change_password` / `password_changed_at` 是合法字段）。
         for forbidden in ("password_hash", '"password":', PASSWORD):
             assert forbidden not in text, forbidden
+
+
+# ===========================================================================
+# Users —— 创建时间筛选（HTTP 层）
+# ===========================================================================
+
+CR_DEPT_ID = 66301
+CR_ROLE_ID = 66302
+CR_RESOURCE_ID = 66303
+CR_USER_ID = 66304
+CR_USERNAME = "cr-time-api"
+# 刻意**不等于**模块常量 `PASSWORD`：本组用例的账号是自建的，
+# 一旦将来有人把 `_login` 改回"口令写死"，这里会立刻 401 变红，
+# 而不是静默退回成"其实根本没验到自建账号"的假绿。
+CR_PASSWORD = "Time-Range-Passw0rd!11"
+
+
+async def _seed_time_filter_account(db_session) -> None:
+    """只造"一个能调 `/users` 的账号"。
+
+    为什么不复用本模块的 `_seed`
+    ----------------------------
+    `_seed` 会新建一个编码为 `USER_MANAGE` 的 API 资源，而**共享的远程库**上
+    种子数据已经占了 `(API, USER_MANAGE)`（`uq_permission_resources_type_code_active`，
+    见 `docs/DESIGN-DECISIONS.md` 记的 OPERATION-11-01），
+    于是 `_seed` 在本机直接唯一键冲突、`TestUserHttp` 整组失败。
+
+    这组用例要的只是"有个能通过接口鉴权的账号"，所以：
+    资源编码**先查后建** —— 库里已有就拿来给本测试的角色授权，没有才新建。
+    这样在共享库与干净库上都能跑，也不去动那条既有夹具。
+    """
+    await make_department(db_session, department_id=CR_DEPT_ID, department_code="CR_TIME_DEPT")
+    await make_role(
+        db_session, role_id=CR_ROLE_ID, role_code="CR_TIME_API", data_scope=DataScope.ALL
+    )
+
+    resource_id = (
+        (
+            await db_session.execute(
+                select(PermissionResource.id).where(
+                    PermissionResource.resource_type == PermissionResourceType.API,
+                    PermissionResource.resource_code == "USER_MANAGE",
+                    PermissionResource.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if resource_id is None:
+        await make_permission_resource(
+            db_session,
+            resource_id=CR_RESOURCE_ID,
+            resource_type=PermissionResourceType.API,
+            resource_code="USER_MANAGE",
+            api_method="GET",
+            api_path="/api/v1/admin",
+            status=PermissionStatus.ACTIVE,
+        )
+        resource_id = CR_RESOURCE_ID
+    await link_role_permission(db_session, role_id=CR_ROLE_ID, resource_id=int(resource_id))
+
+    await make_user(
+        db_session,
+        user_id=CR_USER_ID,
+        username=CR_USERNAME,
+        password=CR_PASSWORD,
+        password_changed_at=utc_now(),
+        department_id=CR_DEPT_ID,
+    )
+    await link_user_role(db_session, user_id=CR_USER_ID, role_id=CR_ROLE_ID)
+
+
+class TestUserCreatedRangeHttp:
+    """`created_from` / `created_to` 的**端点接线**。
+
+    为什么服务层已有用例还要在 HTTP 层再钉一次
+    ------------------------------------------
+    `UserListQuery` 里声明了字段、端点却忘了往 `service.list_users(...)` 传，
+    请求照样返回 200，参数被**静默忽略** —— 服务层用例永远发现不了。
+    本项目已经栽过两次同型的坑（FINDING-8-01 实体 CRUD 端点全无、
+    FINDING-10-01 审计/链路读端点全无），所以这一层必须单独钉。
+
+    断言刻意不依赖库里的既有数据：把边界放到"必然为空"的两端
+    （起点 2999 年 / 终点 1900 年），"过滤生效"必然空、
+    "参数被丢掉"必然返回全量，两者不可能同时成立。
+    """
+
+    async def test_created_from_reaches_the_service(self, api: AsyncClient, db_session) -> None:
+        await _seed_time_filter_account(db_session)
+        token = await _login(api, username=CR_USERNAME, password=CR_PASSWORD)
+
+        body = _data(
+            await api.get(
+                f"{ADMIN_PREFIX}/users",
+                params={"created_from": "2999-01-01T00:00:00Z"},
+                headers=_auth(token),
+            )
+        )
+
+        assert body["list"] == []
+        assert body["total"] == 0
+
+    async def test_created_to_reaches_the_service(self, api: AsyncClient, db_session) -> None:
+        """另一端单独验一次：只测一端时，端点漏传另一端同样看不出来。"""
+        await _seed_time_filter_account(db_session)
+        token = await _login(api, username=CR_USERNAME, password=CR_PASSWORD)
+
+        body = _data(
+            await api.get(
+                f"{ADMIN_PREFIX}/users",
+                params={"created_to": "1900-01-01T00:00:00Z"},
+                headers=_auth(token),
+            )
+        )
+
+        assert body["list"] == []
+        assert body["total"] == 0
+
+    async def test_reversed_range_is_400(self, api: AsyncClient, db_session) -> None:
+        await _seed_time_filter_account(db_session)
+        token = await _login(api, username=CR_USERNAME, password=CR_PASSWORD)
+
+        response = await api.get(
+            f"{ADMIN_PREFIX}/users",
+            params={
+                "created_from": "2026-09-30T00:00:00Z",
+                "created_to": "2026-09-01T00:00:00Z",
+            },
+            headers=_auth(token),
+        )
+
+        assert response.status_code == 400
+
+    async def test_misspelled_time_param_is_422(self, api: AsyncClient, db_session) -> None:
+        """`UserListQuery` 是 `extra="forbid"`：拼错的参数名必须 422。
+
+        否则把 `created_from` 写成 `createdFrom` 会静默变成"不筛时间"，
+        列表照常返回，界面上看不出任何异常。
+        """
+        await _seed_time_filter_account(db_session)
+        token = await _login(api, username=CR_USERNAME, password=CR_PASSWORD)
+
+        response = await api.get(
+            f"{ADMIN_PREFIX}/users",
+            params={"createdFrom": "2026-09-01T00:00:00Z"},
+            headers=_auth(token),
+        )
+
+        assert response.status_code == 422
 
 
 # ===========================================================================

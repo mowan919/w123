@@ -86,9 +86,11 @@ const logs = vi.mocked(logsApi)
 /**
  * 按表头定位单元格文字 —— 见文件头注释。
  *
- * 单元格里若有 `<input>`（手机号 / 邮箱是这样的），取它的 `value`：
- * `Element.text()` 对表单控件恒为空串，只看文本会把"值在输入框里"
- * 误判成"这一格没有内容"。
+ * 手机号 / 邮箱曾经渲染成 `<input readonly>`，那时必须取 `value`
+ * （`Element.text()` 对表单控件恒为空串，只看文本会把"值在输入框里"
+ * 误判成"这一格没有内容"）。现在两列都是纯文本，下面的输入框分支只是
+ * 兜底：留着它，是因为**"又变回输入框"本身就是回归** —— 而有这条兜底时
+ * 断言仍然会通过，所以另有一条用例专门钉"单元格里没有表单控件"。
  */
 function cellOf(wrapper: VueWrapper, title: string, rowIndex = 0): string {
   const headers = wrapper.findAll('thead th').map((node) => node.text())
@@ -267,6 +269,32 @@ describe('用户管理页 —— `UserResponse` 的每个字段都有列', () =>
     expect(cellOf(wrapper, '登录失败')).toBe('0')
     expect(cellOf(wrapper, '锁定至')).toBe('—')
     expect(cellOf(wrapper, '改密时间')).toBe('—')
+  })
+
+  it('联系方式为空时显示占位符，且单元格里**没有**表单控件', async () => {
+    // 回归用例。这两列曾经渲染成 `<input readonly placeholder="未填写">`：
+    // 空值看起来像一个"待填的输入框"（与真正的筛选框长得一模一样），
+    // 有值时也会被输入框的内边距截断。列表里根本没有保存入口，
+    // 所以它从来就不是输入框，只是一个长得像输入框的文本。
+    org.listUsers.mockResolvedValue({
+      list: [{ ...row, phone: null, email: null }],
+      total: 1,
+      pageNum: 1,
+      pageSize: 20,
+    })
+    const wrapper = await mountView(UserListView)
+
+    expect(cellOf(wrapper, '手机号')).toBe('—')
+    expect(cellOf(wrapper, '邮箱')).toBe('—')
+
+    // 光断言文字不够：`cellOf` 对输入框取的是 `value`，
+    // 所以"占位符"和"又变回输入框"在它眼里可能长得一样。
+    // 这里单独钉死"格子里没有表单控件"。
+    const headers = headersOf(wrapper)
+    const cells = wrapper.findAll('tbody tr')[0]?.findAll('td') ?? []
+    for (const title of ['手机号', '邮箱']) {
+      expect(cells[headers.indexOf(title)]?.find('input').exists()).toBe(false)
+    }
   })
 
   it('字段权限 HIDDEN 时联系方式不渲染 —— 列还在，格子里是空的', async () => {

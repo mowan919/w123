@@ -365,7 +365,7 @@ onMounted(() => {
           <PermissionButton
             v-if="row.revoked_at === null"
             code="session:revoke"
-            type="text"
+            type="text-danger"
             @click="pendingRevoke = row"
           >
             <NIcon :component="TrashOutline" />

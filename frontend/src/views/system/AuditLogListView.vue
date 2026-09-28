@@ -9,7 +9,7 @@
  * 注意只展示**结果**：`before_data` / `after_data` 里可能含敏感字段，
  * 后端已经在写入侧做了脱敏范围控制，这里不做二次加工、也不额外放大。
  */
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, localInputToUtcIso, nowAsLocalInput } from '@/utils/format'
 import { onMounted, ref } from 'vue'
 import { NButton, NIcon } from 'naive-ui'
 import { DocumentTextOutline, EyeOutline, RefreshOutline } from '@vicons/ionicons5'
@@ -97,8 +97,12 @@ async function load(): Promise<void> {
       resource_type: resourceType.value || null,
       resource_id: resourceId.value || null,
       result: result.value || null,
-      created_from: createdFrom.value || null,
-      created_to: createdTo.value || null,
+      // 与用户管理页同一口径：`datetime-local` 的值是**不带时区的本地时间**，
+      // 原样发出时后端把它当 naive datetime 绑到 timestamptz 上比较，
+      // 解释权归服务端时区（实测本机为 Asia/Shanghai）。服务器一旦不是 +08:00，
+      // 这里会整块偏 8 小时且不报错。转成带 `Z` 的 UTC 串后不再有时区依赖。
+      created_from: localInputToUtcIso(createdFrom.value),
+      created_to: localInputToUtcIso(createdTo.value),
     })
     rows.value = page.list
     total.value = page.total
@@ -128,6 +132,11 @@ function resetFilters(): void {
   createdTo.value = ''
   pageNum.value = 1
   void load()
+}
+
+/** 把结束时间设为此刻（与用户管理页同一行为，见那里的注释）。 */
+function setCreatedToNow(): void {
+  createdTo.value = nowAsLocalInput()
 }
 
 function onPageChange(next: { pageNum: number; pageSize: number }): void {
@@ -171,8 +180,34 @@ onMounted(() => {
           <option value="FAILURE">失败</option>
         </select>
       </label>
-      <label class="field"><span class="field__label">起始时间</span><input v-model="createdFrom" class="field__control" type="datetime-local" /></label>
-      <label class="field"><span class="field__label">结束时间</span><input v-model="createdTo" class="field__control" type="datetime-local" /></label>
+      <div class="field">
+        <span class="field__label">时间范围</span>
+        <div class="field__row">
+          <input
+            v-model="createdFrom"
+            class="field__control"
+            type="datetime-local"
+            aria-label="起始时间"
+          />
+          <span class="muted">~</span>
+          <input
+            v-model="createdTo"
+            class="field__control"
+            type="datetime-local"
+            aria-label="结束时间"
+          />
+          <!-- 与用户管理页同一个「此刻」：两端对齐同一套时间筛选交互，
+               免得同一个人在两页之间来回时记两套操作习惯。 -->
+          <button
+            type="button"
+            class="btn btn--text btn--text-primary"
+            title="把结束时间设为当前时间"
+            @click="setCreatedToNow"
+          >
+            此刻
+          </button>
+        </div>
+      </div>
     </SearchForm>
 
     <div class="toolbar">
@@ -241,7 +276,7 @@ onMounted(() => {
       </template>
 
       <template #actions="{ row }">
-        <PermissionButton code="audit:read" type="text" @click="openDetail(row)">
+        <PermissionButton code="audit:read" type="text-primary" @click="openDetail(row)">
           <NIcon :component="EyeOutline" />
           明细
         </PermissionButton>

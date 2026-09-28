@@ -28,6 +28,13 @@ const props = withDefaults(
     /** 传了才渲染操作列；值就是列标题（通常是"操作"）。 */
     actionsTitle?: string | null
     actionsWidth?: string
+    /**
+     * 操作列对齐，默认**居中**。
+     *
+     * 左对齐时"编辑 / 重置口令 / 禁用"与只有"编辑"的行各自贴左，
+     * 每个动作的横向位置随该行按钮多少而变；居中后每个动作都落在列中轴附近，
+     * 纵向扫读时位置稳定，也不会让操作列看起来比数据列更"靠边"。
+     */
     actionsAlign?: 'left' | 'center' | 'right'
   }>(),
   {
@@ -38,7 +45,7 @@ const props = withDefaults(
     selected: () => [],
     actionsTitle: null,
     actionsWidth: '220px',
-    actionsAlign: 'left',
+    actionsAlign: 'center',
   },
 )
 
