@@ -71,6 +71,22 @@ class DepartmentRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def count_in_scope(self, scope: ResolvedScope) -> int:
+        """统计范围内部门数（与 `list_in_scope` **完全相同的条件**）。
+
+        用 `COUNT(*)` 而不是 `len(await list_in_scope(...))`：
+        部门树虽然小，但"取回全部再数长度"这个写法一旦被复制到
+        用户 / 会话这类大表上，就是一次全量物化。两者条件必须同源 ——
+        因此条件的构造点只有一个（`department_scope_condition`），
+        不会出现"列表说 6 个、计数说 7 个"。
+        """
+        stmt = (
+            select(func.count())
+            .select_from(Department)
+            .where(Department.deleted_at.is_(None), department_scope_condition(scope))
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
     # ------------------------------------------------------------------
     # 递归查询
     # ------------------------------------------------------------------

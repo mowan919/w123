@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import ColumnElement, and_, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, distinct, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -485,6 +485,38 @@ class SessionRepository:
         )
         stmt = (
             select(func.count())
+            .select_from(UserSession)
+            .join(AdminUser, AdminUser.id == UserSession.user_id)
+            .where(*conditions)
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def count_users_for_admin(
+        self,
+        scope: ResolvedScope,
+        *,
+        now: datetime,
+        filters: SessionListFilters | None = None,
+    ) -> int:
+        """统计范围内的**会话所属用户数**（按 `user_id` 去重）。
+
+        与 `count_for_admin` 的区别只有一个：`COUNT(DISTINCT user_id)`
+        而不是 `COUNT(*)`。两者共用同一个 `_admin_conditions`，
+        因此"在线用户数 ≤ 在线会话数"是结构性事实，不会因为某天
+        给在线判定补一条条件而漂移到"在线用户比在线会话还多"。
+
+        ## 为什么必须去重
+
+        一个人开三个浏览器 → 3 条会话、1 个人。报表上写"在线用户 3"
+        是**错的**（它会随用户多开标签页线性增长），而且错得很隐蔽：
+        数字看起来完全合理。Spec `04 §5` 要的是"后台在线用户查询"，
+        主体是**用户**。
+        """
+        conditions = self._admin_conditions(
+            scope, now=now, filters=filters or SessionListFilters(), user_id=None
+        )
+        stmt = (
+            select(func.count(distinct(UserSession.user_id)))
             .select_from(UserSession)
             .join(AdminUser, AdminUser.id == UserSession.user_id)
             .where(*conditions)

@@ -172,6 +172,13 @@ FIELDS: list[tuple[str, str]] = [
 #: `icon` 是**图标名称**，不是渲染字符；前端按名称 → 菜单编码两级解析
 #: （`AppSidebar` 的 `ICON_BY_NAME` / `ICON_BY_CODE`）。留空也能显示，
 #: 会回退到默认图标 —— 但显式写上，`权限资源` 页里才看得到这个菜单配了什么。
+#:
+#: ⚠️ 顺序有语义：父菜单必须排在子菜单**之前** —— `seed_common.seed_resources`
+#: 边遍历边按 `(MENU, parent_code)` 查已建好的 ID，父还没建就会 KeyError。
+#:
+#: 「审计日志 / 链路查询」挂在**独立**的顶级分组「日志管理」下，与「系统管理」
+#: 平级：日志是排障入口，和"配置类"菜单混在一起时，翻日志要先进一个
+#: 与它无关的分组。迁移 `phase11_log_menu` 负责把存量库改成同一形状。
 MENUS: list[tuple[str, str, str | None, str | None, int]] = [
     ("system:system", "系统管理", None, "setting", 10),
     ("system:user", "用户管理", "system:system", "user", 20),
@@ -181,8 +188,9 @@ MENUS: list[tuple[str, str, str | None, str | None, int]] = [
     ("system:session", "会话管理", "system:system", "session", 60),
     ("system:dictionary", "字典管理", "system:system", "dictionary", 70),
     ("system:param", "系统参数", "system:system", "param", 80),
-    ("system:audit-log", "审计日志", "system:system", "audit-log", 90),
-    ("system:trace", "链路查询", "system:system", "trace", 100),
+    ("log:manage", "日志管理", None, "log", 200),
+    ("system:audit-log", "审计日志", "log:manage", "audit-log", 210),
+    ("system:trace", "链路查询", "log:manage", "trace", 220),
 ]
 
 #: 菜单 ↔ 页面关联。菜单点进去若没有任何关联 PAGE，守卫会直接 403。

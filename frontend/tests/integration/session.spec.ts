@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { router, installDynamicRoutes, installHttpClient, resetAllSessionState } from '@/router'
+import {
+  router,
+  installDynamicRoutes,
+  installHttpClient,
+  resetAllSessionState,
+  HOME_PATH,
+} from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissionStore } from '@/stores/permission'
 import { useAppStore } from '@/stores/app'
@@ -7,9 +13,16 @@ import { useOrganizationStore } from '@/stores/organization'
 import { useRolesStore } from '@/stores/roles'
 import { useResourcesStore } from '@/stores/resources'
 import { useParamsStore } from '@/stores/params'
+import { useStatisticsStore } from '@/stores/statistics'
 import { ForbiddenError, UnauthorizedError } from '@/api/errors'
 import { http } from '@/api/client'
-import type { DepartmentTreeNode, PermissionResource, Role, SystemParam } from '@/types'
+import type {
+  DepartmentTreeNode,
+  PermissionResource,
+  Role,
+  StatisticsOverview,
+  SystemParam,
+} from '@/types'
 import { fail, forbidden, headerOf, ok, stubFetch, unauthorized } from '../helpers/fetchMock'
 import { buildContract, FULL_PAGE_SPECS, makeTokenPair, pageSpec } from '../helpers/fixtures'
 
@@ -93,6 +106,20 @@ function param(id: string): SystemParam {
     status: 'ACTIVE',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+/** 报表统计快照（`accessible` 全 true 的最小完整形状）。 */
+function overview(): StatisticsOverview {
+  const group = { accessible: true, total: 1 }
+  return {
+    generated_at: '2026-01-01T00:00:00Z',
+    scope_policy: 'ALL',
+    users: { accessible: true, total: 1, active: 1, disabled: 0 },
+    sessions: { accessible: true, online_users: 1, online_sessions: 2, total: 3 },
+    departments: group,
+    roles: group,
+    audit: { accessible: true, today: 0, total: 0 },
   }
 }
 
@@ -181,7 +208,7 @@ beforeEach(async () => {
   // `currentRoute` 属于 vue-router 的历史栈，是模块级的，不随 pinia 重置。
   // 不清的话下一条用例会从上一轮的落点开始导航，报出来的错是
   // "infinite redirect" 这种与真实原因无关的现象。
-  await router.replace('/dashboard')
+  await router.replace(HOME_PATH)
 })
 
 function pathExists(path: string): boolean {
@@ -289,12 +316,25 @@ describe('Logout → 路由与状态清理', () => {
     useRolesStore().rows = [role('9001')]
     useResourcesStore().rows = [resource('8001')]
     useParamsStore().rows = [param('1')]
+    useStatisticsStore().overview = overview()
 
     resetAllSessionState()
 
     expect(authStore.isAuthenticated).toBe(false)
     expect(permissionStore.isLoaded).toBe(false)
     expect(useAppStore().notice).toBeNull()
+  })
+
+  it('报表统计必须随会话清掉：它是**被权限过滤过**的数据', () => {
+    // 与部门树同理，而且更直接：无权限的域以 `accessible: false` + null 返回，
+    // 缓存跨账号留存会让权限更低的账号先看到上一个人的数字。
+    useStatisticsStore().overview = overview()
+    useStatisticsStore().loaded = true
+
+    resetAllSessionState()
+
+    expect(useStatisticsStore().overview).toBeNull()
+    expect(useStatisticsStore().loaded).toBe(false)
   })
 
   it('业务域缓存必须随会话清掉，否则换账号会看到上一个账号的部门树', () => {

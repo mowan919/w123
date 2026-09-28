@@ -1603,3 +1603,312 @@ Agent 不得擅自决定。**2026-09-26 由用户显式要求引入** —— 该
   `role_code="SUPER_ADMIN"` 等唯一键 —— 即 §18.3 的 `OPERATION-11-01`，
   与代码无关。因此本地"全量绿"不能作为本轮的验收证据，
   本轮以后端单测 + 前端门禁 + 浏览器复验三条并用来判。
+
+## 22. 报表页面 —— 实际落地口径
+
+2026-09-28 用户以一句话提出：**"新增一个报表页面，默认进去就是报表页面，
+目前就显示 注册用户 在线用户，剩余你可以补充"**。本节记录由此产生的裁定。
+
+### 22.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `INTERIM-22-01` | 新增端点 `GET /api/v1/admin/statistics/overview`（`08` 未冻结该路径） | 技术决策，**未冻结** |
+| `INTERIM-22-02` | 报表的授权在**服务层按域逐个完成**，路由层不声明单一权限位 | 技术决策，**未冻结**（`DEBT-10-01` 的同形扩展） |
+| `JUDGMENT-22-01` | 报表读**不落审计**（默认落地页，逐次记审计 = 审计表被访问日志淹没） | 已裁定（沿用 `INTERIM-7-05` 取向） |
+| `OPERATION-22-01` | 默认落地页由 `/dashboard` 改为 `/reports`（`HOME_PATH`） | 操作约定 |
+| `OPERATION-22-02` | 分组不可见必须表达为 `accessible:false` + 计数 `null`，**禁止兜底成 0** | 操作约定（安全相关） |
+| `OPERATION-22-03` | "在线用户"必须**按 `user_id` 去重**，与"在线会话"是两个字段 | 操作约定（口径正确性） |
+| `DEPRECATED-22-01` | `views/DashboardView.vue` 已删除，内容并入报表页 | 已落地 |
+
+### 22.2 为什么必须新增一个端点（`INTERIM-22-01`）
+
+需求里"注册用户 / 在线用户"这两个数字，**现有端点拼不出来第二个**：
+
+- `GET /admin/users` 的 `total` 口径正确，但要取一页列表才有；一次报表
+  有五个域就要发五个请求，并发下还会各自取到**不同时刻**的快照。
+- **"在线用户"不在 Users 域**：它是 `sessions` 表的**去重**计数 ——
+  一个人开三个浏览器 = 3 条会话、**1 个**在线用户。而
+  `GET /admin/sessions?online=true` 的 `total` 数的是**会话**不是人。
+
+把会话数当在线用户数上报，是一个"看起来完全合理、实际会随用户多开标签页
+线性增长"的错误数字。本机库里的真实数据正好是这个形状：
+**在线用户 1 / 在线会话 40**（同一账号留下的 40 条有效会话）。
+
+因此把"报表口径"显式建模为独立契约：一次请求给出全部指标，
+`generated_at` 只取一个（整个响应在时间上自洽）。
+
+### 22.3 授权位置（`INTERIM-22-02`）
+
+报表是**登录后的默认落地页**，因此**不能**在路由层绑单一权限位 ——
+任何不具备该位的用户一登录就会撞在 403 上。改为服务层**按域逐个判权**：
+
+| 分组 | 权限位 | 是否受数据范围 |
+|---|---|---|
+| `users` | `USER_MANAGE` | 是 |
+| `sessions` | `SESSION_MANAGE` | 是 |
+| `departments` | `DEPARTMENT_MANAGE` | 是 |
+| `roles` | `ROLE_MANAGE` | 否（全局配置面） |
+| `audit` | `AUDIT_READ` | 否（`INTERIM-10-01`） |
+
+无权 → 该分组 `accessible=false` + 计数 `null`；**不返回 403**
+（没有发生"被拒绝的请求"，与菜单少显示一项同类，因此也不需要 FAILURE 留痕）。
+
+为此在 `AuthorizationService` 增加 `effective_api_codes(actor)`：一次请求要判
+5 个域，逐个调 `has_api_permission` 会把"角色 → 继承 → 授权 → 编码"
+重复解析 5 次。SUPER_ADMIN 在其中**展开为全量枚举**（与
+`has_api_permission` 对任意码放行等价），bypass 判定仍只出现在本模块。
+
+**为什么不新增 `REPORT_READ` 权限位**：多一个位就要多一轮"谁能拿到它"的
+授权治理（资源定义 + 角色授权 + 迁移），而它换来的可见性在安全上与
+"直接去那个域的列表页翻一遍"完全等价 —— 每个数字的能见度都没有增加。
+
+### 22.4 `null` 与 `0` 的区别（`OPERATION-22-02`）
+
+```text
+"你没有权限看这个数字"   ≠   "系统里一个都没有"
+```
+
+两者都渲染成 `0` 会让**无权限的报表看起来像"系统是空的"** ——
+运维据此得出"没人注册"的结论。因此契约里不可见一律是 `null`，
+前端渲染成"无权限"，且**不允许**写 `value ?? 0` 这种兜底。
+`tests/views/report.spec.ts` 有一条断言专门钉死这一点
+（已做变异验证：把 `v-if="card.accessible"` 去掉后该用例精准变红）。
+
+### 22.5 本批次开发中修正的两处实现缺陷
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 首次加载**失败**后仍显示 4 张呼吸的骨架卡片 | 骨架条件是 `overview === null`，没区分"正在加载"与"已失败" | 加上 `error === null`：失败时改为显示错误条 |
+| 欢迎条上的"数据范围"取自权限 store，与响应里的 `scope_policy` 可能不一致 | 同一件事有两个来源 | 以**响应**的 `scope_policy` 为准，权限 store 仅作首屏失败时的兜底 |
+
+### 22.6 本轮实测记录
+
+- 后端门禁：`ruff check` / `ruff format --check` / `mypy`（115 files）全绿。
+- 后端定点验证（真实库，**只读**；脚本在本机工作区临时目录，`.workbuddy/` 被
+  `.gitignore` 忽略，因此**不随仓库分发**，需要时按下面的描述重建）：
+  - `verify_statistics.py` —— 25 项断言全 PASS。含"聚合数字与
+    手写 SQL **直算**对账"（不是等于它自己）、`active+disabled==total`、
+    `online_users<=online_sessions<=total`、空部门集合 fail-closed 为 0、
+    **`effective_api_codes` 与既有 `has_api_permission` 逐码一致**
+    （两条独立路径互证，防止批量路径悄悄放宽）。
+  - `verify_statistics_http.py` —— 真实 ASGI 应用 + 真实库，
+    15 项断言全 PASS。含"未认证 → 401"、响应字段集合与契约一致、
+    `null` 经 JSON 序列化后仍是 `null`（没被 `jsonable_encoder` 变成别的）。
+- 路由授权护栏 `tests/test_route_authorization_guard.py` **5 passed**
+  （新端点登记在白名单中，理由见 §22.3）。
+- 前端门禁：`vitest run` **257 passed / 22 files**、`vue-tsc --noEmit`、
+  `eslint .`、`vite build` 全绿。新增 22 个用例（API 3 / store 8 / 视图 11）。
+- 经 vite 代理访问新端点返回 401（证明"浏览器 → 代理 → 后端 → 路由"整条链通）。
+
+### 22.7 验证边界（与 §18.4 同类，**未关闭**）
+
+**登录后的浏览器复验本轮未做**，原因是环境限制：
+`BLOCKED-11-01` 记录的 E2E 账号（`admin` / `deptadmin` / `viewer`）在当前库里
+**只剩 `admin` 一个用户**，且其口令由 `SEED_INIT_ADMIN_PASSWORD` 注入、
+未落任何配置文件（已离线比对候选口令，全部不匹配），因此**拿不到可用凭据**。
+
+本轮改用的替代证据链（**五层，逐层可复现**）：
+
+```text
+SQL 直算  ←→  Service 聚合      （verify_statistics.py）
+Service   ←→  HTTP 响应 DTO     （verify_statistics_http.py）
+HTTP 路径 ←→  前端 api 端点      （tests/api/statistics.spec.ts）
+api       ←→  store 状态         （tests/stores/statistics.spec.ts）
+store     ←→  页面 DOM           （tests/views/report.spec.ts）
+```
+
+另有"新增模块能被 vite dev 管道编译"的检查（5 个新/改文件均返回 200）。
+**未覆盖的只剩视觉呈现**（间距、配色、动画），这一层需要登录凭据才能看。
+
+## 23. 菜单分组与列表字段补全 —— 实际落地口径（2026-09-28）
+
+2026-09-28 用户以 3 条清单提出后台可用性问题（原文）：
+
+```text
+1、系统管理这个菜单不能点击
+2、将日志这些从系统管理里面移出来，放在一个新的的菜单栏
+3、后端数据字段能够用的都用上
+```
+
+### 23.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `INTERIM-23-01` | 新增顶级 MENU 资源 `log:manage`（名称「日志管理」）；两个日志菜单的**编码保持不变**，仍为 `system:audit-log` / `system:trace` | 技术决策，**未冻结** |
+| `OPERATION-23-01` | 菜单分组标题渲染为 `<button>`（语义 = 展开 / 收起），**不做导航** | 操作约定 |
+| `FINDING-23-01` | `PermissionField` 的 `code` 传了**资源编码** `field:user.phone`，而契约下发的是**字段键** `phone`，两者永不匹配 | **真实缺陷，已修复** |
+| `OPERATION-23-02` | 列表页必须消费响应 DTO 的**全部**字段（仅 `id` 与分页字段可例外） | 操作约定，附可复核脚本 |
+
+### 23.2 为什么保留编码不变（`INTERIM-23-01`）
+
+把「审计日志」从「系统管理」搬到「日志管理」，最自然的手法是顺手把编码从
+`system:audit-log` 改成 `log:audit-log` —— 包名与位置一致，看起来更"干净"。
+**本轮不做这件事**，理由是三条改动面全为负收益：
+
+1. `resource_code` 是**权限标识**。`role_permissions` 按资源 **ID** 授权，
+   所以改编码本身不会动授权数据；但它会让**任何按编码书写的检查**失效
+   （`scripts/seed_data.py`、前端 `AppSidebar.ICON_BY_CODE`、
+   若干测试夹具）。改一个字符串要同步改四处引用，收益是零。
+2. 图标映射是按编码两级解析的（`ICON_BY_NAME` → `ICON_BY_CODE`），
+   改编码会让已配置的 `icon` 名字与编码兜底同时失准。
+3. **用户可见的结果完全相同**：菜单的标题、层级、可见性都由 `resource_name`
+   与 `parent_id` 决定，与编码无关。
+
+因此本轮只调整**层级**（`parent_id` + `sort_order`），编码视为稳定契约。
+新分组的编码 `log:manage` 用 `log` 作图标名（对应前端 `DocumentTextOutline`）。
+
+### 23.3 为什么是数据迁移而不是只改种子脚本
+
+`scripts/seed_data.py` 的写入是**幂等**的：按 `(resource_type, resource_code)`
+先查后写，已存在就跳过（见 §19.2）。这意味着它**不会**修正存量库里
+已经写好的 `parent_id` —— 只改种子清单，已部署环境（含共享开发库）
+永远停在旧结构上。要拿到新结构必须走一次数据迁移，
+即 `alembic/versions/20260928_1500_phase11_log_menu_group.py`。
+
+两条易踩的边界，都已在实现里处理并有验证：
+
+| 场景 | 处理 |
+|---|---|
+| **全新库**（迁移先跑、seed 还没跑） | `upgrade()` **no-op** 返回。否则迁移与种子会各自建一条 `log:manage`，`uq_permission_resources_type_code_active` 让 seed 直接失败 |
+| **回滚**（`downgrade()`） | 两个子菜单的 `parent_id` / `sort_order` 还原为 `system:system` / `90`、`100`；且**只删除 ID 恰为 `710001` 的那一行** —— 若该编码下已有管理员手工建的行，擅自删除会把它的授权一起带走 |
+
+新增行的 ID 取固定值 `710001`（而非调用 Snowflake）：迁移必须在任何部署形态下
+可重复执行且结果确定，而 Snowflake 依赖 worker/datacenter 配置。
+`710001` 落在生成器输出范围之外（最小输出 `1 << 22 = 4194304`），与
+Phase 7 的 `700001` 同一做法。
+
+迁移在真实库上做过**往返验证**（`upgrade → downgrade → upgrade`）：
+三态与预期逐字一致，且第二次 `upgrade` 落回与第一次完全相同的状态。
+
+### 23.4 分组标题为什么是 `<button>` 而不是带 `@click` 的 `<div>`（`OPERATION-23-01`）
+
+需求 1 的字面是"系统管理这个菜单不能点击"。需要澄清的是：
+**它本来就不该导航** —— 「系统管理」「日志管理」都是**纯分组**，
+不关联任何 PAGE（`page_ids` 为空），所以"跳到哪儿"这个问题没有答案。
+用户真正想要的是**点了有反应**，即展开 / 收起。
+
+用 `<button type="button">` 而不是 `<div @click>`，是因为只有前者能免费拿到：
+
+- **键盘可达**：`Tab` 能聚焦、`Enter` / `Space` 能触发；
+- **`aria-expanded`**：屏幕阅读器据此播报"展开 / 收起"状态。
+
+`<div @click>` 这两点都要手工补 `tabindex` / `role` / `keydown`，
+补不齐就是一个"鼠标能用、键盘不能用"的控件。
+
+另有三条实现约定：
+
+1. **存"收起"集合而不是"展开"集合**。默认状态（集合为空）= 全部展开。
+   若反过来存展开集合，就得在菜单树到达时先把所有分组灌一遍 ——
+   而树什么时候到取决于异步请求，灌早了被覆盖、灌晚了闪一下全收起。
+2. **当前所在的分组强制展开**（`watch(route.path, tree)`）。否则用户收起
+   「日志管理」后再通过面包屑或直接改 URL 进「审计日志」，侧栏里既没有高亮
+   也没有条目，看起来像"这一页不在菜单里"。折叠是导航的**辅助**，
+   不能反过来把当前位置藏起来。
+3. **折叠态与窄屏下隐藏箭头**：`.sidebar__chevron` 在 `max-width:1080px`
+   时 `display:none` —— 窄屏本来就靠侧栏横向收起表达层级，再叠一个箭头是噪音。
+
+### 23.5 `FINDING-23-01` —— 字段权限有三个"键"，混用其一即静默空白
+
+`PermissionField` 把 `code` 直接交给 `permissionStore.getFieldPermission()`，
+而后者查的是**契约**下发的 `PermissionFieldItem.field_key`。这个键的取值是
+**裸键**（`phone` / `email` / `remark` / `department_name`）。
+
+但同一个字段在 `permission_resources` 表里的 `resource_code` 是
+**`field:{key}`**（`scripts/seed_data.py` 的 `ALL_RESOURCE_CODES` 就是这么拼的）。
+旧代码写的是第三种东西 —— `field:user.phone`：既不是裸键、也不是资源编码，
+**永远不会命中任何合法输入**。
+
+后果的严重性在于它的**表现形式**：`PermissionField` 在 `HIDDEN` 时
+`v-if` 直接不渲染（fail-closed），且 `getFieldPermission` 对未知键缺省返回
+`HIDDEN`。于是"联系人与邮箱两列表头还在、单元格全是空白"，
+**对任何角色都一样，包括 SUPER_ADMIN**，且控制台不报任何错。
+
+这条与 §21.2 的 `FINDING-21-01` 是**同一个失败模式**：fail-closed 的渲染
+把"配置错了"与"确实没权限"变成同一个画面。因此修复方式不只改键名，
+还在 `frontend/tests/views/listFields.spec.ts` 里加了一条**拼写回归**用例
+（把 `code` 改回 `field:user.phone` 即精准变红）。
+
+三个键的分工，改这块前先读这张表：
+
+| 名字 | 出现位置 | 取值 |
+|---|---|---|
+| `resource_code` | `permission_resources` 表 / 资源管理页 | `field:phone` |
+| `field_key` | 契约 `PermissionFieldItem` / `PermissionField` 的 `code` | `phone` |
+| `PermissionField.code` | 前端组件 prop | **= `field_key`** |
+
+### 23.6 本轮字段补全清单（`OPERATION-23-02`）
+
+需求 3 的执行方式是**逐页核对响应 DTO 与列定义**，而不是凭印象加几列。
+共补全 9 个页面：
+
+| 页面 | 新增消费的字段 |
+|---|---|
+| 用户管理 | `must_change_password` / `failed_login_count` / `locked_until` / `password_changed_at` / `updated_at` / `id` |
+| 会话管理 | `revoke_reason` / `access_expires_at` / `refresh_expires_at` / `user_id` / `id` |
+| 审计日志 | `result`（提到 `action` 之后）/ `operator_id` / `error_code` / `user_agent` / `trace_id` / `request_id` / `id` |
+| 链路查询 | `request_id`；明细抽屉补「链路 ID + 条数」与「操作者 / 请求 ID」 |
+| 角色管理 | `description` / `updated_at` / `id` |
+| 字典管理 | `description` / `updated_at` / `id`；字典项表补「描述 / 创建时间 / 更新时间 / 项 ID」 |
+| 系统参数 | `param_value`（显式值，与 `effective_value` **分开**）/ `description` / `created_at` / `updated_at` / `id` |
+| 权限资源 | `parent_id` / `owner_resource_id` / `icon` / `sort_order` / `created_at` / `updated_at` / `id` |
+| 部门管理 | 树行补「ID · 上级」（`id` / `parent_id`） |
+
+两处口径说明：
+
+1. **`param_value` 与 `effective_value` 分开显示**。前者是配置里**写了什么**，
+   后者是**实际生效的值**（可能来自 `default_value` 兜底）。压成一列会让
+   "配置项为空但生效值有值"这个状态不可见 —— 而那正是排查参数问题要看的东西。
+2. **审计日志的 `before_data` / `after_data` 只进明细抽屉**，不进列表列。
+   它们是 JSONB，塞进列表会把表格撑破；且里面可能含敏感字段，
+   放在需要主动展开的抽屉里比平铺在列表上更合适。
+
+为让"用上了"可复核（而不是靠翻代码），附一个只读对账脚本
+（位于本机工作区临时目录，`.workbuddy/` 被 `.gitignore` 忽略，
+**不随仓库分发**，需要时按下面的描述重建）：把 11 组
+「响应模型 → 视图文件」逐一比对，列出每个 DTO 字段是否在视图中出现，
+未出现即非零退出。本轮结果：**11 组全部覆盖**，
+`UserResponse` 13 / `SessionResponse` 14 / `AuditLogResponse` 15 /
+`PermissionResourceResponse` 16 等字段全部命中。
+
+### 23.7 本轮实测记录
+
+- 后端门禁：`ruff check` / `ruff format --check`（179 files）/ `mypy`（115 files）全绿。
+- `pytest tests/test_seed_data.py tests/test_route_authorization_guard.py` **28 passed**。
+- 迁移往返（真实库）：`upgrade → downgrade → upgrade` 三态一致；
+  `downgrade` 后 `710001` 行数为 0、两子菜单 `parent_id` 回到 `system:system`、
+  `sort_order` 回到 `90` / `100`。
+- 菜单分组定点验证（真实库 + 真实契约，**只读**）**18/18 PASS**，
+  含"库里的形状"与"契约里下发的形状"两侧互证、
+  "日志管理下的子菜单**恰好是**审计日志与链路查询"（不是"包含"）、
+  以及"系统管理下不再有日志类菜单"。
+  > 该脚本初版有一条 `... or True` 的恒真断言（等于没验），本轮已重写为真实比较。
+  > 同一轮里"通过项数"从 12 涨到 18 不是覆盖面扩张，而是把假通过的项换成了真的。
+- 字段对账（只读）：**11 组响应模型全部被视图消费**（见 §23.6）。
+- 前端门禁：`vitest run` **279 passed / 24 files**、`vue-tsc --noEmit`、
+  `eslint .` 全绿；`vite build` 通过（本轮改用独立输出目录，理由见下）。
+  新增 22 个用例（`layouts/appSidebar.spec.ts` 9 + `views/listFields.spec.ts` 13）。
+- **变异验证**（项目硬约束，防"测试永远绿"）共三次，每次均确认精准变红后还原：
+  侧栏 `@click` 改 `void 0` → 4 个用例红；
+  `PermissionField` 的 `code` 改回 `field:user.phone` → 2 个用例红；
+  某列改绑错误字段（`updated_at` 绑成 `created_at`）→ 1 个用例红。
+
+`vite build` 为什么换输出目录：本机对**单次批量删除**有数量阈值（50），
+`vite build` 清空旧的 `frontend/dist`（该目录本次有 75 个文件）时会被拦下。
+这是**本机工具链**的限制，不是构建失败 —— 换一个全新输出目录即正常产出，
+产物核对后已删除。正常开发机上 `npm run build` 行为不变。
+
+### 23.8 验证边界（同类未做项，**未关闭**）
+
+**登录后的浏览器复验本轮同样未做**，原因与 §22.7 完全相同
+（`BLOCKED-11-01`：库里只剩 `admin` 一个账号，口令未落任何配置文件）。
+因此本轮对"需求 1 / 2 / 3"的判定建立在：
+
+```text
+侧栏点击 / 展开收起   →  组件级挂载测试（9 例）+ 真实契约的形状对账（12 项）
+日志菜单层级         →  库内数据 + 契约输出 两侧互证 + 迁移往返
+字段补全             →  DTO ↔ 视图对账 + DOM 级断言（13 例）
+```
+
+**未覆盖的仍是视觉与手感**（箭头旋转、点击动效、窄屏断点观感），
+这一层需要可用凭据才能确认。

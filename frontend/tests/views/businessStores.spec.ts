@@ -245,6 +245,34 @@ describe('用户管理页', () => {
     const checkbox = wrapper.findComponent(NCheckbox)
     expect(checkbox.props('disabled')).toBe(true)
   })
+
+  it('新增弹窗打开时不显示必填提示，点了保存才提示', async () => {
+    usePermissionStore().buttonCodes = new Set(['user:create'])
+    const wrapper = await mountView(UserListView)
+
+    const entry = wrapper.findAll('button').filter((button) => button.text().includes('新建用户'))
+    expect(entry.length).toBeGreaterThan(0)
+    await entry[0]?.trigger('click')
+    await flushPromises()
+
+    // 弹窗传送到 body，只能查真实文档（naive 的 Modal 不受 wrapper 管辖）。
+    const dialog = document.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+
+    // 一打开就干干净净：必填项还空着，但用户还没动手，不该先挂一条红字。
+    expect(dialog?.textContent).not.toContain('请填写用户名')
+
+    const save = Array.from(dialog?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === '保存',
+    )
+    expect(save).toBeDefined()
+    save?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    // 点过保存才说话，而且校验不过就**不提交**。
+    expect(dialog?.textContent).toContain('请填写用户名')
+    expect(org.createUser).not.toHaveBeenCalled()
+  })
 })
 
 describe('角色管理页', () => {

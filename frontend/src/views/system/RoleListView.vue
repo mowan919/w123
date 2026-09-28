@@ -51,9 +51,14 @@ interface RoleDraft {
 const dataColumns: Array<DataTableColumn<Role>> = [
   { key: 'role_code', title: '角色编码' },
   { key: 'role_name', title: '角色名称' },
+  // 描述是"这个角色为什么存在"的唯一说明，此前只出现在编辑弹窗里 ——
+  // 列表上完全看不出 `VIEWER` 与 `DEPARTMENT_ADMIN` 的差别在哪。
+  { key: 'description', title: '描述' },
   { key: 'data_scope', title: '数据范围' },
   { key: 'status', title: '状态', width: '100px' },
   { key: 'created_at', title: '创建时间', width: '180px' },
+  { key: 'updated_at', title: '更新时间', width: '180px' },
+  { key: 'id', title: '角色 ID', width: '200px' },
 ]
 
 const {
@@ -306,6 +311,17 @@ onMounted(() => {
       </template>
       <template #cell-created_at="{ row }">
         <span class="muted">{{ formatDateTime(row.created_at) }}</span>
+      </template>
+      <template #cell-updated_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.updated_at) }}</span>
+      </template>
+      <template #cell-description="{ row }">
+        <span :class="row.description === null || row.description === '' ? 'muted' : ''">
+          {{ row.description === null || row.description === '' ? '—' : row.description }}
+        </span>
+      </template>
+      <template #cell-id="{ row }">
+        <code class="muted">{{ row.id }}</code>
       </template>
 
       <template #actions="{ row }">

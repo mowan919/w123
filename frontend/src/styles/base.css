@@ -486,6 +486,12 @@ input[type='radio']:not([class*='n-']) {
   display: none;
 }
 
+/* 侧栏收成 64px 时分组标题只剩一个图标，箭头挤在图标右边会被裁掉一半 ——
+   而且这时分组名已经看不见，"这个分组展开着吗"也没法从箭头读出来。 */
+.app-layout.is-collapsed .sidebar__chevron {
+  display: none;
+}
+
 .app-layout.is-collapsed .sidebar__item,
 .app-layout.is-collapsed .sidebar__group-title {
   justify-content: center;
@@ -515,6 +521,47 @@ input[type='radio']:not([class*='n-']) {
   transition:
     background var(--vctn-motion),
     color var(--vctn-motion);
+}
+
+/* 分组标题是 `<button>`（可展开 / 收起，但不导航）。不重置外观的话它会
+   带上浏览器的默认灰底、圆角与居中文字 —— 和旁边的菜单项完全不是一套皮。
+   `border: none` 必须写在 `border-left` **之前**，否则会把上面那条左侧
+   色条一起清掉（两条规则同优先级，后写的赢）。 */
+.sidebar__group-title {
+  width: 100%;
+  border: none;
+  border-left: 3px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--vctn-sidebar-text-active);
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.sidebar__group-title:hover {
+  background: var(--vctn-sidebar-bg-sub);
+  opacity: 1;
+}
+
+/* 键盘走到分组标题时必须看得见焦点：收起 / 展开是这个标题唯一的操作，
+   `:focus-visible` 用 inset 描边，避免侧栏出现横向滚动条。 */
+.sidebar__group-title:focus-visible {
+  outline: 2px solid var(--vctn-primary);
+  outline-offset: -2px;
+}
+
+/* 折叠箭头：默认指右（收起态），展开时转 90° 指下。 */
+.sidebar__chevron {
+  margin-left: auto;
+  opacity: 0.55;
+  transition: transform var(--vctn-motion);
+}
+
+.sidebar__chevron.is-open {
+  transform: rotate(90deg);
 }
 
 .sidebar__item:hover {
@@ -550,18 +597,17 @@ input[type='radio']:not([class*='n-']) {
   font-size: 13px;
 }
 
-.sidebar__group-title {
-  color: var(--vctn-sidebar-text-active);
-  font-weight: 600;
-  font-size: 13px;
-  opacity: 0.75;
-}
-
 /* 分组里有活动项时，标题也点亮 —— 否则"我在系统管理下的哪一栏"
    在收起的分组上看不出来。 */
 .sidebar__group-title.is-active {
   opacity: 1;
   color: var(--vctn-sidebar-text-active);
+}
+
+/* 收起的分组标题压暗一档：标题同时承担"分组名"和"开关"两个身份，
+   展开 / 收起的差别要在一眼之内看得出来（箭头容易看漏）。 */
+.sidebar__group-title.is-collapsed {
+  opacity: 0.55;
 }
 
 .sidebar__group-title.is-active .sidebar__icon {
@@ -1235,6 +1281,11 @@ input[type='radio']:not([class*='n-']) {
     justify-content: center;
     padding-left: 0;
     padding-right: 0;
+  }
+
+  /* 窄屏自动收起与手动折叠是同一套收窄尺寸，箭头同样要藏（理由见上）。 */
+  .sidebar__chevron {
+    display: none;
   }
 
   .sidebar__brand {

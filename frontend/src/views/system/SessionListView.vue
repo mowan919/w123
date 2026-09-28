@@ -39,7 +39,26 @@ const dataColumns: Array<DataTableColumn<Session>> = [
   { key: 'last_active_at', title: '最后活跃', width: '170px' },
   { key: 'online', title: '状态', width: '90px', align: 'center' },
   { key: 'revoked_at', title: '撤销时间', width: '170px' },
+  // 「撤销时间」只说明会话什么时候结束，「撤销原因」才说明**是谁**结束的。
+  // 前者是运维信息，后者是安全信息：`TOKEN_REUSE_DETECTED` 意味着有人拿着
+  // 已经轮换过的 Refresh Token 重放，这一条不该藏在明细里。
+  { key: 'revoke_reason', title: '撤销原因', width: '150px' },
+  // 两个过期时间回答的是不同问题：`access_expires_at` 是"这个会话还热着吗"
+  // （过期后由 Refresh 续期），`refresh_expires_at` 是"socket 最长还能活多久"
+  // （总寿命上界，到点必须重新登录）。只看前者会以为会话永不过期。
+  { key: 'access_expires_at', title: 'Access 过期', width: '170px' },
+  { key: 'refresh_expires_at', title: '会话上限', width: '170px' },
+  { key: 'user_id', title: '用户 ID', width: '200px' },
+  { key: 'id', title: '会话 ID', width: '200px' },
 ]
+
+/** 撤销原因 → 中文文案。取值域是后端 `SessionRevokeReason`。 */
+const REVOKE_REASON_LABEL: Record<NonNullable<Session['revoke_reason']>, string> = {
+  LOGOUT: '本人登出',
+  ADMIN_REVOKE: '管理员撤销',
+  REVOKE_ALL: '强制下线',
+  TOKEN_REUSE_DETECTED: '令牌复用',
+}
 
 const {
   visible: visibleColumns,
@@ -313,6 +332,28 @@ onMounted(() => {
       <template #cell-username="{ row }">
         <div>{{ row.display_name || row.username }}</div>
         <div class="muted">{{ row.username }}</div>
+      </template>
+      <template #cell-revoke_reason="{ row }">
+        <span v-if="row.revoke_reason === null" class="muted">—</span>
+        <span
+          v-else
+          class="tag"
+          :class="row.revoke_reason === 'TOKEN_REUSE_DETECTED' ? 'tag--locked' : 'tag--disabled'"
+        >
+          {{ REVOKE_REASON_LABEL[row.revoke_reason] }}
+        </span>
+      </template>
+      <template #cell-access_expires_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.access_expires_at) }}</span>
+      </template>
+      <template #cell-refresh_expires_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.refresh_expires_at) }}</span>
+      </template>
+      <template #cell-user_id="{ row }">
+        <code class="muted">{{ row.user_id }}</code>
+      </template>
+      <template #cell-id="{ row }">
+        <code class="muted">{{ row.id }}</code>
       </template>
 
       <template #actions="{ row }">

@@ -16,6 +16,7 @@
  * 遮罩）都必须发出 `cancel`，否则父组件的 `open` 会停在 true，
  * 表现为"这个弹窗第二次打不开"。
  */
+import { computed, ref, watch } from 'vue'
 import { NAlert, NButton, NModal } from 'naive-ui'
 
 const props = withDefaults(
@@ -30,7 +31,12 @@ const props = withDefaults(
     cancelText?: string
     /** 危险表单（删除类）用红色确认按钮。 */
     danger?: boolean
-    /** 校验不通过时的原因；非空即禁用提交。 */
+    /**
+     * 校验未通过的原因（父组件通常是 computed，随输入实时变化）。
+     *
+     * ⚠️ 它**不会**在弹窗一打开就显示 —— 只在用户点过保存之后才回显，
+     * 见下方 `attempted` 的说明。
+     */
     error?: string | null
   }>(),
   {
@@ -48,13 +54,42 @@ const emit = defineEmits<{
   (e: 'cancel'): void
 }>()
 
+const hasError = computed(() => props.error !== null && props.error !== '')
+
+/**
+ * 用户是否**已经尝试过提交**。
+ *
+ * 这个是"错误提示什么时候出现"的唯一开关。之前是实时回显：弹窗一打开，
+ * 必填项本来就还空着，顶部立刻挂一条红字，保存按钮也同时变灰 ——
+ * 用户还没动手就先挨一顿数落，而且按钮点不动，连"到底缺什么"都问不出来。
+ * 现在改成"提交时才开口"：
+ *
+ * - 打开弹窗时界面是干净的；
+ * - 点了保存（或表单里按 Enter）才把问题说出来；
+ * - 用户改好之后红字自动消失 —— 因为 `error` 是父组件的 computed，
+ *   条件一旦满足就变 null，这里不需要再监听输入；
+ * - 下次重新打开时重置，上一次的失败不该让这一次一开门就挂着红字。
+ */
+const attempted = ref(false)
+
+watch(
+  () => props.open,
+  (open) => {
+    if (open) attempted.value = false
+  },
+  { immediate: true },
+)
+
 function onClose(): void {
   if (props.loading) return
   emit('cancel')
 }
 
 function onSubmit(): void {
-  if (props.loading || (props.error !== null && props.error !== '')) return
+  if (props.loading) return
+  // 先记下"他试过了"，好让下面的错误条有条件地显形；校验不通过就不提交。
+  attempted.value = true
+  if (hasError.value) return
   emit('submit')
 }
 </script>
@@ -70,7 +105,12 @@ function onSubmit(): void {
     @update:show="(value: boolean) => !value && onClose()"
   >
     <form class="form-dialog__body" @submit.prevent="onSubmit">
-      <NAlert v-if="props.error" type="error" :bordered="false" class="form-dialog__error">
+      <NAlert
+        v-if="attempted && hasError"
+        type="error"
+        :bordered="false"
+        class="form-dialog__error"
+      >
         {{ props.error }}
       </NAlert>
       <slot />
@@ -85,7 +125,7 @@ function onSubmit(): void {
         <NButton
           :type="props.danger ? 'error' : 'primary'"
           :loading="props.loading"
-          :disabled="props.error !== null && props.error !== ''"
+          :disabled="props.loading"
           attr-type="submit"
           @click="onSubmit"
         >

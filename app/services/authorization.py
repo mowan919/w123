@@ -268,6 +268,28 @@ class AuthorizationService:
         codes = await self._effective_permissions.resolve_api_codes(actor.user_id)
         return api_code in codes
 
+    async def effective_api_codes(self, *, actor: CurrentActor) -> frozenset[str]:
+        """操作者的**有效 API 权限编码集合**（批量判定入口）。
+
+        与 `has_api_permission` 的分工：后者回答"有没有这一个"，
+        本方法回答"有哪些"。一次请求要判 N 个域时（报表要判 5 个），
+        逐个调用 `has_api_permission` 会把"角色 → 继承 → 授权 → 编码"
+        这条链路重复解析 N 次（每次 4~5 条 SQL）；集合形态只解析一次。
+
+        SUPER_ADMIN 在此**展开为全量枚举**而不是返回一个"全部"标记：
+        `has_api_permission` 对任意字符串都放行超管，而调用方只可能询问
+        `ApiPermissionCode` 的成员，因此"返回整个枚举"与它的行为完全等价。
+        bypass 判定仍然只出现在本模块（Spec `10 §3` 集中式）。
+
+        fail-closed：身份解析不出来时返回**空集合**
+        （与 `has_api_permission` 的取向一致：不确定即有权限者，宁可判无）。
+        """
+        if actor.is_super_admin:
+            return frozenset(code.value for code in ApiPermissionCode)
+        if await self._users.get(actor.user_id) is None:
+            return frozenset()
+        return await self._effective_permissions.resolve_api_codes(actor.user_id)
+
     async def assert_api_permission(self, *, actor: CurrentActor, api_code: str) -> None:
         """断言操作者具备某个 API 权限（Spec `08 §10` 后端强制授权）。
 

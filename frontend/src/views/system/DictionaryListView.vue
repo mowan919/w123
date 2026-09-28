@@ -49,8 +49,11 @@ const appStore = useAppStore()
 const dataColumns: Array<DataTableColumn<DictType>> = [
   { key: 'dict_code', title: '字典编码' },
   { key: 'dict_name', title: '字典名称' },
+  { key: 'description', title: '描述' },
   { key: 'status', title: '状态', width: '90px', align: 'center' },
   { key: 'created_at', title: '创建时间', width: '170px' },
+  { key: 'updated_at', title: '更新时间', width: '170px' },
+  { key: 'id', title: '字典 ID', width: '200px' },
 ]
 
 const {
@@ -408,6 +411,17 @@ onMounted(() => {
       <template #cell-created_at="{ row }">
         <span class="muted">{{ formatDateTime(row.created_at) }}</span>
       </template>
+      <template #cell-updated_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.updated_at) }}</span>
+      </template>
+      <template #cell-description="{ row }">
+        <span :class="row.description === null || row.description === '' ? 'muted' : ''">
+          {{ row.description === null || row.description === '' ? '—' : row.description }}
+        </span>
+      </template>
+      <template #cell-id="{ row }">
+        <code class="muted">{{ row.id }}</code>
+      </template>
       <template #cell-dict_code="{ row }">
         <div class="cell-actions">
           <code>{{ row.dict_code }}</code>
@@ -458,6 +472,13 @@ onMounted(() => {
             <th>排序</th>
             <th>默认</th>
             <th>状态</th>
+            <!-- 描述与时间戳后端一直返回，此前没渲染：一个字典项"为什么是
+                 这个值"往往就写在描述里。`dict_type_id` 刻意不列 —— 它就是
+                 面板标题里那个字典的 ID，每行都一样，列出来只是噪音。 -->
+            <th>描述</th>
+            <th>创建时间</th>
+            <th>更新时间</th>
+            <th>项 ID</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -475,6 +496,14 @@ onMounted(() => {
                 {{ item.status === 'ACTIVE' ? '启用' : '禁用' }}
               </span>
             </td>
+            <td>
+              <span :class="item.description === null || item.description === '' ? 'muted' : ''">
+                {{ item.description === null || item.description === '' ? '—' : item.description }}
+              </span>
+            </td>
+            <td class="nowrap"><span class="muted">{{ formatDateTime(item.created_at) }}</span></td>
+            <td class="nowrap"><span class="muted">{{ formatDateTime(item.updated_at) }}</span></td>
+            <td><code class="muted">{{ item.id }}</code></td>
             <td>
               <span class="table-actions">
                 <PermissionButton code="dictionary:item-update" type="text" @click="startEditItem(item)">编辑</PermissionButton>

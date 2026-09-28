@@ -149,6 +149,22 @@ class LogQueryRepository:
         """按主键读取单条审计日志。"""
         return await self._session.get(AuditLog, audit_log_id)
 
+    async def count_audit_logs(self, *, created_from: datetime | None = None) -> int:
+        """统计审计记录数（可选"某时刻起"的下界）。
+
+        与 `list_audit_logs` 共用 `_count`，因此两者口径必然一致
+        （不会出现"列表第一页有 20 条、总数说 0 条"）。
+        `created_from` 落在 `created_at` 上，有 `ix_audit_logs_created_at` 支持。
+
+        审计表在保留期内是 **append-only**（`vctn.retention='on'` 才允许 DELETE，
+        见 Phase 6），因此这里**没有**软删除过滤 —— 加上一个恒为假的
+        `deleted_at IS NULL` 只会让人误以为审计也有软删除。
+        """
+        conditions: list[Any] = []
+        if created_from is not None:
+            conditions.append(AuditLog.created_at >= created_from)
+        return await self._count(AuditLog, conditions)
+
     async def _count(self, model: type[Any], conditions: Sequence[Any]) -> int:
         """计数（`COUNT(*)` 而不是取回全部行再 `len()`）。"""
         stmt = select(func.count()).select_from(model).where(*conditions)

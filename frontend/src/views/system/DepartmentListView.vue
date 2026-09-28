@@ -253,6 +253,12 @@ boot()
         <span class="tag" :class="row.node.status === 'ACTIVE' ? 'tag--active' : 'tag--disabled'">
           {{ row.node.status === 'ACTIVE' ? '启用' : '禁用' }}
         </span>
+        <!--
+          `id` 与 `parent_id` 后端一直在返回，此前只被内部当成 key / 草稿字段。
+          它们对外是**沟通坐标**：报障时"把部门 ID 发我"比"第三层左边那个"
+          可靠得多。层级本身已由缩进表达，这里给的是原始值。
+        -->
+        <code class="tree__code">ID {{ row.node.id }} · 上级 {{ row.node.parent_id ?? '—' }}</code>
 
         <span class="tree__actions">
           <PermissionButton code="department:create" type="text" @click="startCreate(row.node.id)">

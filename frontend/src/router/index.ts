@@ -7,6 +7,7 @@ import { useOrganizationStore } from '@/stores/organization'
 import { useRolesStore } from '@/stores/roles'
 import { useResourcesStore } from '@/stores/resources'
 import { useParamsStore } from '@/stores/params'
+import { useStatisticsStore } from '@/stores/statistics'
 import { setSessionCleanupHook } from '@/stores/auth'
 import { configureClient } from '@/api/client'
 import {
@@ -56,10 +57,14 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: HOME_PATH },
       {
-        path: 'dashboard',
-        name: 'dashboard',
-        component: () => import('@/views/DashboardView.vue'),
-        meta: { title: '概览' },
+        // 报表是**静态路由**（与 profile 同类）：它是登录后的默认落地页，
+        // 必须对任何已认证用户都可达，因此不能进权限契约被 PAGE 权限卡住。
+        // 页面内容按域逐个降级（无权的那一域显示"无权限"而不是 403），
+        // 判定在后端 `app/services/statistics.py`，前端不做任何白名单。
+        path: 'reports',
+        name: 'reports',
+        component: () => import('@/views/ReportView.vue'),
+        meta: { title: '报表' },
       },
       {
         // 个人中心是**静态路由**：它不需要任何管理类权限，人人都有自己的一页，
@@ -141,6 +146,10 @@ let inSessionReset = false
  * 缓存留到换账号之后，下一个账号的用户（哪怕只是同一个浏览器开了另一个
  * 账号）就能看到上一个账号可见、而自己无权看到的部门清单 —— 一次实打实
  * 的越权信息泄露，且不会有任何报错。
+ *
+ * 报表统计同理，而且更直接：它的每个数字都是**已经被权限过滤过的**
+ * （无权限的域返回 null）。缓存留到下一个（权限更低的）账号，
+ * 页面会先渲染出上一个人看到的数字再被刷新覆盖 —— 同样是一次静默越权展示。
  */
 export function resetAllSessionState(): void {
   if (inSessionReset) return
@@ -155,6 +164,7 @@ export function resetAllSessionState(): void {
     useRolesStore().reset()
     useResourcesStore().reset()
     useParamsStore().reset()
+    useStatisticsStore().reset()
   } finally {
     inSessionReset = false
   }

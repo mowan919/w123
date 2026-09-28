@@ -80,3 +80,10 @@ export type {
   SystemParamStatus,
 } from './param'
 export type { AuditLog, AuditLogPage } from './log'
+export type {
+  AuditStatistics,
+  SessionStatistics,
+  StatisticsOverview,
+  TotalStatistics,
+  UserStatistics,
+} from './statistics'

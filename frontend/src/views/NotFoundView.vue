@@ -6,7 +6,7 @@
   <div class="not-found">
     <h1>404</h1>
     <p>页面不存在，或者你没有访问权限。</p>
-    <a class="btn" href="/dashboard">返回概览</a>
+    <a class="btn" href="/reports">返回报表</a>
   </div>
 </template>
 

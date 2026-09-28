@@ -12,7 +12,15 @@
 
 export const LOGIN_PATH = '/login'
 export const FORBIDDEN_PATH = '/403'
-export const HOME_PATH = '/dashboard'
+/**
+ * 登录后的默认落地页 = **报表页**。
+ *
+ * 选它的理由：新登录的人第一件想知道的事是"系统现在什么状况"，
+ * 而报表页对这个问题的答案是数字化的。它也是唯一一个**人人可进**的
+ * 业务页（不绑定任何管理类权限），因此可以对所有角色用同一个回跳目标 ——
+ * 否则就会出现"某类角色登录后被跳到一个他无权访问的页面再被踢到 403"。
+ */
+export const HOME_PATH = '/reports'
 
 export interface GuardContext {
   /** 目标路径（不含 query）。 */

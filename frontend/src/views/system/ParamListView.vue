@@ -25,6 +25,7 @@ import FormDialog from '@/components/feedback/FormDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { useColumnSettings } from '@/composables/useColumnSettings'
 import { useParamsStore } from '@/stores/params'
+import { formatDateTime } from '@/utils/format'
 import type { DataTableColumn } from '@/components/data/types'
 import type { SystemParam } from '@/types'
 import type { ID } from '@/types/common'
@@ -36,9 +37,17 @@ const dataColumns: Array<DataTableColumn<SystemParam>> = [
   { key: 'param_key', title: '参数键' },
   { key: 'param_name', title: '参数名' },
   { key: 'param_type', title: '类型', width: '90px' },
+  // 「显式值」与「当前生效值」是两个概念：前者是管理员**设过**的值（可能为
+  // NULL = 没设过），后者是策略链算出来的结果。只看生效值无法回答
+  // "这个值是配的还是继承来的" —— 那正是排查配置问题时第一个要问的。
+  { key: 'param_value', title: '显式值', width: '160px' },
   { key: 'effective_value', title: '当前生效值' },
   { key: 'default_value', title: '默认值' },
   { key: 'status', title: '状态', width: '90px', align: 'center' },
+  { key: 'description', title: '描述' },
+  { key: 'created_at', title: '创建时间', width: '170px' },
+  { key: 'updated_at', title: '更新时间', width: '170px' },
+  { key: 'id', title: '参数 ID', width: '200px' },
 ]
 
 const {
@@ -284,6 +293,24 @@ onMounted(() => {
       </template>
       <template #cell-param_key="{ row }">
         <code>{{ row.param_key }}</code>
+      </template>
+      <template #cell-param_value="{ row }">
+        <code v-if="row.param_value !== null">{{ row.param_value }}</code>
+        <span v-else class="muted">未设置</span>
+      </template>
+      <template #cell-description="{ row }">
+        <span :class="row.description === null || row.description === '' ? 'muted' : ''">
+          {{ row.description === null || row.description === '' ? '—' : row.description }}
+        </span>
+      </template>
+      <template #cell-created_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.created_at) }}</span>
+      </template>
+      <template #cell-updated_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.updated_at) }}</span>
+      </template>
+      <template #cell-id="{ row }">
+        <code class="muted">{{ row.id }}</code>
       </template>
 
       <template #actions="{ row }">

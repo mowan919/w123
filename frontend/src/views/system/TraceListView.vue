@@ -27,6 +27,9 @@ const appStore = useAppStore()
 
 const dataColumns: Array<DataTableColumn<TraceSummary>> = [
   { key: 'trace_id', title: '链路 ID' },
+  // 一个 `trace_id` 可能被 `X-Trace-ID` 复用在多个请求上，`request_id` 才是
+  // "最近那一次 HTTP 请求"的标识 —— 排查时经常要靠它去访问日志里对时间。
+  { key: 'request_id', title: '请求 ID', width: '220px' },
   { key: 'first_seen_at', title: '首条时间', width: '170px' },
   { key: 'last_seen_at', title: '末条时间', width: '170px' },
   { key: 'counts', title: '日志类型分布' },
@@ -139,6 +142,9 @@ onMounted(() => {
       <template #cell-trace_id="{ row }">
         <code>{{ row.trace_id }}</code>
       </template>
+      <template #cell-request_id="{ row }">
+        <code>{{ row.request_id ?? '—' }}</code>
+      </template>
       <template #cell-counts="{ row }">
         <span class="muted">{{ describeCounts(row.counts) }}</span>
       </template>
@@ -174,6 +180,13 @@ onMounted(() => {
         </h3>
         <p v-if="detailLoading" class="muted">加载中…</p>
         <template v-else>
+          <!-- `GET /traces/{id}` 的响应里 `trace_id` 与 `entries` 是一对；
+              此前只用了后者，于是抽屉里看不出"这条明细属于哪条链路" ——
+               复制给同事时无法自证。 -->
+          <p class="trace-meta">
+            链路 ID <code>{{ detail.traceId }}</code>
+            <span class="muted">共 {{ detail.entries.length }} 条</span>
+          </p>
           <table class="mini-table">
             <thead>
               <tr>
@@ -181,15 +194,40 @@ onMounted(() => {
                 <th>类型</th>
                 <th>名称</th>
                 <th>结果</th>
+                <th>操作者</th>
+                <th>请求 ID</th>
                 <th>明细</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="entry in detail.entries" :key="entry.id">
+              <!-- key 带上 `log_type`：条目来自五张**不同**的表，只按 `id`
+                   去重是"碰巧成立"（Snowflake 跨表不撞），而五张表之间
+                   并没有任何约束保证这一点。 -->
+              <tr v-for="entry in detail.entries" :key="`${entry.log_type}-${entry.id}`">
                 <td class="nowrap">{{ formatDateTime(entry.created_at) }}</td>
                 <td><span class="tag">{{ entry.log_type }}</span></td>
-                <td>{{ entry.name }}</td>
+                <td>
+                  <div>{{ entry.name }}</div>
+                  <!-- 条目 ID：五张表各自的主键，报障时用来精确定位某一条 -->
+                  <div class="muted">#{{ entry.id }}</div>
+                </td>
                 <td>{{ entry.result ?? '—' }}</td>
+                <!--
+                  操作者与请求 ID 后端一直在返回，但此前没渲染 —— 于是"这条
+                  日志是谁产生的"只能靠点开 JSON 明细去翻，而 `application_logs`
+                  这类条目**没有** operator 字段，看起来像数据缺失。
+                -->
+                <td>
+                  <template v-if="entry.operator_username !== null || entry.operator_id !== null">
+                    <div>{{ entry.operator_username ?? '—' }}</div>
+                    <div class="muted">{{ entry.operator_id ?? '—' }}</div>
+                  </template>
+                  <span v-else class="muted">—</span>
+                </td>
+                <td class="nowrap">
+                  <code v-if="entry.request_id !== null">{{ entry.request_id }}</code>
+                  <span v-else class="muted">—</span>
+                </td>
                 <td>
                   <pre v-if="Object.keys(entry.detail).length > 0" class="json">
 {{ JSON.stringify(entry.detail, null, 2) }}</pre>
@@ -206,8 +244,17 @@ onMounted(() => {
 
 <style scoped>
 /* 链路详情列多、JSON 长，抽屉要比默认宽；宽度走 `--drawer-width` 局部变量，
-   不要再重写整个 `.drawer__panel`（那会让 base.css 里的统一外观失效一半）。 */
+   不要再重写整个 `.drawer__panel`（那会让 base.css 里的统一外观失效一半）。
+   920px 是加了「操作者 / 请求 ID」两列之后的取值：仍留出明细列的横向空间。 */
 .drawer--wide {
-  --drawer-width: 760px;
+  --drawer-width: 920px;
+}
+
+.trace-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 10px;
+  flex-wrap: wrap;
 }
 </style>

@@ -68,6 +68,16 @@ ALLOWLIST: frozenset[str] = frozenset(
         # Phase 7 系统参数（`05 §5`）
         "/params",
         "/params/{param_id}",
+        # 报表页面（前端默认首页）。授权在**服务层按域逐个完成**：
+        # `StatisticsService.overview` 先取操作者的有效 API 权限集合，
+        # 每个分组单独判该域既有的权限位（users→USER_MANAGE、
+        # sessions→SESSION_MANAGE、…），无权限的分组一个数字都不返回。
+        #
+        # 为什么走白名单而不是路由层声明单一权限位：报表是登录后的
+        # **默认落地页**，绑一个具体权限位会让任何不具备该位的用户
+        # 一登录就撞在 403 上。白名单在这里表达的仍是"绑定位置不一致"
+        # （服务层而非路由层），与上面三条同一种技术债。
+        "/statistics/overview",
     }
 )
 

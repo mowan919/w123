@@ -91,7 +91,16 @@ const dataColumns: Array<DataTableColumn<User>> = [
   { key: 'email', title: '邮箱' },
   { key: 'department_id', title: '部门' },
   { key: 'status', title: '状态', width: '100px' },
+  // 下面这些字段后端一直在返回，只是此前没有列去消费它们。`status` 只说明
+  // "能不能登录"，而"为什么不能登录 / 上一次口令是什么时候换的"要这三列
+  // 才能回答 —— 账号被锁时只看状态列会误判成"已禁用"。
+  { key: 'must_change_password', title: '需改密', width: '90px', align: 'center' },
+  { key: 'failed_login_count', title: '登录失败', width: '90px', align: 'right' },
+  { key: 'locked_until', title: '锁定至', width: '170px' },
+  { key: 'password_changed_at', title: '改密时间', width: '170px' },
   { key: 'created_at', title: '创建时间', width: '180px' },
+  { key: 'updated_at', title: '更新时间', width: '170px' },
+  { key: 'id', title: '用户 ID', width: '200px' },
 ]
 const {
   visible: visibleColumns,
@@ -447,11 +456,21 @@ onMounted(async () => {
         <span :class="statusClass(row.status)">{{ dictionaryStore.labelOf('user_status', row.status) || row.status }}</span>
       </template>
       <template #cell-phone="{ row }">
-        <PermissionField :code="'field:user.phone'">
-          <template #default="{ editable }">
+        <!--
+          ⚠️ `code` 必须是**契约里的 `field_key`**（`phone`），不是 FIELD 资源的
+          `resource_code`（`field:phone`）。这里曾经写成 `'field:user.phone'` ——
+          一个永远匹配不上的键，于是这两列对**任何角色**（含超管）都渲染成空白，
+          而且不报任何错：`getFieldPermission` 对未知键 fail-closed 返回 HIDDEN。
+          可用的 field_key 由 `scripts/seed_data.py` 的 FIELDS 定义。
+        -->
+        <PermissionField code="phone">
+          <template #default>
+            <!-- 列表里只读：改联系方式走「编辑」弹窗。这里原先绑
+                 `:readonly="!editable"`，而列表**没有**任何保存入口 ——
+                 有 EDITABLE 权限的人可以在这里改字，然后眼睁睁看它被刷新掉。 -->
             <input
               :value="row.phone ?? ''"
-              :readonly="!editable"
+              readonly
               placeholder="未填写"
               class="field__control"
               style="min-width: 120px"
@@ -460,11 +479,11 @@ onMounted(async () => {
         </PermissionField>
       </template>
       <template #cell-email="{ row }">
-        <PermissionField :code="'field:user.email'">
-          <template #default="{ editable }">
+        <PermissionField code="email">
+          <template #default>
             <input
               :value="row.email ?? ''"
-              :readonly="!editable"
+              readonly
               placeholder="未填写"
               class="field__control"
               style="min-width: 200px"
@@ -474,6 +493,28 @@ onMounted(async () => {
       </template>
       <template #cell-created_at="{ row }">
         <span class="muted">{{ formatDateTime(row.created_at) }}</span>
+      </template>
+      <template #cell-updated_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.updated_at) }}</span>
+      </template>
+      <template #cell-must_change_password="{ row }">
+        <span class="tag" :class="row.must_change_password ? 'tag--locked' : ''">
+          {{ row.must_change_password ? '需改密' : '否' }}
+        </span>
+      </template>
+      <template #cell-failed_login_count="{ row }">
+        <!-- 0 次是常态，不做任何标记；有失败记录才提醒 -->
+        <span v-if="row.failed_login_count === 0" class="muted">0</span>
+        <span v-else class="tag tag--locked">{{ row.failed_login_count }}</span>
+      </template>
+      <template #cell-locked_until="{ row }">
+        <span class="muted">{{ formatDateTime(row.locked_until) }}</span>
+      </template>
+      <template #cell-password_changed_at="{ row }">
+        <span class="muted">{{ formatDateTime(row.password_changed_at) }}</span>
+      </template>
+      <template #cell-id="{ row }">
+        <code class="muted">{{ row.id }}</code>
       </template>
       <template #cell-department_id="{ row }">
         {{ (row.department_id !== null && departmentLabel.get(row.department_id)) || '—' }}

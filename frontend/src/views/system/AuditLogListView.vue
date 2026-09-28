@@ -30,11 +30,22 @@ const appStore = useAppStore()
 const dataColumns: Array<DataTableColumn<AuditLog>> = [
   { key: 'created_at', title: '时间', width: '170px' },
   { key: 'action', title: '动作' },
-  { key: 'operator_username', title: '操作者' },
-  { key: 'resource_type', title: '资源类型', width: '120px' },
-  { key: 'resource_id', title: '资源 ID', width: '120px' },
   { key: 'result', title: '结果', width: '90px', align: 'center' },
+  { key: 'operator_username', title: '操作者' },
+  // 用户名会被改名、也可能重名；`operator_id` 才是稳定标识，追查时以它为准。
+  { key: 'operator_id', title: '操作者 ID', width: '200px' },
+  { key: 'resource_type', title: '资源类型', width: '120px' },
+  { key: 'resource_id', title: '资源 ID', width: '200px' },
+  { key: 'error_code', title: '错误码', width: '100px', align: 'right' },
   { key: 'ip', title: '来源 IP', width: '130px' },
+  // 排查"是不是某个客户端在重试"时，只有 UA 能回答；它也是识别脚本化
+  // 请求的唯一线索（`curl/8.4` 与真实浏览器一眼可分）。
+  { key: 'user_agent', title: '客户端', width: '260px' },
+  // 一个 `trace_id` 把这条审计和它那次请求的访问 / 操作 / 应用日志串起来，
+  // 明细里虽有，但"有几条日志属于同一次操作"要一眼看出来才有用。
+  { key: 'trace_id', title: '追踪 ID', width: '220px' },
+  { key: 'request_id', title: '请求 ID', width: '220px' },
+  { key: 'id', title: '日志 ID', width: '200px' },
 ]
 
 const {
@@ -204,8 +215,27 @@ onMounted(() => {
         <span class="muted">{{ formatDateTime(row.created_at) }}</span>
       </template>
       <template #cell-action="{ row }">
-        <div>{{ row.action }}</div>
-        <div v-if="row.error_code !== null" class="muted">错误码 {{ row.error_code }}</div>
+        <span>{{ row.action }}</span>
+      </template>
+      <template #cell-error_code="{ row }">
+        <!-- 成功记录没有错误码，占位就行；失败才需要显眼的数字 -->
+        <span v-if="row.error_code === null" class="muted">—</span>
+        <span v-else class="tag tag--locked">{{ row.error_code }}</span>
+      </template>
+      <template #cell-user_agent="{ row }">
+        <span class="muted">{{ row.user_agent ?? '—' }}</span>
+      </template>
+      <template #cell-trace_id="{ row }">
+        <code>{{ row.trace_id ?? '—' }}</code>
+      </template>
+      <template #cell-request_id="{ row }">
+        <code>{{ row.request_id ?? '—' }}</code>
+      </template>
+      <template #cell-operator_id="{ row }">
+        <code class="muted">{{ row.operator_id ?? '—' }}</code>
+      </template>
+      <template #cell-id="{ row }">
+        <code class="muted">{{ row.id }}</code>
       </template>
 
       <template #actions="{ row }">
@@ -231,22 +261,31 @@ onMounted(() => {
           <NButton size="small" quaternary :loading="detailLoading" @click="detail = null">关闭</NButton>
         </h3>
         <dl class="kv">
+          <dt>日志 ID</dt>
+          <dd><code>{{ detail.id }}</code></dd>
           <dt>动作</dt>
           <dd>{{ detail.action }}</dd>
           <dt>结果</dt>
           <dd><span class="tag" :class="RESULT_STYLE[detail.result] ?? ''">{{ detail.result }}</span></dd>
+          <dt>错误码</dt>
+          <dd>{{ detail.error_code ?? '—' }}</dd>
           <dt>操作者</dt>
           <dd>{{ detail.operator_username ?? '—' }}（{{ detail.operator_id ?? '—' }}）</dd>
+          <!-- 用展示层格式化：这里原先直接怼 ISO 串，和列表列的口径不一致 -->
           <dt>时间</dt>
-          <dd>{{ detail.created_at }}</dd>
+          <dd>{{ formatDateTime(detail.created_at) }}</dd>
           <dt>追踪 ID</dt>
           <dd><code>{{ detail.trace_id ?? '—' }}</code></dd>
           <dt>请求 ID</dt>
           <dd><code>{{ detail.request_id ?? '—' }}</code></dd>
           <dt>资源</dt>
           <dd>{{ detail.resource_type }}{{ detail.resource_id === null ? '' : ` / ${detail.resource_id}` }}</dd>
-          <dt>来源</dt>
+          <dt>来源 IP</dt>
           <dd>{{ detail.ip ?? '—' }}</dd>
+          <!-- 客户端字符串可能很长（真实 UA 上百字符）；`.kv dd` 已带
+               `word-break: break-all`，不需要额外的换行样式。 -->
+          <dt>客户端</dt>
+          <dd>{{ detail.user_agent ?? '—' }}</dd>
         </dl>
 
         <template v-if="detail.before_data !== null || detail.after_data !== null">

@@ -33,6 +33,7 @@ import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import FormDialog from '@/components/feedback/FormDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { formatDateTime } from '@/utils/format'
 import { useColumnSettings } from '@/composables/useColumnSettings'
 import { useResourcesStore } from '@/stores/resources'
 import {
@@ -56,8 +57,19 @@ const dataColumns: Array<DataTableColumn<PermissionResource>> = [
   { key: 'resource_name', title: '名称' },
   { key: 'resource_code', title: '编码' },
   { key: 'resource_type', title: '类型', width: '90px' },
-  { key: 'status', title: '状态', width: '90px', align: 'center' },
+  // 「路由 / 路径」把 route_path / component_path / api_method / api_path /
+  // field_key 压在一格里（它们互斥，一个资源只会命中其中一两个）。
+  // 但**父子关系**与**排序值**此前完全没露出来 —— 而"这个按钮挂在哪个页面下"
+  // 正是权限排查时最常问的一句。
+  { key: 'parent_id', title: '所属资源', width: '200px' },
+  { key: 'owner_resource_id', title: '字段归属', width: '200px' },
   { key: 'route_path', title: '路由 / 路径' },
+  { key: 'icon', title: '图标', width: '120px' },
+  { key: 'sort_order', title: '排序', width: '80px', align: 'right' },
+  { key: 'status', title: '状态', width: '90px', align: 'center' },
+  { key: 'created_at', title: '创建时间', width: '170px' },
+  { key: 'updated_at', title: '更新时间', width: '170px' },
+  { key: 'id', title: '资源 ID', width: '200px' },
 ]
 
 const {
@@ -411,6 +423,27 @@ onMounted(() => {
           <div v-if="row.component_path" class="muted">{{ row.component_path }}</div>
           <div v-if="row.api_method" class="muted">{{ row.api_method }}</div>
           <div v-if="row.field_key" class="muted">{{ row.field_key }}</div>
+        </template>
+        <template #cell-parent_id="{ row }">
+          <code v-if="row.parent_id !== null" class="muted">{{ row.parent_id }}</code>
+          <span v-else class="muted">—</span>
+        </template>
+        <template #cell-owner_resource_id="{ row }">
+          <code v-if="row.owner_resource_id !== null" class="muted">{{ row.owner_resource_id }}</code>
+          <span v-else class="muted">—</span>
+        </template>
+        <template #cell-icon="{ row }">
+          <code v-if="row.icon !== null && row.icon !== ''">{{ row.icon }}</code>
+          <span v-else class="muted">—</span>
+        </template>
+        <template #cell-created_at="{ row }">
+          <span class="muted">{{ formatDateTime(row.created_at) }}</span>
+        </template>
+        <template #cell-updated_at="{ row }">
+          <span class="muted">{{ formatDateTime(row.updated_at) }}</span>
+        </template>
+        <template #cell-id="{ row }">
+          <code class="muted">{{ row.id }}</code>
         </template>
 
         <template #actions="{ row }">

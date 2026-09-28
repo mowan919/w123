@@ -70,6 +70,7 @@ from app.services.role_data_scope import RoleDataScopeService
 from app.services.role_permission import RolePermissionService
 from app.services.session import AuthenticatedSession, SessionService
 from app.services.session_management import SessionManagementService
+from app.services.statistics import StatisticsService
 from app.services.system_param import SystemParameterService, resolve_mfa_required_default
 from app.services.user import UserService
 
@@ -234,6 +235,20 @@ async def get_log_query_service(
 ) -> LogQueryService:
     """提供日志查询服务（Phase 10 / FINDING-10-01：`08 §8` 的补交付）。"""
     return LogQueryService(session, audit=BufferingAuditRecorder())
+
+
+async def get_statistics_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> StatisticsService:
+    """提供统计概览服务（报表页面）。
+
+    刻意**不**注入审计记录器，理由与 `get_permission_contract_service` 同向
+    但更硬：报表是登录后的**默认落地页**，逐次记审计等于让审计表
+    "每个用户每次登录"增长一行，而审计 append-only、保留两年 ——
+    噪声写进去就撤不回来。它也不改变任何状态、没有目标资源，
+    因此不在 `10 §8` 的"关键安全操作"范围内。
+    """
+    return StatisticsService(session)
 
 
 async def get_permission_contract_service(
@@ -401,6 +416,7 @@ UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 DepartmentServiceDep = Annotated[DepartmentService, Depends(get_department_service)]
 LogQueryServiceDep = Annotated[LogQueryService, Depends(get_log_query_service)]
+StatisticsServiceDep = Annotated[StatisticsService, Depends(get_statistics_service)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -422,6 +438,7 @@ __all__ = [
     "RolePermissionServiceDep",
     "RoleServiceDep",
     "SessionManagementServiceDep",
+    "StatisticsServiceDep",
     "SystemParamServiceDep",
     "UserServiceDep",
     "client_ip",
@@ -442,6 +459,7 @@ __all__ = [
     "get_role_service",
     "get_session_management_service",
     "get_session_service",
+    "get_statistics_service",
     "get_system_param_service",
     "get_user_service",
     "require_api_permission",

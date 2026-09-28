@@ -18,6 +18,7 @@ Spec 08 §1 Base：`/api/v1/admin`
 | `/params*` | 系统参数管理（Phase 7，`05 §5`；路径属 INTERIM-7-04） |
 | `/permission-resources*` | 权限资源定义（Phase 8，DD-20 §5.1.1 冻结的 8 条端点） |
 | `/roles/{id}/permissions*`、`/roles/{id}/data-scope` | 角色授权与数据范围（Phase 8，`08 §7`） |
+| `/statistics/overview` | 报表页面（前端默认首页；授权在服务层按域逐个完成） |
 
 `/users/{id}/sessions*` 的路径前缀属 Users 资源，但业务语义是会话管理，
 因此实现落在 `endpoints/sessions.py`（详见该模块 docstring）。
@@ -50,6 +51,7 @@ from app.api.v1.endpoints import (
     role_permissions,
     roles,
     sessions,
+    statistics,
     users,
 )
 
@@ -68,5 +70,9 @@ api_router.include_router(departments.router)
 # FINDING-10-01 的补救：`08 §8` 冻结的审计 / 链路**读**端点
 # （Phase 6 只交付了落库，没有任何 HTTP 面能把它们查出来）。
 api_router.include_router(audit_logs.router)
+# 报表页面（前端默认首页）。授权在**服务层按域逐个完成**（见
+# `endpoints/statistics.py` 的模块文档），因此与本文件里的其它路由不同，
+# 它不声明单一权限位 —— 它同样登记在路由授权护栏的白名单中。
+api_router.include_router(statistics.router)
 
 __all__ = ["api_router"]
