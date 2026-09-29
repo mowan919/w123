@@ -42,6 +42,12 @@ Phase 7 追加（Spec `05 §1`~`§3` 冻结字典模型；系统参数表名与�
       **未命名表**。表名 `sys_params` 属 INTERIM-7-01（对 `05 §2` 命名惯例的
       最小推导），端点属 INTERIM-7-04。字典与系统参数**分表、分服务、分端点**
       （`05 §5` 第一句 + `PHASE-007-DICTIONARY.md`）。
+
+Phase 14 追加（站内通知**不在** Spec 内，属技术推导 + 人类裁定）：
+    - `notifications`：收件箱模型（一行 = 一个收件人的一份消息），
+      同时承载服务端事件产生的系统消息与管理员发布的公告（扇出写入）。
+      `docs/spec/` 全 17 个文档对「消息 / 通知 / 公告」零提及，
+      因此本域的整体口径登记在 `docs/DESIGN-DECISIONS.md §32`。
 """
 
 from __future__ import annotations
@@ -77,6 +83,7 @@ from app.models.logs import (
     SecurityLog,
 )
 from app.models.mfa import MfaChallenge, MfaPolicy, UserMfa
+from app.models.notification import Announcement, Notification
 from app.models.param import SysParam
 from app.models.password_history import AdminUserPasswordHistory
 from app.models.permission import (
@@ -97,6 +104,7 @@ __all__ = [
     "AccessLog",
     "AdminUser",
     "AdminUserPasswordHistory",
+    "Announcement",
     "ApplicationLog",
     "AuditLog",
     "Department",
@@ -110,6 +118,7 @@ __all__ = [
     "MfaPolicy",
     "MfaPolicySubject",
     "MfaStatus",
+    "Notification",
     "OperationLog",
     "PermissionResource",
     "PermissionResourceType",

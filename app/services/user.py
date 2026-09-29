@@ -52,6 +52,11 @@ from app.repositories.role import RoleRepository
 from app.repositories.user import UserRepository
 from app.services.authorization import AuthorizationService
 from app.services.data_scope import DataScopeResolver
+from app.services.notification import (
+    SYSTEM_EVENTS,
+    NotificationPublisher,
+    NotificationService,
+)
 
 
 class _Unset:
@@ -113,7 +118,21 @@ def _snapshot(user: AdminUser) -> dict[str, Any]:
 class UserService:
     """用户业务服务。"""
 
-    def __init__(self, session: AsyncSession, *, audit: AuditRecorder | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        audit: AuditRecorder | None = None,
+        notifier: NotificationPublisher | None = None,
+    ) -> None:
+        """
+        Args:
+            notifier: 站内通知投递端口。**默认自建一个真实投递器**而不是空实现
+                （理由与 `SessionService` 同）：投递只需要本服务已有的
+                `AsyncSession`，因此"忘了注入"等于"被重置口令的管理员
+                永远不通知用户"。显式传 `NullNotificationPublisher()`
+                才是"不发"的选择。
+        """
         self._session = session
         self._users = UserRepository(session)
         self._roles = RoleRepository(session)
@@ -122,6 +141,9 @@ class UserService:
         self._scope = DataScopeResolver(self._departments)
         self._authz = AuthorizationService(session)
         self._audit = audit or NullAuditRecorder()
+        self._notify: NotificationPublisher = (
+            notifier if notifier is not None else NotificationService(session)
+        )
 
     # ------------------------------------------------------------------
     # 审计
@@ -486,6 +508,7 @@ class UserService:
                 await self._authz.assert_not_last_super_admin(target=user)
 
         before = _snapshot(user)
+        previous_status = user.status
         user.status = new_status
         await self._session.flush()
         self._record(
@@ -495,6 +518,23 @@ class UserService:
             before=before,
             after=_snapshot(user),
         )
+
+        # 只在状态**真的变了**时通知：`enable()` 对已是 ACTIVE 的用户
+        # 照样会走完写库（保持既有语义），但"你的账号已恢复启用"
+        # 发给一个从没被禁用过的人是纯噪音。
+        if previous_status is not new_status:
+            event = SYSTEM_EVENTS[
+                "USER_DISABLED" if new_status is UserStatus.DISABLED else "USER_ENABLED"
+            ]
+            await self._notify.publish_system_event(
+                recipient_user_id=user.id,
+                event=event,
+                body=(
+                    "你的账号已被管理员禁用，无法继续登录。如有疑问请联系管理员。"
+                    if new_status is UserStatus.DISABLED
+                    else "你的账号已被管理员恢复启用。"
+                ),
+            )
         return user
 
     # ------------------------------------------------------------------
@@ -557,6 +597,14 @@ class UserService:
             resource_id=user.id,
             before=before,
             after=_snapshot(user),
+        )
+        # ⚠️ 通知里**不含**初始口令：通知没有脱敏管道（脱敏只作用于日志），
+        # 明文口令会以可读形式长期留在收件箱里 —— 那是把口令写进一张
+        # 任何人都能读的普通表。口令由管理员通过其它渠道当面 / 单独告知。
+        await self._notify.publish_system_event(
+            recipient_user_id=user.id,
+            event=SYSTEM_EVENTS["PASSWORD_RESET"],
+            body="你的登录口令已被管理员重置，请使用管理员提供的新口令登录，并立即自行修改。",
         )
         return user
 
@@ -657,6 +705,14 @@ class UserService:
             before={"role_ids": sorted(before)},
             after={"role_ids": sorted(after)},
         )
+        # 只在集合**真的变了**时通知：该接口是"整体替换"语义，
+        # 界面保存一次没改动的表单不该发出"你的权限变了"。
+        if before != after:
+            await self._notify.publish_system_event(
+                recipient_user_id=user_id,
+                event=SYSTEM_EVENTS["USER_ROLES_CHANGED"],
+                body="你的角色授权已被管理员变更，新的权限已即时生效。",
+            )
         return before, after
 
     async def _current_role_ids(self, user_id: int) -> set[int]:

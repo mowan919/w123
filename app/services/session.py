@@ -59,6 +59,11 @@ from app.repositories.session import SessionRepository
 from app.repositories.user import UserRepository
 from app.services.actor_factory import ActorFactory
 from app.services.auth_audit import AuthAudit, AuthOperator
+from app.services.notification import (
+    SYSTEM_EVENTS,
+    NotificationPublisher,
+    NotificationService,
+)
 
 #: 对外统一的认证失败文案。
 #:
@@ -122,12 +127,30 @@ def rotated_access_expiry(now: datetime, *, refresh_expires_at: datetime) -> dat
 class SessionService:
     """会话生命周期服务。"""
 
-    def __init__(self, session: AsyncSession, *, audit: AuditRecorder | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        audit: AuditRecorder | None = None,
+        notifier: NotificationPublisher | None = None,
+    ) -> None:
+        """
+        Args:
+            notifier: 站内通知投递端口。**默认自建一个真实投递器**而不是
+                空实现：投递只需要一个 `AsyncSession`（本服务已经有了），
+                因此"忘了注入"就成了纯粹的静默故障 —— 用户会话被顶替，
+                却永远收不到那条消息。要用空实现（测试里断言"不发消息"）
+                必须显式传 `NullNotificationPublisher()`，让"不发"成为一个
+                写出来的选择而不是一个遗漏。
+        """
         self._session = session
         self._sessions = SessionRepository(session)
         self._users = UserRepository(session)
         self._actors = ActorFactory(session)
         self._audit = AuthAudit(audit)
+        self._notify: NotificationPublisher = (
+            notifier if notifier is not None else NotificationService(session)
+        )
 
     # ------------------------------------------------------------------
     # 创建
@@ -173,6 +196,7 @@ class SessionService:
         # 名单按**有效性**挑（`session_valid_condition`，经 list_active_for_user），
         # 空闲但未过期的会话照样要被顶替 —— 它们仍然能认证。
         others = await self._sessions.list_active_for_user(user.id, now=issued_at)
+        superseded = 0
         operator = AuthOperator.of_user(
             user_id=user.id, username=user.username, ip=ip, user_agent=user_agent
         )
@@ -190,6 +214,25 @@ class SessionService:
                     reason="SUPERSEDED",
                     after={"superseded_by": user_session.id},
                 )
+                superseded += 1
+
+        # 一次事件**一条**消息，不按被顶替的会话数重复。
+        #
+        # 曾经的写法是"每被顶替一个会话就发一条"：结果是一个在三个浏览器里
+        # 登录过的用户下次登录会看到角标 +3，而这三条说的是同一件事。
+        # 角标是"有几件事要看"，不是"有几个会话被关了"。
+        #
+        # 只在确实顶替成功（`superseded > 0`）时投递：本次登录没有顶替任何会话
+        # （例如首次登录、或登录请求本身来自同一个会话）时不该产生噪音。
+        if superseded:
+            await self._notify.publish_system_event(
+                recipient_user_id=user.id,
+                event=SYSTEM_EVENTS["SESSION_SUPERSEDED"],
+                body=(
+                    "同一个账号在新位置登录，之前的登录已自动下线。"
+                    "如果这不是你本人操作，请立即修改口令并检查会话列表。"
+                ),
+            )
 
         return user_session, IssuedTokens(
             access_token=access_token,

@@ -87,3 +87,18 @@ export type {
   TotalStatistics,
   UserStatistics,
 } from './statistics'
+export type {
+  Announcement,
+  AnnouncementAudience,
+  AnnouncementCreateRequest,
+  AnnouncementLevelInput,
+  AnnouncementPage,
+  AnnouncementPublishResult,
+  AnnouncementRevokeResult,
+  MarkAllReadResult,
+  NotificationCategory,
+  NotificationItem,
+  NotificationLevel,
+  NotificationPage,
+  NotificationUnreadCount,
+} from './notification'

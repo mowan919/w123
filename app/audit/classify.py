@@ -151,6 +151,17 @@ OPERATION_ACTIONS: frozenset[AuditAction] = frozenset(
         AuditAction.DICT_ITEM_CREATE,
         AuditAction.DICT_ITEM_UPDATE,
         AuditAction.DICT_ITEM_DELETE,
+        # ---- Phase 14：站内通知（`DESIGN-DECISIONS §32`） ----
+        #
+        # 公告的发布 / 撤回属**普通业务操作**而不是安全事件：
+        # 它不改变任何人的权限、不涉及认证与会话，只是把一段文字广播出去。
+        # 因此进 `operation_logs`（与 `audit_logs` 同写，180 天），
+        # 而不是 `security_logs`。
+        #
+        # 反方向的风险已记录：若人类认为"向全员广播"属安全事件
+        # （它有社会工程学用途），改动是把这两个动作搬进 `SECURITY_ACTIONS` 一次。
+        AuditAction.NOTIFICATION_ANNOUNCE,
+        AuditAction.NOTIFICATION_REVOKE,
     }
 )
 

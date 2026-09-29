@@ -53,6 +53,9 @@ export const VIEW_REGISTRY: Record<string, () => Promise<{ default: Component }>
   'system/param': () => import('@/views/system/ParamListView.vue'),
   'system/audit-log': () => import('@/views/system/AuditLogListView.vue'),
   'system/trace': () => import('@/views/system/TraceListView.vue'),
+  // 通知**管理**（发公告）。与顶栏铃铛指向的 `/notifications`（消息中心）
+  // 是不同的两页：前者需要权限位、管"发给谁"，后者人人可达、管"我收到什么"。
+  'system/notification': () => import('@/views/system/NotificationManageView.vue'),
 }
 
 /**

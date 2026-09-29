@@ -74,6 +74,7 @@ describe('VIEW_REGISTRY 与视图文件的一致性', () => {
     { key: 'system/param', file: 'views/system/ParamListView.vue' },
     { key: 'system/audit-log', file: 'views/system/AuditLogListView.vue' },
     { key: 'system/trace', file: 'views/system/TraceListView.vue' },
+    { key: 'system/notification', file: 'views/system/NotificationManageView.vue' },
   ]
 
   it('键集合与预期完全一致', () => {

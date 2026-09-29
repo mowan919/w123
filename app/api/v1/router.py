@@ -46,6 +46,7 @@ from app.api.v1.endpoints import (
     departments,
     dicts,
     health,
+    notifications,
     params,
     permission_resources,
     role_permissions,
@@ -74,5 +75,9 @@ api_router.include_router(audit_logs.router)
 # `endpoints/statistics.py` 的模块文档），因此与本文件里的其它路由不同，
 # 它不声明单一权限位 —— 它同样登记在路由授权护栏的白名单中。
 api_router.include_router(statistics.router)
+# 站内通知的**管理端**（公告发布 / 撤回 / 列表）。自助收件箱不在此处：
+# 它按 `/auth/me`、`/auth/mfa*` 的先例挂在认证域（见
+# `endpoints/notifications.py` 的模块文档与 `DESIGN-DECISIONS §32`）。
+api_router.include_router(notifications.router)
 
 __all__ = ["api_router"]

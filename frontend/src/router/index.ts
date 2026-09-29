@@ -8,6 +8,7 @@ import { useRolesStore } from '@/stores/roles'
 import { useResourcesStore } from '@/stores/resources'
 import { useParamsStore } from '@/stores/params'
 import { useStatisticsStore } from '@/stores/statistics'
+import { useNotificationsStore } from '@/stores/notifications'
 import { setSessionCleanupHook } from '@/stores/auth'
 import { configureClient } from '@/api/client'
 import {
@@ -74,6 +75,22 @@ const routes: RouteRecordRaw[] = [
         name: 'profile',
         component: () => import('@/views/ProfileView.vue'),
         meta: { title: '个人中心' },
+      },
+      {
+        // 消息中心同样是**静态路由**（`DESIGN-DECISIONS §32`）：它是"我的消息"，
+        // 任何已认证用户都有自己的一份。
+        //
+        // 做成契约页面会引入一个 PAGE 权限位，然后必须给**每个**角色都授它 ——
+        // 漏配一个角色，该角色的用户连自己的消息都打不开，且报错是 403
+        // （看起来像越权，实际是配置漏了）。`/profile` 与 `/reports` 同理由。
+        //
+        // ⚠️ 注意与 `/system/notifications`（通知**管理**页）区分：后者是
+        // 契约页面、需要 `notification:manage:page`，管的是"发公告给别人"；
+        // 这里是"看我收到的"，两者看的是同一张表的两个方向。
+        path: 'notifications',
+        name: 'notifications',
+        component: () => import('@/views/NotificationsView.vue'),
+        meta: { title: '消息中心' },
       },
     ],
   },
@@ -150,6 +167,12 @@ let inSessionReset = false
  * 报表统计同理，而且更直接：它的每个数字都是**已经被权限过滤过的**
  * （无权限的域返回 null）。缓存留到下一个（权限更低的）账号，
  * 页面会先渲染出上一个人看到的数字再被刷新覆盖 —— 同样是一次静默越权展示。
+ *
+ * 通知（`§32`）是**第三种**同样性质的残留，而且最露骨：未读数是"我收到几条"，
+ * 面板里还带着消息**正文**。不清的话，换账号后顶栏会先显示上一个账号的
+ * 未读数与消息标题，直到 60 秒后那次轮询才覆盖掉 —— 中间这段时间里，
+ * 后一个用户读到的是前一个用户的消息。`reset()` 同时停掉定时器，
+ * 否则登出后还会继续替一个已经不存在于前端的会话发请求。
  */
 export function resetAllSessionState(): void {
   if (inSessionReset) return
@@ -165,6 +188,7 @@ export function resetAllSessionState(): void {
     useResourcesStore().reset()
     useParamsStore().reset()
     useStatisticsStore().reset()
+    useNotificationsStore().reset()
   } finally {
     inSessionReset = false
   }

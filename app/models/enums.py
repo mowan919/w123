@@ -261,15 +261,75 @@ class MfaPolicySubject(StrEnum):
     ROLE = "ROLE"
 
 
+class AnnouncementAudience(StrEnum):
+    """公告受众（`DESIGN-DECISIONS §32`；Spec 未定义）。
+
+    只有两种，且**刻意不做**"指定用户 / 指定部门"：
+
+    - `ALL`：全部 ACTIVE 且未删除的用户；
+    - `ROLE`：**直接分配**了指定角色的用户。
+
+    ⚠️ `ROLE` 用"直接分配"而不是"有效角色（含继承）"，这不是疏漏而是
+    一次有意分叉：角色继承（DD-05）是**权限**关系 ——
+    "他继承了这个角色的权限"不等于"他是这个角色的人"。
+    公告受众是组织归属问题，用 `user_roles` 直接分配判定；
+    若将来人类认为继承者也算受众，改动只在
+    `NotificationRepository.resolve_role_audience` 一处（加一次
+    `RoleInheritanceService.expand_role_ids` 的**反向**展开）。
+    这一条明确登记在 §32，避免它被当成 bug 反复"修"。
+    """
+
+    ALL = "ALL"
+    ROLE = "ROLE"
+
+
+class NotificationCategory(StrEnum):
+    """站内通知的分类（`DESIGN-DECISIONS §32`）。
+
+    Spec 里**没有**站内通知这一域（`docs/spec/` 全 17 个文档零提及），
+    因此这两个取值属技术推导。分类不是"展示标签"而是**语义分叉**：
+
+    - `SYSTEM`：由**服务端事件**产生，收件人由事件本身决定
+      （谁的会话被顶替、谁的口令被重置）。人不能凭空造一条，
+      因此它没有对应的管理端点。
+    - `ANNOUNCEMENT`：由**管理员**发布，收件人按**受众规则**扇出
+      （全员 / 指定角色）。
+
+    为什么不合并成一个类型、用 `event_code` 是否为空来区分：
+    "谁有权产生它"是权限问题（前者无入口、后者需 `NOTIFICATION_MANAGE`），
+    用可空列表达权限边界，就得在每个判权点重新推一遍"这行算不算公告"。
+    """
+
+    SYSTEM = "SYSTEM"
+    ANNOUNCEMENT = "ANNOUNCEMENT"
+
+
+class NotificationLevel(StrEnum):
+    """站内通知的轻重（`DESIGN-DECISIONS §32`）。
+
+    与 `AuditResult` 那类"枚举即真值"的不同之处：本枚举**只影响展示**
+    （颜色 / 是否置顶），不参与任何判定。这正是它该进字典
+    （`notification_level`，运营可改文案）而 `AuditResult` 不进字典的原因 ——
+    字典是可改的数据，把判定依据放进可改数据等于把规则交给运营。
+    """
+
+    INFO = "INFO"
+    WARNING = "WARNING"
+    IMPORTANT = "IMPORTANT"
+
+
 __all__ = [
     "FIELD_ACCESS_READABLE",
     "FIELD_ACCESS_WRITABLE",
+    "AnnouncementAudience",
     "DepartmentStatus",
     "DictStatus",
     "FieldAccessLevel",
     "HttpMethod",
     "MfaPolicySubject",
     "MfaStatus",
+    "NotificationCategory",
+    "NotificationLevel",
     "PermissionResourceType",
     "PermissionStatus",
     "RefreshTokenRetirement",

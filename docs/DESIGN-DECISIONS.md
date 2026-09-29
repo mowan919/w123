@@ -2606,3 +2606,325 @@ refresh TTL 7 天 → 关掉标签页的会话要挂 7 天"在线"。
 - 迁移在真实库 `upgrade → downgrade → upgrade` 往返一致。
 - 运行中的后端重启后实测：`/admin/sessions?online=true` **total=1**
   （此前同一页面 3 行在线）。
+
+## 32. 站内通知（消息中心 + 顶栏角标）—— 实际落地口径（2026-09-29）
+
+用户反馈（原文，一条）：
+
+```text
+1、前端页面新增站内通知，如果有消息需要展示消息角标 在右上角个人中心那个位置
+```
+
+⚠️ **前置事实（决定了本轮的做事方式）**：`docs/spec/` 全 **17** 个文档对
+「消息 / 通知 / 公告」**零提及**，`app/` 下也没有任何 notification 相关代码 ——
+这是一个**规格之外的全新域**。按 `AGENTS.md` 与本文件的既有约定，
+未冻结的设计决策不得自行决定，因此先收齐三项裁定，再按"技术推导 + 逐条登记"落地。
+
+人类裁定（一次收齐）：
+
+| # | 问题 | 裁定 |
+|---|---|---|
+| 1 | 数据来源 | **后端真存储**（新建表 + 迁移 + 读写端点 + 权限资源） |
+| 2 | 消息来源 | **两者都要**（系统事件自动产生 **+** 管理员手动发布公告） |
+| 3 | 点击交互 | **下拉面板 + 查看全部**（面板看作最近 8 条、可标已读、底部跳独立消息中心页） |
+
+### 32.1 数据模型：收件箱（fan-out on write）
+
+```text
+一行 = 一个收件人的一份消息
+```
+
+`app/models/notification.py` 两张表：
+
+- `notifications`：**收件箱**。系统消息与公告扇出的副本都存这里，
+  读路径（列表 / 未读数 / 标记已读）**只查它**。
+- `announcements`：公告的**定义**（标题 / 正文 / 受众 / 发布人 / 收件人数）。
+
+为什么不用"公告表 + 已读回执表"：那会让未读数变成"公告总数 − 我已读数"的联表、
+让分页要 `union` 系统消息与公告、让每个读写点都要"先找 / 建回执行"。
+本项目后台面的规模下（用户以百 / 千计），
+**把读做得足够便宜**比省写入更值 —— 收件箱是每次打开后台都要走的面。
+代价明确记账：一次全员公告写 **N 行**（N = 受众用户数）。
+真到百万级扇出时的正确改法是"公告表 + 回执表 + 物化视图"，
+那是一次**读路径重写**而不是给本表加一列，因此现在不预先复杂化。
+
+`read_at` **是**未读的唯一真相，没有 `is_read`：
+
+- 时间比布尔多一个信息（什么时候读的），而"某条安全消息在被告知后
+  3 秒还是 3 天才被读"在追责时是有差别的；
+- 加一个布尔就是第二份真相，两者不一致时无人能判谁对。
+  前端判未读就是 `read_at === null`，没有回退逻辑。
+
+两条不变量由**库层 CHECK** 强制（服务层预校验只负责可读报错）：
+
+```sql
+ck_announcements_audience_role_consistent
+    (audience_type = 'ROLE') = (audience_role_id IS NOT NULL)
+ck_notifications_announcement_link_consistent
+    (category = 'ANNOUNCEMENT') = (announcement_id IS NOT NULL)
+ck_notifications_event_code_consistent
+    (category = 'SYSTEM') = (event_code IS NOT NULL)
+```
+
+写成**等价**而不是单向蕴含，是为了同时挡住"ALL + 角色"这种自相矛盾的行 ——
+它会让"到底发给了谁"有两个答案。
+
+五个部分索引，其中未读数专用一条：
+
+```sql
+create index ix_notifications_user_unread_active
+    on notifications (user_id) where read_at is null and deleted_at is null
+```
+
+已读行会随时间无限增长而对未读计数毫无用处，因此索引用**部分索引**、
+体量与"未读量"成正比（未读量天然很小）而不是与总量成正比。
+
+⚠️ **分页必须带 `id` 排序**：一次公告扇出的 N 行 `created_at` **完全相同**
+（发布时刻），只按 `created_at desc` 排序时翻页会重复 / 漏项。
+读路径统一 `order by (created_at desc, id desc)`，雪花 ID 提供全序。
+
+### 32.2 两个路由前缀（本域最容易看错的一处）
+
+| 路由组 | 挂载前缀 | 端点 | 权限 |
+|---|---|---|---|
+| `self_router` | `/api/v1/auth` | `/notifications`、`/unread-count`、`/read-all`、`/{id}/read` | **无权限位** |
+| `router` | `/api/v1/admin` | `/notifications/announcements`（GET/POST）、`/{id}/revoke` | `NOTIFICATION_MANAGE` |
+
+共 **7** 条端点。**收件箱为什么不在 admin 域**（登记 `INTERIM-32-01`）：
+`08 §1` 把 `/api/v1/admin` 定义为"管理员资源域"，域名下每个端点都要求一个
+API 权限位。收件箱是"我自己的消息"，任何已认证用户都有 —— 给它绑一个权限位
+等于要么给所有角色都授这个位（权限位失去意义），要么让只读用户看不到自己的消息
+（功能坏掉）。因此它按**既有先例**落在认证域：`/auth/me`、`/auth/permissions`、
+`/auth/mfa*` 处理的全是"与我本人相关、不需要数据范围语义"的东西，收件箱与它们同类。
+
+这与 `08 §1` 的**字面**表述有张力，因此显式登记：
+若人类要求收件箱也进 admin 域，改动是"一处 `include_router` 前缀 +
+本文件装饰器路径"，且必须同时给三个既有角色补授该权限位。
+
+配套的三处前端口径：
+
+- 消息中心（`/notifications`）是**静态路由**、**不占 PAGE 资源**。
+  做成权限页会让没有该权限位的用户连自己的消息都打不开。
+- 只有"通知管理"（`/system/notifications`，`notification:manage:page`）
+  是权限页 —— 它管的是**发公告**，那才是治理动作。
+- 顶栏面板与角标在 `AppHeader` 里、个人中心左侧。
+
+**端点里没有"读某个用户的收件箱"**：它没有正当用途（管理端要看的是公告，
+不是别人的私信），而它的存在本身就是一条越权读入口。收件人恒取自 `actor.user_id`，
+服务方法签名里连 `user_id` 参数都没有（`test_list_has_no_recipient_parameter` 钉住）。
+
+**标记已读对别人的 / 不存在的 / 已删除的通知一律 404**（不是 403）：
+区分"不存在"与"存在但不是你的"等于把"这个 ID 上有别人的消息"这件事泄给调用方，
+而那正是枚举他人消息的第一步。
+
+### 32.3 系统事件目录（文案只有一处）
+
+`app/services/notification.py` 的 `SYSTEM_EVENTS` 是"事件码 → 标题 / 跳转 / 轻重"
+的**唯一**来源，调用点只回答"发生了什么、发生在谁身上"：
+
+| 事件码 | 触发点 | 标题 | 跳转 | 轻重 |
+|---|---|---|---|---|
+| `SESSION_SUPERSEDED` | `SessionService.create` 顶替成功 | 你的账号在另一处登录，此前会话已下线 | `/system/sessions` | WARNING |
+| `PASSWORD_RESET` | `UserService.reset_password` | 你的登录口令已被管理员重置 | `/profile` | IMPORTANT |
+| `USER_DISABLED` | `UserService._change_status`（真变） | 你的账号已被禁用 | `/profile` | IMPORTANT |
+| `USER_ENABLED` | 同上 | 你的账号已恢复启用 | `/profile` | INFO |
+| `USER_ROLES_CHANGED` | `UserService.assign_roles`（真变） | 你的角色授权已变更，权限已即时生效 | `/profile` | WARNING |
+
+端口 `NotificationPublisher` **只有** `publish_system_event` 一个方法，
+`NullNotificationPublisher` 是空实现。为什么不让调用点自带文案：
+那样 `SYSTEM_EVENTS` 的集中就白做了，同一类事件在不同调用点会有不同措辞
+（"你的会话已被顶替" vs "账号在别处登录"），用户看到的是两种事。
+
+`link` 存的是**前端路由路径**而不是"类型 + ID"：跳转规则因此只有一处
+（前端路由表）。代价是路径写错不会报错、只会跳 404 ——
+由 `tests/test_notification_delivery.py` 把每个 `link` 与
+`frontend/src/router/index.ts` 的静态路由 + `scripts/seed_data.py` 的
+`PAGES` 路径**逐个比对**兜住（`/system/session` 是注册表键、`/system/sessions`
+才是路由路径，一个字母之差两侧测试各自都不会红）。
+
+### 32.4 投递与业务**同事务**（fail-closed）
+
+`publish_system_event` 直接写调用方传进来的那个 `AsyncSession`，
+因此"业务改动提交"与"消息落库"要么一起成立、要么一起不成立。
+
+- **不能异步投递**（后台任务）：本项目没有任务队列，而"发消息失败就静默丢掉"
+  会让用户账户已经被禁用、却从来没被通知过；
+- **不能在业务提交后再写**：那需要一个新事务，失败时业务已经生效，
+  于是留下一类无法自动修复的缺口（"我改了但你没告诉我"）；
+- 同事务的代价是"通知写不进去 ⇒ 业务也失败"。方向正确：
+  通知写不进去只可能是数据库不可用，那时业务本身也写不进去。
+
+`UserService` / `SessionService` 的 `notifier` **默认自建真实投递器**
+（而不是空实现）—— 这是刻意的、也反直觉的一处选择：投递只需要一个
+`AsyncSession`，而两个服务**已经有**这个会话，所以"忘了注入"就成了纯粹的
+静默故障。"不发"必须显式写 `NullNotificationPublisher()` 才成立。
+
+**投递不进审计表**：审计记录"谁做了什么"，通知记录"谁该被告知什么"；
+系统消息由治理动作派生，而那个动作已经被审计了。
+唯一被审计的是**管理员发布 / 撤回公告**（`NOTIFICATION_ANNOUNCE` /
+`NOTIFICATION_REVOKE`，归 `OPERATION_ACTIONS`），且**审计记 `body_length`
+而不记正文** —— 审计 append-only 保留 2 年，公告正文写进去撤不回来
+（与系统参数"审计不记值"同一取向，见 §13）。
+
+⚠️ 由此派生的硬约束：**通知内容里不得出现敏感值**。通知没有脱敏管道
+（`app/core/masking.py` 作用于日志），它会以明文出现在界面上。
+口令、令牌、MFA 密钥一律不进 `title` / `body` ——
+`reset_password` 的通知里**不含**初始口令，由管理员走其它渠道当面告知。
+
+### 32.5 三项已知取舍（**改这一域之前必读**）
+
+1. **收件箱在认证域而非 admin 域**（`INTERIM-32-01`，见 §32.2）。
+   与 `08 §1` 字面表述有张力，已登记待确认。
+2. **`ROLE` 受众按"直接分配"判定，不含角色继承**（`JUDGMENT-32-01`）。
+   继承是**权限**语义（"你能做什么"），受众是**组织**语义（"这事该让谁看到"）。
+   把继承并进受众会让"给我授过权的角色"变成"我属于的群体"，
+   典型后果是运维只给一个共享父角色授权，公告却发给了所有继承它的部门。
+   与"权限上算 / 组织上不算"的既有分叉（§31.1 的在场 vs 有效）同一取向。
+3. **撤回不能收回已读**（`JUDGMENT-32-02`）。撤回 = 逻辑删除公告定义
+   + 按 `announcement_id` 逻辑删除扇出的收件箱行，未读数随之归零；
+   但已经被人看到的**内容**收不回来 —— 通知不像邮件可以道歉再发一封。
+   **这一点必须在界面上明说**（前端撤回确认文案已写明），
+   否则撤回会给人"消息没发出去"的错觉。
+
+### 32.6 登记表
+
+| 编号 | 类型 | 内容 |
+|---|---|---|
+| `INTERIM-32-01` | 与 Spec 字面张力 | 收件箱挂 `/api/v1/auth` 而非 `/api/v1/admin`（§32.2） |
+| `INTERIM-32-02` | 无 Spec 依据 | 表名 `announcements` / `notifications`、端点路径、`NOTIFICATION_MANAGE` 权限码均为技术推导（`docs/spec/` 零提及本域） |
+| `JUDGMENT-32-01` | 刻意分叉 | `ROLE` 受众不含继承（§32.5#2） |
+| `JUDGMENT-32-02` | 已知代价 | 撤回不能收回已读（§32.5#3） |
+| `JUDGMENT-32-03` | 已知代价 | 一次全员公告写 N 行（fan-out on write，§32.1） |
+| `OPERATION-32-01` | 工具教训 | 迁移的 `comment` / `server_default` 必须与模型**逐字一致**，否则 `test_alembic_sees_no_drift` 红（见下） |
+| `OPERATION-32-02` | 工具教训 | 外键一律 `RESTRICT`，不得 `CASCADE`（见下） |
+| `OPERATION-32-03` | 工具教训 | 共享库上新增测试文件的 `role_code` / `resource_code` **必须加前缀**（见下） |
+| `OPERATION-32-04` | 工具教训 | 排序用例必须**造出并列**才证得了 `id` 兜底（§32.9 M5） |
+| `OPERATION-32-05` | 工具教训 | 同源两道授权会让「删掉一层」在行为测试里不可见，静态护栏必须进变异清单（§32.9 M19） |
+
+`OPERATION-32-01`：首轮 `tests/test_hardening.py::test_alembic_sees_no_drift`
+报出 8 条 `modify_comment` + 1 条 `modify_default` —— 迁移里写的是短注释
+（"标题"、"正文"、"轻重"…）并给 `recipient_count` 加了 `server_default="0"`，
+而模型用的是长注释且只有 Python 侧 `default=0`。**这不是测试太严**：
+迁移与模型是同一张 schema 的两份描述，任何一处不一致都会让
+"库长什么样"取决于"谁先跑的"，因此必须由迁移向模型对齐。
+修法是**改迁移 + 真实库 `downgrade → upgrade` 往返**（两张表当时为空，无损）。
+
+`OPERATION-32-02`：`test_no_cascade_foreign_keys` 是白名单断言
+（"新增任何 CASCADE 外键都必须先给出理由并更新这里"）。
+本域最初给 `notifications.user_id` 与 `notifications.announcement_id`
+都写了 `CASCADE`，报出后**改成了 `RESTRICT`**，而不是往白名单里加两行 ——
+因为项目里 `sessions` / `password_history` / `user_roles` 对 `admin_users`
+全是 `RESTRICT`，只有瞬态的 `mfa_challenges` 用 `CASCADE`；
+而 `announcement_id` 用 `RESTRICT` 还额外把"物理删公告定义、
+留下一地无法追溯的收件箱行"变成库层不可能 —— 撤下公告只剩**逻辑删除
+（撤回，带审计）**这一条路，`CASCADE` 反而会开出一条静默旁路。
+
+`OPERATION-32-03`：共享 PostgreSQL 上真实库里已经有 `SUPER_ADMIN` 等角色
+（`scripts/seed_init.py` 写的），而 `roles` 上有部分唯一索引
+`uq_roles_role_code_active`。新测试文件若沿用真实码播种就会撞唯一约束，
+症状是**成片红且与本轮改动无关**（`test_user_service.py` / `test_dict_service.py`
+在共享库上 66 / 32 条红就是这个原因，记作"既存红"）。
+本域三个测试文件的 `role_code` 全部带 `NOTIFY*` 前缀；
+`NOTIFICATION_MANAGE` 权限资源是唯一例外 —— 它本来就该存在，
+因此测试里**先查再建**（存在则复用），既不制造新噪声，
+也保证判权依据是**线上那一条**资源。
+
+### 32.7 验证
+
+- 后端新增 **110 例**，三个文件分工明确（分层 PASS ≠ 串联成立）：
+  - `tests/test_notification_service.py` **48 例**：读口径（收件箱隔离 /
+    未读定义 / 已读幂等 / 公告受众解析 / 内容校验 / 扇出排序 / 撤回 /
+    审计只记长度 / 并列时按 `id` 兜底 / 库层 CHECK 与部分索引真的建了）。
+  - `tests/test_notification_delivery.py` **28 例**：接线（顶替一条事件
+    **一条**消息而不是按会话数 / 状态没真变不投 / 角色集合没真变不投 /
+    显式空实现不投 / 同事务回滚后业务与消息**同时**复原 /
+    调用点清单与目录对齐 / 每个 `link` 都是真实前端路由）。
+  - `tests/test_notification_api.py` **34 例**：HTTP 面（**路由面逐条钉住**
+    7 条端点，既要存在也不得有清单之外的 / 401 与 403 的区分 /
+    BIGINT ID 序列化为字符串 / 没有 `is_read` 与 `user_id` /
+    别人的通知标记已读返回 404 且**对方的行未被改动** /
+    静态路径不被带参路径抢走 / 授权先于业务校验）。
+- 前端新增 6 个 spec 文件（api / store / utils / 消息中心 / 通知管理 / 角标），
+  `resetAllSessionState` 里补了通知 store 的清理（登出 / 切账号后角标不残留）。
+- 迁移 `phase14_notifications` 在真实库 `upgrade → downgrade → upgrade` **往返一致**。
+- 变异验证 **20/20**（首轮 18/20，两个缺口已补，见 §32.9）。
+- 受影响套件 before/after 差集：见 §32.8。
+- ⚠️ 测试写法上有一条必须记住：**枚举列的库层约束用例要把断言包住 `execute`
+  而不是 `flush`**。`session.execute(insert...)` 会立刻把语句送下去，
+  异常在 `execute` 就抛；断言写在 `flush` 上时失败原因会变成
+  "异常类型对但抛得太早"，看起来像实现错了。
+
+### 32.8 受影响套件的 before/after 差集
+
+⚠️ 本项目跑在**共享的** PostgreSQL 上，真实库里已经有 `scripts/seed_init.py`
+写的角色 / 部门 / 菜单等行，而多个测试文件用**真实码**（`SUPER_ADMIN`、
+`HQ`…）与固定 ID 播种 —— 于是 `uq_roles_role_code_active` 这类部分唯一索引
+会把它们成片打成红。**这不是代码缺陷，是测试数据与共享库的碰撞**
+（记作"既存红"），因此有效判据是**失败集合的差集**，不是"全绿"。
+
+做法：`git worktree add <baseline> HEAD` 拉一份**未含本轮改动**的干净检出
+（比 `git stash` 安全：不会有 pop 冲突，且不打断正在跑的测试），
+把 `.env` 复制进去，跑同一批文件。
+
+```text
+文件：route_authorization_guard / seed_data / seed_common / session_service /
+      session_management / session_presence / session_api / user_service /
+      auth_api / api_contracts / denial_audit / department_service /
+      permission_matrix / permission_contract / dynamic_permission_api
+
+基线（HEAD 742836b）：196 failed, 185 passed
+当前（含本轮改动）  ：195 failed, 209 passed
+
+新增失败（after 有、before 无）：0 条
+由红转绿                        ：1 条（test_seed_common::test_grants_match_the_grant_tables_exactly）
+```
+
+`tests/test_hardening.py` **不进这份差集**，单独说明：它含
+`test_alembic_sees_no_drift`，而 `--autogenerate --check` 比的是"模型 vs 当前库"。
+在 worktree 里模型没有通知表、库里却有 → 基线那一跑必然报 `remove_table`，
+差集不可判。它的两条相关结论单独记：
+
+```text
+改动前（本轮代码）：2 条红 —— test_alembic_sees_no_drift（8 comment + 1 default 漂移）
+                              test_no_cascade_foreign_keys（新增 2 条 CASCADE）
+处置后            ：22 passed
+```
+
+### 32.9 变异验证：首轮 18/20，两个缺口都补上了
+
+`.workbuddy/tmp/mutate_notification.py` **20 条变异**（快照 + SIGTERM/SIGINT 还原 +
+后台跑；基线全绿才开跑；每条变异对应一条口径）。首轮 **18/20**，
+两条未被抓到 —— 两条都是**真缺口**，不是脚本问题，已补：
+
+#### M5「收件箱排序去掉 `id`」未被抓到（`OPERATION-32-04`）
+
+原来的 `test_paging_is_stable_across_pages` 逐条 `_push` 写库，
+时间戳（微秒）各不相同 —— **没有并列就没有排序键的第二次比较**，
+"补不补 `id`"在这条用例里完全观察不到（它在那里恰好已是全序）。
+这正是本项目反复出现的形状：**用例通过 ≠ 那条不变量被钉住**。
+
+补法（新增 `test_ties_use_id_not_heap_order`）是**让错误真的可能发生**：
+
+1. 写 5 条 `created_at` **完全相同**的行（扇出的形状）；
+2. 把 `id` 最小那条 UPDATE 一次 —— MVCC 把新元组版本追加到页尾，
+   于是**堆序 ≠ id 序**（堆里是 2,3,4,5,1）；
+3. 只按 `created_at desc` 排序时，两种最可能的计划给出
+   `1,5,4,3,2`（反向索引扫描）或 `2,3,4,5,1`（顺序扫描），
+   都不是"严格递减的 id" → 立刻红。
+
+补完后 M5 被 `TestFanoutOrdering::test_ties_use_id_not_heap_order` 精确抓到。
+
+#### M19「公告端点去掉权限声明」未被抓到（`OPERATION-32-05`）
+
+去掉端点的 `require_api_permission` 后，**行为上观察不到**：
+服务层还有第二道 `_assert_can_manage`，缺权限位的请求照样 403。
+换句话说"路由层有没有声明"这件事**只有静态护栏能判** ——
+而 `tests/test_route_authorization_guard.py` 当时不在变异脚本的测试清单里。
+把它加进清单后 M19 被抓到（
+`TestRouteAuthorizationGuard::test_every_admin_route_declares_a_permission_or_is_allowlisted`）。
+
+⚠️ 顺带记一条**判断规则**：两条同源授权（路由层 + 服务层）会让
+"删掉其中一条"在行为测试里不可见。这不是冗余的错，而是
+**验证手段必须按层配**：行为测试管"拦不拦得住"，
+静态护栏管"该声明的地方声明了没有"。见 §32.7 与
+`docs/DESIGN-DECISIONS.md` 里"分层 PASS ≠ 串联成立"的一贯取向。

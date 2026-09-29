@@ -53,6 +53,7 @@ from seed_common import (  # noqa: E402
     seed_resources,
     seed_roles,
 )
+from seed_data import DICT_CODES  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from app.db.session import get_session_factory  # noqa: E402
@@ -131,7 +132,7 @@ async def run(*, with_admin: bool, apply: bool) -> int:
         f"部门    {dept_created} 新建 / {len(dept_id)} 可用",
         f"资源    {resource_created} 新建 / {len(resource_id)} 可用",
         f"角色    {role_created} 新建 / {len(role_id)} 可用",
-        f"字典    {dict_created} 个（user_status）",
+        f"字典    {dict_created} 项（整套：{len(DICT_CODES)} 个字典）",
         f"参数    {param_created} 个（mfa.required_default）",
     ]
     if user_created:

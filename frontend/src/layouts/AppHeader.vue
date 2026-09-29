@@ -21,6 +21,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { resetAllSessionState } from '@/router'
 import { logout } from '@/api/endpoints/auth'
+import NotificationBell from '@/components/layout/NotificationBell.vue'
 
 const authStore = useAuthStore()
 const appStore = useAppStore()
@@ -70,6 +71,11 @@ function onSelect(key: string): void {
     </div>
 
     <div class="app-header__right">
+      <!-- 消息铃铛在个人中心**左侧**：两者同处右上角的一个视觉组，
+           但刻意不合并成一个下拉 —— 头像菜单回答"我是谁 / 退出"，
+           消息回答"有什么事"，合并后"想看消息"要先点开自己的名字。
+           角标与轮询都由 NotificationBell 自己管（`DESIGN-DECISIONS §32`）。 -->
+      <NotificationBell />
       <NDropdown :options="userMenu" trigger="click" @select="onSelect">
         <button type="button" class="app-header__user">
           <NAvatar round size="small" :style="{ background: 'var(--vctn-primary)' }">

@@ -14,10 +14,12 @@ import { useRolesStore } from '@/stores/roles'
 import { useResourcesStore } from '@/stores/resources'
 import { useParamsStore } from '@/stores/params'
 import { useStatisticsStore } from '@/stores/statistics'
+import { useNotificationsStore } from '@/stores/notifications'
 import { ForbiddenError, UnauthorizedError } from '@/api/errors'
 import { http } from '@/api/client'
 import type {
   DepartmentTreeNode,
+  NotificationItem,
   PermissionResource,
   Role,
   StatisticsOverview,
@@ -106,6 +108,27 @@ function param(id: string): SystemParam {
     status: 'ACTIVE',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+/**
+ * 一条站内通知（`§32`）。
+ *
+ * 与其它替身一样只要"type 对得上、能塞进 store"即可 —— 这里验的是
+ * 通知**有没有随会话被清掉**，与消息内容无关。
+ */
+function notification(id: string): NotificationItem {
+  return {
+    id,
+    category: 'SYSTEM',
+    event_code: 'SESSION_SUPERSEDED',
+    announcement_id: null,
+    title: `消息${id}`,
+    body: null,
+    link: null,
+    level: 'INFO',
+    read_at: null,
+    created_at: '2026-01-01T00:00:00Z',
   }
 }
 
@@ -337,6 +360,24 @@ describe('Logout → 路由与状态清理', () => {
     expect(useStatisticsStore().loaded).toBe(false)
   })
 
+  it('通知必须随会话清掉：未读数与消息正文都是**按人**的', () => {
+    // 这是本项目里最露骨的一类残留：顶栏角标显示上一个账号的未读数，
+    // 打开面板还能读到上一个账号的消息**标题与正文**。而轮询是 60 秒一次，
+    // 中间那段时间里第二个用户一直在看第一个用户的消息。
+    const notifications = useNotificationsStore()
+    notifications.setUnread(3)
+    notifications.recent = [notification('900001')]
+    notifications.total = 3
+
+    resetAllSessionState()
+
+    expect(notifications.unread).toBe(0)
+    expect(notifications.recent).toEqual([])
+    expect(notifications.total).toBe(0)
+    // 定时器也要停：登出后继续轮询等于替一个已不存在的会话打请求。
+    expect(notifications.timer).toBeNull()
+  })
+
   it('业务域缓存必须随会话清掉，否则换账号会看到上一个账号的部门树', () => {
     // 这不是"显示旧数据"的洁癖，是**越权信息泄露**：部门树是数据范围的骨架，
     // 超管拿到的树比部门管理员宽。缓存若跨账号留存， narrower-scope 的用户
@@ -508,5 +549,63 @@ describe('权限链完整性（FE-00 §4）', () => {
     expect(loginCall?.init.body).toContain('super-secret')
     // 登录本身是免鉴权的，不应该带上 Authorization。
     expect(headerOf(loginCall!, 'Authorization')).toBeUndefined()
+  })
+})
+
+/**
+ * **路由面逐条钉住**（本项目反复踩过的缺口模式）。
+ *
+ * 这条不是洁癖：`profile` / `reports` / `notifications` 三页之所以存在，
+ * 全靠"它们是静态路由"这一条 —— 一旦有人把它们误挂进权限契约（或反过来
+ * 给它们补一个 `meta.permission`），行为会静默地变成"权限没配对的用户
+ * 打不开自己的消息"，而**任何**服务层 / store 层测试都不会红：
+ * 那些测试注入的都是本层的正确输入。
+ *
+ * 后两类断言同样重要：
+ * - 这三条路由必须**没有** `meta.permission`（有 = 守卫会去查 PAGE 权限，
+ *   而它们根本不该有权限位）。
+ * - 它们不能被动态路由的清理顺带删掉（`resetAllSessionState` 走的是
+ *   `removeRoute(name)` 白名单，名字对不上就会连静态路由一起消失 ——
+ *   表现是"登出再登录后消息中心 404"）。
+ */
+describe('静态路由面（不占权限位的人人可达页面）', () => {
+  const STATIC_PATHS = ['/reports', '/profile', '/notifications']
+
+  function routeOf(path: string): ReturnType<typeof router.getRoutes>[number] | undefined {
+    return router.getRoutes().find((route) => route.path === path)
+  }
+
+  it('三条静态路由都真实存在，且都声明了标题', () => {
+    for (const path of STATIC_PATHS) {
+      const route = routeOf(path)
+      expect(route, `${path} 未注册`).toBeDefined()
+      expect(typeof route?.meta.title).toBe('string')
+    }
+  })
+
+  it('静态路由**不得**带 meta.permission（带了就会被页面权限卡住）', () => {
+    for (const path of STATIC_PATHS) {
+      expect(routeOf(path)?.meta.permission).toBeUndefined()
+    }
+  })
+
+  it('消息中心的路由名是 notifications（顶栏「查看全部」按名字跳转）', () => {
+    // 顶栏用 `router.push({ name: 'notifications' })` 而不是路径字面量。
+    // 名字写错不会在类型上暴露（字符串宽松），只表现为点「查看全部」没反应。
+    const names = router.getRoutes().map((route) => route.name)
+    expect(names).toContain('notifications')
+  })
+
+  it('会话清理不会把静态路由一并删掉', () => {
+    installDynamicRoutes(buildContract())
+    expect(pathExists('/system/users')).toBe(true)
+
+    resetAllSessionState()
+
+    expect(pathExists('/system/users')).toBe(false)
+    // 动态路由清了，静态的三条必须还在。
+    for (const path of STATIC_PATHS) {
+      expect(pathExists(path), `${path} 被会话清理误删`).toBe(true)
+    }
   })
 })

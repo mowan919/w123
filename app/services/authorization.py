@@ -142,6 +142,16 @@ class ApiPermissionCode(StrEnum):
     #: 链路包含**每一条**应用日志正文与访问日志（路径 / 状态码 / 耗时），
     #: 其信息面比审计表更宽（审计只记动作），因此不应由"能查审计"隐含获得。
     TRACE_READ = "TRACE_READ"
+    #: 管理站内公告（`DESIGN-DECISIONS §32`；Spec 未定义本域）。
+    #:
+    #: 只管**公告**，不管收件箱：收件箱是"我自己的消息"，
+    #: 任何已认证用户都能读自己的（不需要权限位，也因此**没有**"读别人的收件箱"
+    #: 这个能力）。把两者合成一个权限位会导致"能发公告"隐含"能读全部收件箱"。
+    #:
+    #: Super Admin 之外的默认授权：`seed_data.ROLE_APIS` 未把它给
+    #: DEPARTMENT_ADMIN / VIEWER —— 公告面向全员广播，属超管职责，
+    #: 与"字典与参数维护不给部门管理员"同一取向。
+    NOTIFICATION_MANAGE = "NOTIFICATION_MANAGE"
 
 
 class AuthorizationService:

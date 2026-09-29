@@ -152,6 +152,23 @@ class AuditAction(StrEnum):
     #: 读取链路（`GET /traces`、`GET /traces/{traceId}`）。
     AUDIT_TRACE_READ = "AUDIT_TRACE_READ"
 
+    # ---- Phase 14：站内通知（`DESIGN-DECISIONS §32`） ----
+    #
+    # 只有**公告的发布 / 撤回**进审计，系统消息不进。
+    # 理由：审计回答"谁做了什么治理动作"。发布公告会给全站所有人的角标
+    # 上加一个数字 —— 那是一次面向全体的广播，必须能回答"谁发的、发给了谁"。
+    # 而系统消息是**派生结果**（会话被顶替、口令被重置），
+    # 那些动作本身已经被审计了；再记一遍"系统给他发了条消息"
+    # 只会让审计表里一半是通知投递记录，把真正的安全事件淹掉。
+    #
+    # 读自己的收件箱同样不审计：角标是**轮询**的（默认 60 秒一次），
+    # 逐次留痕等于把审计表变成访问日志 —— 与 INTERIM-7-05
+    # （`GET /auth/permissions` 不记审计）同一取向。
+    #: 发布公告（`POST /admin/notifications/announcements`）。
+    NOTIFICATION_ANNOUNCE = "NOTIFICATION_ANNOUNCE"
+    #: 撤回公告（`POST /admin/notifications/announcements/{id}/revoke`）。
+    NOTIFICATION_REVOKE = "NOTIFICATION_REVOKE"
+
 
 class AuditResult(StrEnum):
     """审计结果。"""

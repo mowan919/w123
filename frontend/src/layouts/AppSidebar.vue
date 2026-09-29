@@ -30,6 +30,7 @@ import {
   DocumentTextOutline,
   GitNetworkOutline,
   KeyOutline,
+  NotificationsOutline,
   OptionsOutline,
   PeopleOutline,
   PersonCircleOutline,
@@ -64,6 +65,10 @@ const ICON_BY_NAME: Record<string, Component> = {
   'audit-log': DocumentTextOutline,
   trace: GitNetworkOutline,
   log: DocumentTextOutline,
+  // 「通知管理」的 icon（`seed_data.MENUS` 里写的就是这个名字）。
+  // 与顶栏消息铃铛用同一个图标是**有意**的：两者都在说"消息"这件事，
+  // 并且各自的标题已经说清了方向（这里发，那里收）。
+  notification: NotificationsOutline,
 }
 
 /** 菜单**编码** → 图标组件：后端没配图标时按编码兜底。 */
@@ -79,6 +84,7 @@ const ICON_BY_CODE: Record<string, Component> = {
   'system:param': OptionsOutline,
   'system:audit-log': DocumentTextOutline,
   'system:trace': GitNetworkOutline,
+  'system:notification': NotificationsOutline,
   // 「日志管理」是顶级**分组**（迁移 `phase11_log_menu` 建立），
   // 它的两个子菜单编码仍是 `system:*` —— 本轮只调整层级不改编码。
   'log:manage': DocumentTextOutline,

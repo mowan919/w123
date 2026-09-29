@@ -68,6 +68,21 @@ PAGES: list[tuple[str, str, str, str, int]] = [
     ("system:param:page", "系统参数", "/system/params", "system/param", 80),
     ("system:audit-log:page", "审计日志", "/system/audit-logs", "system/audit-log", 90),
     ("system:trace:page", "链路查询", "/system/traces", "system/trace", 100),
+    # 通知管理（Phase 14 / `DESIGN-DECISIONS §32`）：发布与撤回**公告**。
+    # 排序 85 落在「系统参数」(80) 之后 —— 它是系统级广播工具，
+    # 与配置类菜单相邻但排在后面。
+    #
+    # ⚠️ 这里的 PAGE 是"公告管理"页，**不是**个人消息中心。
+    # 消息中心（`/notifications`）刻意是**静态路由**、不占 PAGE 资源：
+    # 人人都有自己的一页，做成权限页会让没有该权限位的用户
+    # 连自己的消息都打不开（详见 `§32`）。
+    (
+        "notification:manage:page",
+        "通知管理",
+        "/system/notifications",
+        "system/notification",
+        85,
+    ),
 ]
 
 #: (code, name, page_code) —— 按钮挂在其所属 PAGE 下（DD-20：BUTTON.parent_id 必填且指向 PAGE）。
@@ -119,6 +134,9 @@ BUTTONS: list[tuple[str, str, str]] = [
     # 日志
     ("audit:read", "查看审计明细", "system:audit-log:page"),
     ("trace:read", "查看链路明细", "system:trace:page"),
+    # 通知管理（Phase 14）
+    ("notification:publish", "发布公告", "notification:manage:page"),
+    ("notification:revoke", "撤回公告", "notification:manage:page"),
 ]
 
 #: (code, name, method, path, page_code)
@@ -155,6 +173,16 @@ APIS: list[tuple[str, str, str, str, str]] = [
         "GET",
         "/permission-resources",
         "system:permission-resource:page",
+    ),
+    # 通知管理（Phase 14 / §32）。路径是**管理端**公告端点
+    # （`/api/v1/admin` 之下的 `/notifications/announcements`）——
+    # 自助收件箱在认证域（`/api/v1/auth/notifications`），不占权限位。
+    (
+        "NOTIFICATION_MANAGE",
+        "通知管理（发布/撤回公告）",
+        "GET",
+        "/notifications/announcements",
+        "notification:manage:page",
     ),
 ]
 
@@ -197,6 +225,7 @@ MENUS: list[tuple[str, str, str | None, str | None, int]] = [
     ("system:session", "会话管理", "system:system", "session", 60),
     ("system:dictionary", "字典管理", "system:system", "dictionary", 70),
     ("system:param", "系统参数", "system:system", "param", 80),
+    ("system:notification", "通知管理", "system:system", "notification", 85),
     ("log:manage", "日志管理", None, "log", 200),
     ("system:audit-log", "审计日志", "log:manage", "audit-log", 210),
     ("system:trace", "链路查询", "log:manage", "trace", 220),
@@ -217,6 +246,7 @@ MENU_PAGES: list[tuple[str, str]] = [
     ("system:session", "system:session:page"),
     ("system:dictionary", "system:dictionary:page"),
     ("system:param", "system:param:page"),
+    ("system:notification", "notification:manage:page"),
     ("system:audit-log", "system:audit-log:page"),
     ("system:trace", "system:trace:page"),
 ]
@@ -225,7 +255,10 @@ MENU_PAGES: list[tuple[str, str]] = [
 
 #: 角色 → 可见页面。VIEWER 刻意看不到"权限配置 / 系统参数 / 审计日志"。
 ROLE_PAGES: dict[str, list[str]] = {
+    # SUPER_ADMIN 拿全部页面（含 Phase 14 的「通知管理」），自动派生。
     "SUPER_ADMIN": [page[0] for page in PAGES],
+    # 部门管理员刻意**不给**「通知管理」：公告是面向**全员**的广播，
+    # 它不是部门级运维动作 —— 与"字典与参数维护不给部门管理员"同一取向。
     "DEPARTMENT_ADMIN": [
         "system:user:page",
         "system:department:page",
@@ -385,6 +418,27 @@ DICTIONARIES: list[tuple[str, str, str, list[tuple[str, str, str, int, bool]]]] 
         [
             ("成功", "SUCCESS", "audit_success", 10, True),
             ("失败", "FAILURE", "audit_failure", 20, False),
+        ],
+    ),
+    (
+        "notification_category",
+        "通知分类",
+        "站内通知的两类来源；取值必须与 `NotificationCategory` 一致，改名不会报错，"
+        "只会让消息中心的分流标签显示成原始英文",
+        [
+            ("系统消息", "SYSTEM", "notify_system", 10, True),
+            ("公告", "ANNOUNCEMENT", "notify_announcement", 20, False),
+        ],
+    ),
+    (
+        "notification_level",
+        "通知轻重",
+        "只影响展示（颜色 / 是否置顶），不参与任何判定；"
+        "所以它可以被运营改文案，而 `audit_result` 不可以",
+        [
+            ("普通", "INFO", "notify_info", 10, True),
+            ("提醒", "WARNING", "notify_warning", 20, False),
+            ("重要", "IMPORTANT", "notify_important", 30, False),
         ],
     ),
     (

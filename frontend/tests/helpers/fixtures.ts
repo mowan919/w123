@@ -54,6 +54,9 @@ export const FULL_PAGE_SPECS: PermissionPageItem[] = [
   // `system/audit-log`，全量契约直接生成不出这两条路由）。
   { id: '1009', code: 'system:audit-log:page', name: '审计日志', route_path: '/system/audit-logs', component_path: '/system/audit-log', sort_order: 90 },
   { id: '1010', code: 'system:trace:page', name: '链路查询', route_path: '/system/traces', component_path: '/system/trace', sort_order: 100 },
+  // 通知**管理**（发公告）。注意别与消息中心（`/notifications`，静态路由）
+  // 混起来 —— 后者刻意不在这个夹具里，因为它不是契约页面。
+  { id: '1011', code: 'notification:manage:page', name: '通知管理', route_path: '/system/notifications', component_path: '/system/notification', sort_order: 110 },
 ]
 
 /**

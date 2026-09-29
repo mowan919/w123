@@ -27,6 +27,7 @@ from app import __version__
 from app.api.v1.endpoints.auth import router as auth_router
 from app.api.v1.endpoints.dicts import public_router as public_dict_router
 from app.api.v1.endpoints.mfa import router as mfa_router
+from app.api.v1.endpoints.notifications import self_router as notification_self_router
 from app.api.v1.router import api_router
 from app.audit.buffer import flush_logs
 from app.core.config import settings
@@ -122,6 +123,11 @@ def create_app() -> FastAPI:
     # `POST /auth/mfa/verify` 例外地挂在 auth_router 里（它是登录流程的续完），
     # 理由见 `app/api/v1/endpoints/mfa.py` 的模块文档。
     application.include_router(mfa_router, prefix=settings.auth_v1_prefix)
+    # 站内通知的**自助收件箱**（Phase 14 / `DESIGN-DECISIONS §32`）同样挂在认证域：
+    # 它操作的是"我自己的消息"，任何人都有自己的一份，不需要 admin 资源域的
+    # 权限位与数据范围语义 —— 与 `/auth/me`、`/auth/mfa*` 同类。
+    # 管理端（发布 / 撤回公告）在 admin 域，见 `api/v1/router.py`。
+    application.include_router(notification_self_router, prefix=settings.auth_v1_prefix)
     # 公开字典查询（Phase 7 / Spec `05 §4`）：路径是 `/api/v1/dicts/{dictCode}`，
     # **不在** admin 域下，因此单独以 public 前缀挂载。
     # 注意"公开"不等于"匿名"：端点仍要求已认证（JUDGMENT-7-03，

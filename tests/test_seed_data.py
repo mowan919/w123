@@ -244,7 +244,13 @@ def test_dictionary_values_are_the_real_backend_values() -> None:
     """
     from app.audit.events import AuditResult
     from app.core.scope import DataScope
-    from app.models.enums import FieldAccessLevel, SessionRevokeReason, UserStatus
+    from app.models.enums import (
+        FieldAccessLevel,
+        NotificationCategory,
+        NotificationLevel,
+        SessionRevokeReason,
+        UserStatus,
+    )
 
     #: 字典码 → 该码允许取值的集合（None 表示"只校验形状，不校验取值"）。
     expected: dict[str, set[str] | None] = {
@@ -255,6 +261,8 @@ def test_dictionary_values_are_the_real_backend_values() -> None:
         "session_revoke_reason": {member.value for member in SessionRevokeReason},
         "audit_result": {member.value for member in AuditResult},
         "field_access_level": {member.value for member in FieldAccessLevel},
+        "notification_category": {member.value for member in NotificationCategory},
+        "notification_level": {member.value for member in NotificationLevel},
     }
 
     codes = [entry[0] for entry in data.DICTIONARIES]

@@ -63,6 +63,7 @@ from app.services.department import DepartmentService
 from app.services.dict import DictService
 from app.services.log_query import LogQueryService
 from app.services.mfa_management import MfaManagementService
+from app.services.notification import NotificationService
 from app.services.permission_contract import PermissionContractService
 from app.services.permission_resource import PermissionResourceService
 from app.services.role import RoleService
@@ -179,6 +180,18 @@ async def get_system_param_service(
 ) -> SystemParameterService:
     """提供系统参数服务（Phase 7：类型化配置）。"""
     return SystemParameterService(session, audit=BufferingAuditRecorder())
+
+
+async def get_notification_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> NotificationService:
+    """提供站内通知服务（`DESIGN-DECISIONS §32`）。
+
+    注入审计记录器：公告的发布 / 撤回是治理动作，必须留痕。
+    系统消息的投递**不**经本依赖（它由业务服务在自己的事务里直接调
+    `publish_system_event`），因此不会把审计写进那些路径。
+    """
+    return NotificationService(session, audit=BufferingAuditRecorder())
 
 
 async def get_authorization_service(
@@ -412,6 +425,7 @@ PermissionContractServiceDep = Annotated[
     PermissionContractService, Depends(get_permission_contract_service)
 ]
 AuthorizationServiceDep = Annotated[AuthorizationService, Depends(get_authorization_service)]
+NotificationServiceDep = Annotated[NotificationService, Depends(get_notification_service)]
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 DepartmentServiceDep = Annotated[DepartmentService, Depends(get_department_service)]
@@ -432,6 +446,7 @@ __all__ = [
     "DictServiceDep",
     "LogQueryServiceDep",
     "MfaManagementServiceDep",
+    "NotificationServiceDep",
     "PermissionContractServiceDep",
     "PermissionResourceServiceDep",
     "RoleDataScopeServiceDep",
