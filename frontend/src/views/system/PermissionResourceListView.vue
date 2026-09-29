@@ -60,6 +60,8 @@ import {
   setMenuPages,
 } from '@/api/endpoints/resources'
 import type { DataTableColumn } from '@/components/data/types'
+import { useDictionaryStore } from '@/stores/dictionaries'
+import { resourceTypeStyle } from '@/utils/resourceType'
 import type {
   PermissionResource,
   PermissionResourceTreeNode,
@@ -70,6 +72,7 @@ import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
 const resourcesStore = useResourcesStore()
+const dictionaryStore = useDictionaryStore()
 
 const dataColumns: Array<DataTableColumn<PermissionResource>> = [
   { key: 'resource_name', title: '名称' },
@@ -400,7 +403,20 @@ async function saveMenuPages(): Promise<void> {
 
 onMounted(() => {
   void load()
+  // 类型与状态的中文来自字典；失败时页面回落到硬编码（`resourceTypeStyle`
+  // 的 label 与下面的 `statusLabel`），因此这里不 catch 之外的处理。
+  void dictionaryStore.ensureMany(['resource_type', 'resource_status'])
 })
+
+/** 类型的中文标签：字典优先，回落到 `resourceTypeStyle` 里那份。 */
+function typeLabel(type: ResourceType): string {
+  return dictionaryStore.labelOf('resource_type', type, resourceTypeStyle(type).label)
+}
+
+/** 状态的中文标签：字典优先，回落到"启用 / 禁用"。 */
+function statusLabel(status: PermissionStatus): string {
+  return dictionaryStore.labelOf('resource_status', status, status === 'ACTIVE' ? '启用' : '禁用')
+}
 </script>
 
 <template>
@@ -493,9 +509,21 @@ onMounted(() => {
         actions-title="操作"
         actions-width="230px"
       >
+        <template #cell-resource_type="{ row }">
+          <!-- 五类各一色：树里混排时"这是什么类型"靠颜色先到，再靠文字确认。 -->
+          <span
+            class="tag"
+            :style="{
+              color: resourceTypeStyle(row.resource_type).color,
+              background: resourceTypeStyle(row.resource_type).background,
+            }"
+          >
+            {{ typeLabel(row.resource_type) }}
+          </span>
+        </template>
         <template #cell-status="{ row }">
           <span class="tag" :class="row.status === 'ACTIVE' ? 'tag--active' : 'tag--disabled'">
-            {{ row.status === 'ACTIVE' ? '启用' : '禁用' }}
+            {{ statusLabel(row.status) }}
           </span>
         </template>
         <template #cell-resource_code="{ row }">
@@ -588,9 +616,17 @@ onMounted(() => {
 
         <span class="tree__name">{{ entry.node.resource.resource_name }}</span>
         <code class="tree__code">{{ entry.node.resource.resource_code }}</code>
-        <span class="tag">{{ entry.node.resource.resource_type }}</span>
+        <span
+          class="tag"
+          :style="{
+            color: resourceTypeStyle(entry.node.resource.resource_type).color,
+            background: resourceTypeStyle(entry.node.resource.resource_type).background,
+          }"
+        >
+          {{ typeLabel(entry.node.resource.resource_type) }}
+        </span>
         <span class="tag" :class="entry.node.resource.status === 'ACTIVE' ? 'tag--active' : 'tag--disabled'">
-          {{ entry.node.resource.status === 'ACTIVE' ? '启用' : '禁用' }}
+          {{ statusLabel(entry.node.resource.status) }}
         </span>
         <span class="tree__actions">
           <PermissionButton code="permission:resource-update" type="text-primary" @click="startEdit(entry.node.resource)">

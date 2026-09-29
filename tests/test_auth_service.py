@@ -37,7 +37,7 @@ from app.db.base import utc_now
 from app.models import AdminUser, UserStatus
 from app.models.session import UserSession
 from app.services.auth import AuthService
-from app.services.mfa import MfaPolicyResolver, MfaService
+from app.services.mfa import MfaPolicyResolver, MfaProviderRegistry, MfaService
 from app.services.session import SessionService
 from tests.factories import make_user
 
@@ -347,9 +347,16 @@ class TestMfaStep:
 
         这是本项目对"安全配置缺失"的一贯取向：让配置问题立刻可见，
         而不是得到一个"号称有 MFA、实际没有"的系统。
+
+        ⚠️ 必须显式注入**空**登记处：`app.main` 模块级 `app = create_app()`
+        会在**导入期**装配 TOTP Provider（进程级单例），服务层单测进程里
+        登记处不再是空的 —— 靠"全局恰好为空"来构造前提是用例隔离泄漏。
         """
         await _seed(db_session)
-        mfa = MfaService(resolver=MfaPolicyResolver(system_default=True))
+        mfa = MfaService(
+            resolver=MfaPolicyResolver(system_default=True),
+            registry=MfaProviderRegistry(),
+        )
         service = _service(db_session, mfa=mfa)
 
         with pytest.raises(ConfigurationError):

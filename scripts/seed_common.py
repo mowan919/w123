@@ -34,6 +34,7 @@ from seed_data import (
     APIS,
     BUTTONS,
     DEPARTMENTS,
+    DICTIONARIES,
     FIELDS,
     MENU_PAGES,
     MENUS,
@@ -463,60 +464,77 @@ async def seed_admin_user(
 
 
 async def seed_user_status_dict(session: AsyncSession) -> tuple[None, int]:
-    """建 `user_status` 字典类型及其三个取值。
+    """兼容旧调用方：等价于只做 `user_status` 那一份（见 `seed_dictionaries`）。"""
+    created = await seed_dictionaries(session, dict_codes=["user_status"])
+    return None, created
 
-    这是**唯一**被前端 `labelOf()` 消费的字典码（其余字典由字典管理页录入），
-    没有它时状态列会直接显示 `ACTIVE` 这类原始枚举值。
 
-    幂等键：`dict_type.dict_code` 与 `(dict_type_id, item_value)`。
+async def seed_dictionaries(session: AsyncSession, dict_codes: list[str] | None = None) -> int:
+    """按 `seed_data.DICTIONARIES` 补齐字典类型与字典项，返回新建项数。
+
+    为什么要一次性建完而不是"缺哪个补哪个"
+    --------------------------------------
+    字典缺席**不会报错**：页面回落到硬编码文案或直接显示枚举值
+    （`ACTIVE` / `BUTTON` / `ALL`）。所以"到底缺哪些"从现象上问不出来，
+    只能靠清单保证 —— 这也是把清单搬到 `seed_data.py` 的原因
+    （`DESIGN-DECISIONS §19.2` 记的就是"两份清单漂移"）。
+
+    幂等键：类型看 `dict_code`，项看 `(dict_type_id, item_value)`。
+    已存在的项**不更新** —— 字典的管理权在字典管理页，脚本只负责
+    "从零到这里"，重复跑不该把运营改过的标签改回去。
+
+    `dict_codes` 用于只补一部分（旧调用方 `seed_user_status_dict`），
+    留空则补全部。
     """
-    # 变量名刻意不叫 `dict_row`：一个变量先装 `int | None`、再被赋成 ORM 对象，
-    # 类型检查器会直接报错（也会把后面 `dict_type_id=` 的用法绕晕）。
-    dict_type_id: int | None = (
-        await session.execute(select(SysDictType.id).where(SysDictType.dict_code == "user_status"))
-    ).scalar_one_or_none()
-    if dict_type_id is None:
-        new_dict = SysDictType(
-            dict_code="user_status",
-            dict_name="用户状态",
-            description="后台用户的账号状态；DROP 后会退回显示原始枚举值",
-            status=DictStatus.ACTIVE,
-        )
-        session.add(new_dict)
-        await session.flush()
-        dict_type_id = new_dict.id
-    assert dict_type_id is not None
-
-    items: list[tuple[str, str, str, int, bool]] = [
-        ("正常", "ACTIVE", "user_status_active", 10, True),
-        ("停用", "DISABLED", "user_status_disabled", 20, False),
-        ("已锁定", "LOCKED", "user_status_locked", 30, False),
-    ]
-    existing_values = set(
-        (
-            await session.execute(
-                select(SysDictItem.item_value).where(SysDictItem.dict_type_id == dict_type_id)
-            )
-        ).scalars()
-    )
+    wanted = set(dict_codes) if dict_codes is not None else None
     dict_created = 0
-    for label, value, code, order, is_default in items:
-        if value in existing_values:
+
+    for code, name, description, items in DICTIONARIES:
+        if wanted is not None and code not in wanted:
             continue
-        session.add(
-            SysDictItem(
-                dict_type_id=dict_type_id,
-                item_label=label,
-                item_value=value,
-                item_code=code,
-                sort_order=order,
+
+        # 变量名刻意不叫 `dict_row`：一个变量先装 `int | None`、再被赋成 ORM 对象，
+        # 类型检查器会直接报错（也会把后面 `dict_type_id=` 的用法绕晕）。
+        dict_type_id: int | None = (
+            await session.execute(select(SysDictType.id).where(SysDictType.dict_code == code))
+        ).scalar_one_or_none()
+        if dict_type_id is None:
+            new_dict = SysDictType(
+                dict_code=code,
+                dict_name=name,
+                description=description,
                 status=DictStatus.ACTIVE,
-                is_default=is_default,
-                description=None,
             )
+            session.add(new_dict)
+            await session.flush()
+            dict_type_id = new_dict.id
+        assert dict_type_id is not None
+
+        existing_values = set(
+            (
+                await session.execute(
+                    select(SysDictItem.item_value).where(SysDictItem.dict_type_id == dict_type_id)
+                )
+            ).scalars()
         )
-        dict_created += 1
-    return None, dict_created
+        for label, value, item_code, order, is_default in items:
+            if value in existing_values:
+                continue
+            session.add(
+                SysDictItem(
+                    dict_type_id=dict_type_id,
+                    item_label=label,
+                    item_value=value,
+                    item_code=item_code,
+                    sort_order=order,
+                    status=DictStatus.ACTIVE,
+                    is_default=is_default,
+                    description=None,
+                )
+            )
+            dict_created += 1
+
+    return dict_created
 
 
 # ---------------------------------------------------------------- 参数

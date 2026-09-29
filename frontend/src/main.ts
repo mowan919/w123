@@ -2,8 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import { router, installHttpClient } from './router'
-import { useAuthStore } from './stores/auth'
-import { usePermissionStore } from './stores/permission'
+import { bootstrapSession } from './stores/bootstrapSession'
 import './styles/base.css'
 import { applyCssTokens } from './styles/theme'
 
@@ -17,16 +16,11 @@ app.use(createPinia())
 // HTTP Client 必须晚于 Pinia 安装：它的 AuthBridge 直接引用 store 单例。
 installHttpClient()
 
-// 恢复持久化令牌：只恢复令牌，**不**把 user 填回来 —— 用户身份必须由
-// `GET /auth/me` 与 `GET /auth/permissions` 在服务端确认后才有意义。
-useAuthStore().restorePersistedTokens()
-
-// 权限集合不能在启动时就信 localStorage：它由后端每次计算。
-// 只在**已认证**时预加载 —— 未登录就请求必然 401，refresh 流程会把它
-// 误判成"会话丢失"，弹"登录状态已失效"横幅且横幅在登录成功后仍残留。
-if (useAuthStore().isAuthenticated) {
-  void usePermissionStore().load().catch(() => undefined)
-}
+// 恢复持久化令牌 → 回填身份 → 预加载权限。
+//
+// 顺序逻辑不写在入口文件里：`bootstrapSession` 有单元测覆盖（漏掉身份回填
+// 会立刻变红），而写在 `main.ts` 里的代码任何测试都碰不到。
+void bootstrapSession()
 
 app.use(router)
 app.mount('#app')

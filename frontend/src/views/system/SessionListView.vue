@@ -19,6 +19,7 @@ import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import ConfirmDialog from '@/components/feedback/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { useDictionaryStore } from '@/stores/dictionaries'
 import { useColumnSettings } from '@/composables/useColumnSettings'
 import {
   listSessions,
@@ -30,6 +31,7 @@ import type { DataTableColumn } from '@/components/data/types'
 import type { Session } from '@/types'
 
 const appStore = useAppStore()
+const dictionaryStore = useDictionaryStore()
 
 const dataColumns: Array<DataTableColumn<Session>> = [
   { key: 'username', title: '用户' },
@@ -52,12 +54,22 @@ const dataColumns: Array<DataTableColumn<Session>> = [
   { key: 'id', title: '会话 ID', width: '200px' },
 ]
 
-/** 撤销原因 → 中文文案。取值域是后端 `SessionRevokeReason`。 */
-const REVOKE_REASON_LABEL: Record<NonNullable<Session['revoke_reason']>, string> = {
+/**
+ * 撤销原因 → 中文文案。取值域是后端 `SessionRevokeReason`。
+ *
+ * 这份清单现在是**回落**：真正显示的是字典 `session_revoke_reason`
+ * （可在字典管理页改字），取不到时才用它。两个来源必须同时存在 ——
+ * 只有字典的话，字典一停用这里就是空白；只有清单的话，字典功能等于没用。
+ */
+const REVOKE_REASON_LABEL: Record<string, string> = {
   LOGOUT: '本人登出',
   ADMIN_REVOKE: '管理员撤销',
   REVOKE_ALL: '强制下线',
   TOKEN_REUSE_DETECTED: '令牌复用',
+}
+
+function revokeReasonLabel(reason: string): string {
+  return dictionaryStore.labelOf('session_revoke_reason', reason, REVOKE_REASON_LABEL[reason])
 }
 
 const {
@@ -225,6 +237,7 @@ async function confirmRevokeAll(): Promise<void> {
 
 onMounted(() => {
   void load()
+  void dictionaryStore.ensureMany(['session_revoke_reason'])
 })
 </script>
 
@@ -344,7 +357,7 @@ onMounted(() => {
           class="tag"
           :class="row.revoke_reason === 'TOKEN_REUSE_DETECTED' ? 'tag--locked' : 'tag--disabled'"
         >
-          {{ REVOKE_REASON_LABEL[row.revoke_reason] }}
+          {{ revokeReasonLabel(row.revoke_reason) || row.revoke_reason }}
         </span>
       </template>
       <template #cell-access_expires_at="{ row }">

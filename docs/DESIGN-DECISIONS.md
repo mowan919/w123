@@ -2403,3 +2403,151 @@ field:department_name    0     (无父 → 根节点)
 `#cell-owner_resource_id`）。要显示成页面**编码**需要后端在列表响应里
 带上 owner 的 `resource_code`（或前端维护 id→code 映射），属接口/视图的
 独立改动，不在本轮越界实施。
+
+## 29. 本轮五项整改 —— 实际落地口径（2026-09-28）
+
+用户诉求（原文，一条一项）：
+
+```text
+1、未登录为什么可以进入系统，不符合要求
+2、把数据字典这个功能使用起来
+3、当前没有可用的 MFA Provider；请先安装并启用一个 Provider
+4、初始化密码的时候不用校验密码复杂度
+5、page、menu、Button、api、field使用不同颜色
+```
+
+### 29.1 登记表
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| `RESOLVED-29-01` | **初始口令**（新建用户、管理员重置）**不校验复杂度**；自行改密仍走完整策略 | 已裁定（三选一，人类选定） |
+| `RESOLVED-29-02` | MFA Provider **冻结为 TOTP**（RFC 6238 / SHA-1 / 6 位 / 30 秒），DD-01 关闭 | 已裁定（四选一，人类选定） |
+| `RESOLVED-29-03` | 数据字典**进入实际使用**：七套字典进种子清单 + 前端下拉与标签改读字典 | 已裁定（三选一，人类选定） |
+| `FINDING-29-01` | 令牌从 `localStorage` 恢复后 `user` 无人回填 → 顶栏一直显示「未登录」 | 已修 |
+| `OPERATION-29-01` | 字典的 `item_value` 必须是**后端真值**，由 `tests/test_seed_data.py` 静态钉住 | 操作约定 |
+| `OPERATION-29-02` | 字典只做"从零补全"，**已存在的项不更新** —— 字典的管理权在字典管理页 | 操作约定 |
+
+### 29.2 第 1 条：不是"未登录能进系统"，是"登录了却显示未登录"
+
+实测（无头浏览器匿名访问 `/`、`/reports`、`/profile`、`/system/*`）：**全部被守卫
+弹回登录页**；后端 58 条 admin 端点匿名访问 54 条 401、4 条是刻意公开的 health 探针。
+所以"进入系统"这条路径并不存在。
+
+真正的缺陷是另一个方向：`main.ts` 只调 `restorePersistedTokens()`（只恢复**令牌**），
+而 `authStore.user` 必须由 `/auth/me` 确认 —— 于是刷新页面（或关掉浏览器再打开）之后
+一切照常，唯独顶栏、头像首字母一直显示「未登录」。
+
+- 新增 `authStore.hydrate()`：有令牌但 `user` 为空时补一次 `/auth/me`；
+  **401 直接清会话**（令牌已失效却摆着"已登录"，会让后续请求一路撞 401），
+  网络类失败则向上抛、保留会话。
+- 装配从 `main.ts` 抽成 `frontend/src/stores/bootstrapSession.ts`：写在入口文件里的
+  顺序逻辑**没有任何测试能碰到**（一跑就 `createApp().mount()`），
+  抽出来后"删掉 `hydrate()` 那一行"会立刻变红（变异 M6/M7）。
+
+### 29.3 第 4 条：初始口令免复杂度 —— 与既有验收口径相冲突，已显式取舍
+
+`UserService._hash_new_password()` 新增 `enforce_policy` 开关：
+
+- `create()`（新建用户的初始口令）与 `reset_password()`（管理员重置）→ `False`；
+- `change_own_password()`（用户自己改）→ `True`，策略不变。
+
+**冲突点**：`docs/verification/010-final-acceptance-result.md` 的 S-4 项以
+`test_weak_password_is_rejected` 作为"弱口令被拒"的证据。该断言的方向已被本次裁定
+反转，验收文件保持原样（它是历史记录），在此登记为**已知偏差**。
+
+豁免的**存在前提**（缺一不可，且都有用例钉住）：
+
+1. 两条路径都置 `must_change_password = True` —— 简单口令活不到第二次登录；
+2. **空口令仍然拒绝** —— "不查复杂度"是不查**构成**，不是可以不给口令；
+   下限写在服务层而非只靠 schema，因为 schema 拦不住直接调服务的作业脚本。
+
+### 29.4 第 3 条：TOTP Provider（DD-01 冻结）
+
+- 算法：`app/core/security/totp.py`（**无状态纯函数**，不碰框架），
+  测试直接用 **RFC 6238 附录 B** 的六条向量（8 位档）钉住，因此"能不能被
+  验证器 App 认出来"是**可验证**的，不是自证。
+- Provider：`app/services/mfa_totp.py` 的 `TotpMfaProvider`，
+  由 `create_app()` 里的 `install_totp_provider()` 装配（**幂等**，
+  已生效的 Provider 不被覆盖）。
+- **SHA-1 是刻意选择**：Google Authenticator 完全忽略 URI 的 `algorithm` 参数、
+  永远按 SHA-1 计算。选"更强的 SHA-256"的实际后果是**用户绑不上**。
+- `enable` / `disable` 是**空实现且应当如此**：协议把它们设计成生命周期通知，
+  服务于"有算法侧副作用"的 Provider；TOTP 的密钥由服务层加密保管，无事可做。
+- 既有守卫 `TestNoConcreteProviderInProduct`（"出厂零 Provider"）已改写为
+  `TestConcreteProviderIsExplicitlyDecided`：**默认登记处恰好一个 Provider 且是
+  TOTP** + `app/` 下只允许**白名单内**的 Provider 模块（新增一种必须过裁定）。
+
+### 29.5 第 2 条：数据字典进入实际使用
+
+- 种子：`scripts/seed_data.py` 新增 `DICTIONARIES`（七套：用户状态、资源类型、
+  资源状态、数据范围、会话撤销原因、审计结果、字段权限级别），
+  `seed_common.seed_dictionaries()` 幂等写入（**已存在的项不更新**）。
+- 前端：五个页面（用户 / 角色 / 资源 / 会话 / 审计）的下拉与状态标签
+  改读 `dictionaryStore`，**一律带本地回落** —— 字典是运营可改的数据，
+  "字典服务抖一下"不该表现为"筛选框里一个选项都没有"或"列里出现 `ACTIVE`"。
+- ⚠️ 写种子时**真踩到**的坑（已由 `test_dictionary_values_are_the_real_backend_values`
+  钉住）：凭印象写了 `WRITE`（正确是 `EDITABLE`）与
+  `REFRESH_INVALID` / `PASSWORD_CHANGED`（正确是 `REVOKE_ALL` / `TOKEN_REUSE_DETECTED`）。
+  这类错误的表现是"下拉里有一项，选了之后后端 422"，静态读代码读不出来。
+
+### 29.6 第 5 条：五类资源各一色
+
+- 色值进 `frontend/src/styles/theme.ts` 的 `TOKENS`（`kindPage` / `kindMenu` /
+  `kindButton` / `kindApi` / `kindField` 及各自的浅底），
+  保持"TS 是唯一色值来源"这条不变量。
+- 映射在 `frontend/src/utils/resourceType.ts`，用
+  `Record<ResourceType, ResourceTypeStyle>` —— **新增第六种类型会直接编译失败**，
+  逼着补色，而不是悄悄退化成灰色。
+- 列表列与树节点**两处**都用同一份映射（用例断言两处都着色，避免"一处偷懒"）。
+
+### 29.7 未修
+
+- `FINDING-28-01`（列表的「字段归属」列只显示裸雪花 ID）仍在。
+- `FINDING-27-01`（资源表单按类型的必填规则与后端不一致：MENU 被要求填
+  路由/组件路径 → 新增菜单必 400；缺「上级资源」「归属页面」输入 →
+  BUTTON / FIELD 建不出来）仍在。
+
+## 30. 数据字典页的两个静默错 —— 实际落地口径（2026-09-29）
+
+用户反馈（附截图）：
+
+```text
+1、字段管理里面只有字典没有资源类型
+2、状态默认查询全部
+```
+
+### 30.1 「只有字典没有资源类型」= 字典项子表把整包响应当数组渲染
+
+- **现象**：字典页「展开字典项」后，子表里只有一行全是"—"的怪数据；
+  而 `resource_type` 在库里明明有 5 个项（PAGE / MENU / BUTTON / API / FIELD）。
+- **根因**：`GET /admin/dicts/{id}/items` 的响应是
+  `data: { items: [...] }`（`DictItemListResponse` **有意包装**，后端不动），
+  前端 `listDictItems()` 却把整个 `data` 当 `DictItem[]` 返回 ——
+  `v-for` 遍历对象，渲染出一行"字段名当行"的怪东西。
+  请求全程 200，控制台不报错 → 典型静默错。
+- **修法**：前端解包（`dictionaries.ts`），返回 `data.items`；
+  契约测试 `tests/api/dictionaries.spec.ts` 用真实实现 + 假 fetch 钉住
+  "返回的是数组、URL 正确、status 拼接正确"。
+
+### 30.2 状态筛选：默认值 `null` 让下拉显示空白，且空串会被后端 422
+
+- **现象**：筛选区「状态」下拉默认**空白**（不是「全部」）；
+  且把空串原样发给 `GET /admin/dicts` 会被 enum 校验拒绝（422，`status` 只收 `ACTIVE`/`DISABLED`）。
+- **根因**：`statusFilter` 默认 `null`，而 `<option value="">全部</option>` 没有任何
+  option 与 `null` 匹配；「全部」被选中时值是空串，`load()` 又原样透传。
+- **修法**：与其余列表页（参数 / 资源 / 角色 / 会话）**同一口径**——
+  `ref<'' | 'ACTIVE' | 'DISABLED'>('')`，空串 = 全部 = 请求里**不带** status
+  （`status === '' ? null : status`）。视图测试 `tests/views/dictFilters.spec.ts`
+  钉住：默认显示「全部」、默认查询 `status` 为 `null`、选回「全部」归 `null`、重置回「全部」。
+
+### 30.3 附带修正（上一轮收尾）
+
+- `tests/test_auth_service.py::test_required_mfa_without_provider_fails_closed`
+  曾依赖"进程里登记处为空"这个前提 —— 但 `app.main` 模块级
+  `app = create_app()` 在**导入期**就装配了 TOTP Provider（进程级单例），
+  用例隔离泄漏。改为**显式注入空登记处**（`MfaProviderRegistry()`），
+  用例语义不变、不再依赖装配顺序。
+- `tests/test_user_service.py` 里 4 条与 `tests/test_initial_password.py`
+  语义重复的用例移除：它们挂在固定 ID 装置（角色 9001）上，在共享库环境下
+  必然撞 `uq_roles_role_code_active` —— 与该文件其余既存红同因，
+  而语义已由环境无关的新文件全量覆盖，留着只给"失败集合差集"添噪声。

@@ -27,6 +27,7 @@ import FormDialog from '@/components/feedback/FormDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { useColumnSettings } from '@/composables/useColumnSettings'
 import { useRolesStore } from '@/stores/roles'
+import { useDictionaryStore } from '@/stores/dictionaries'
 import { useResourcesStore } from '@/stores/resources'
 import { resolveSubmission, universeOf } from '@/composables/usePermissionTree'
 import type { PermissionTreeInput } from '@/composables/usePermissionTree'
@@ -38,6 +39,7 @@ import type { ID } from '@/types/common'
 
 const appStore = useAppStore()
 const rolesStore = useRolesStore()
+const dictionaryStore = useDictionaryStore()
 const resourcesStore = useResourcesStore()
 
 interface RoleDraft {
@@ -69,12 +71,22 @@ const {
   reset: resetColumns,
 } = useColumnSettings<Role>('roles', dataColumns)
 
+/**
+ * 数据范围标签：字典 `data_scope` 优先，回落到本地这份。
+ *
+ * 为什么要回落：字典由字典管理页维护（运营可改），可能被停用或改字；
+ * 而"这一列突然变成 ALL / SELF"是没人能接受的界面退化。
+ */
 const DATA_SCOPE_LABEL: Record<string, string> = {
   ALL: '全部数据',
   DEPARTMENT: '本部门',
   DEPARTMENT_CHILDREN: '本部门及下级',
   SELF: '仅本人',
   CUSTOM: '自定义（见权限配置）',
+}
+
+function scopeLabel(scope: string): string {
+  return dictionaryStore.labelOf('data_scope', scope, DATA_SCOPE_LABEL[scope])
 }
 
 /** 筛选输入只留在页面里（受控于 SearchForm）；分页与结果归 store。 */
@@ -245,6 +257,7 @@ async function confirmDelete(): Promise<void> {
 
 onMounted(() => {
   void rolesStore.goToPage(rolesStore.pageNum, rolesStore.pageSize)
+  void dictionaryStore.ensureMany(['data_scope'])
 })
 </script>
 
@@ -307,7 +320,7 @@ onMounted(() => {
         </span>
       </template>
       <template #cell-data_scope="{ row }">
-        <span class="muted">{{ DATA_SCOPE_LABEL[row.data_scope] ?? row.data_scope }}</span>
+        <span class="muted">{{ scopeLabel(row.data_scope) || row.data_scope }}</span>
       </template>
       <template #cell-created_at="{ row }">
         <span class="muted">{{ formatDateTime(row.created_at) }}</span>

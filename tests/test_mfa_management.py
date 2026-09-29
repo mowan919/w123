@@ -1072,10 +1072,21 @@ class TestNoSecretOnReadSurfaces:
 
 
 # ---------------------------------------------------------------------------
-# 裁判 13：不得擅自定义 V1 Provider
+# 裁判 13：Provider 只能是**显式裁定**的那一套
 # ---------------------------------------------------------------------------
-class TestNoConcreteProviderInProduct:
-    """`00 §4` / `16 §1` / `PHASES.md` Phase 5：不得把具体 Provider 宣布为需求事实。"""
+class TestConcreteProviderIsExplicitlyDecided:
+    """V1 Provider 的来源必须是**裁定**，不能是某次提交的顺手决定。
+
+    历史口径（`00 §4` / `16 §1` / Phase 5）：不得把具体 Provider 宣布为需求
+    事实，因此系统出厂时零 Provider —— 那时的守卫是"零".
+
+    **DD-01 已于 2026-09-28 冻结为 TOTP**（`RESOLVED-29-02`，人类三选一选定），
+    守卫随之改成下面两条。它们锁的还是同一件事，只是换了形式：
+
+    - "零"不再正确（产品现在必须有 Provider，否则 MFA 整体不可用）；
+    - 但"**具体是哪一个**"仍然必须显式可见 —— 白名单之外出现一个新的
+      Provider 模块就要过裁判这一步，不允许悄悄塞进 `app/`。
+    """
 
     #: 任何一类具体 MFA 算法库都不允许出现在产品代码里。
     _FORBIDDEN_IMPORTS = frozenset(
@@ -1110,16 +1121,40 @@ class TestNoConcreteProviderInProduct:
                 offenders[str(module)] = hit
         assert not offenders, f"产品代码引入了具体 MFA 算法库：{offenders}"
 
-    def test_no_provider_is_registered_by_default(self) -> None:
-        """产品出厂时**零 Provider**（DD-01 方案 A 的落地口径）。"""
+    #: DD-01 冻结后被**允许**存在的 Provider 实现模块（`app/` 内的相对路径）。
+    #:
+    #: 新增一种 Provider 时必须同时做三件事：往这里加一行、在
+    #: `docs/DESIGN-DECISIONS.md` 记账、并在明知为人为裁定的前提下才合入。
+    #: 少做第一件 → 这条用例会红，且错误信息指向"未经裁定的实现"。
+    _APPROVED_PROVIDER_MODULES = frozenset(
+        {
+            "core\\security\\totp.py",
+            "services\\mfa_totp.py",
+        }
+    )
+
+    def test_default_registry_has_exactly_the_decided_provider(self) -> None:
+        """默认登记处**只有** DD-01 裁定的那个 Provider。
+
+        断言"恰好一个"而不是"至少一个"：两个 Provider 同时活跃时，
+        `active_name` 只指向其中一个，另一个就成了"看得见但用不上"的
+        死配置 —— 它不会报错，只会让运维误以为系统在双因子容错。
+        """
         from app.services.mfa import get_mfa_provider_registry
+        from app.services.mfa_totp import TOTP_PROVIDER_NAME
 
         registry = get_mfa_provider_registry()
-        assert registry.has_active() is False
-        assert registry.active_name is None
+        assert registry.has_active() is True
+        assert registry.active_name == TOTP_PROVIDER_NAME
+        assert registry.get(TOTP_PROVIDER_NAME) is not None
 
-    def test_no_provider_implementation_module_in_app(self) -> None:
-        """`app/` 下不得出现"某个 Provider 的实现"模块。"""
+    def test_no_unapproved_provider_module_in_app(self) -> None:
+        """`app/` 下不得出现**未经批准**的 Provider 实现模块。
+
+        以前这条是"任何具体 Provider 都不许有"。DD-01 冻结后改成白名单：
+        已知实现照常存在，但新增一种（WebAuthn / 短信 / 邮件 …）
+        必须先过裁定这一关，不能直接进 `app/`。
+        """
         root = Path(__file__).resolve().parents[1] / "app"
         banned = ("totp", "hotp", "webauthn", "fido", "sms")
         found = [
@@ -1127,7 +1162,11 @@ class TestNoConcreteProviderInProduct:
             for path in root.rglob("*.py")
             if any(token in path.name.lower() for token in banned)
         ]
-        assert not found, f"发现具体 Provider 实现模块：{found}"
+        unapproved = sorted(set(found) - self._APPROVED_PROVIDER_MODULES)
+        assert not unapproved, (
+            "发现**未经裁定**的 Provider 实现模块；"
+            f"若要新增，请先在 docs/DESIGN-DECISIONS.md 冻结 DD-01 的变更：{unapproved}"
+        )
 
     async def test_service_requires_a_provider_instead_of_inventing_one(self, db_session) -> None:
         """没有 Provider 时服务抛错，而不是"内置一个"。"""

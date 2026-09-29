@@ -10,7 +10,7 @@
  * 后端已经在写入侧做了脱敏范围控制，这里不做二次加工、也不额外放大。
  */
 import { formatDateTime, localInputToUtcIso, nowAsLocalInput } from '@/utils/format'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { NButton, NIcon } from 'naive-ui'
 import { DocumentTextOutline, EyeOutline, RefreshOutline } from '@vicons/ionicons5'
 import PageContainer from '@/components/layout/PageContainer.vue'
@@ -20,12 +20,14 @@ import Pagination from '@/components/data/Pagination.vue'
 import ColumnSettings from '@/components/data/ColumnSettings.vue'
 import PermissionButton from '@/components/permission/PermissionButton.vue'
 import { useAppStore } from '@/stores/app'
+import { useDictionaryStore } from '@/stores/dictionaries'
 import { useColumnSettings } from '@/composables/useColumnSettings'
 import { getAuditLog, listAuditLogs } from '@/api/endpoints/logs'
 import type { DataTableColumn } from '@/components/data/types'
 import type { AuditLog } from '@/types'
 
 const appStore = useAppStore()
+const dictionaryStore = useDictionaryStore()
 
 const dataColumns: Array<DataTableColumn<AuditLog>> = [
   { key: 'created_at', title: '时间', width: '170px' },
@@ -60,6 +62,21 @@ const RESULT_STYLE: Record<string, string> = {
   SUCCESS: 'tag--active',
   FAILURE: 'tag--disabled',
 }
+
+/** 结果的中文文案：字典 `audit_result` 优先，回落到"成功 / 失败"。 */
+const RESULT_LABEL: Record<string, string> = { SUCCESS: '成功', FAILURE: '失败' }
+
+function resultLabel(value: string): string {
+  return dictionaryStore.labelOf('audit_result', value, RESULT_LABEL[value])
+}
+
+/** 筛选下拉的选项：字典优先，回落到本地两份（提交的是后端真值）。 */
+const resultOptions = computed(() =>
+  dictionaryStore.optionsOr('audit_result', [
+    { label: '成功', value: 'SUCCESS' },
+    { label: '失败', value: 'FAILURE' },
+  ]),
+)
 
 const rows = ref<AuditLog[]>([])
 const total = ref(0)
@@ -159,6 +176,7 @@ async function openDetail(row: AuditLog): Promise<void> {
 
 onMounted(() => {
   void load()
+  void dictionaryStore.ensureMany(['audit_result'])
 })
 </script>
 
@@ -176,8 +194,9 @@ onMounted(() => {
       <label class="field"><span class="field__label">结果</span>
         <select v-model="result" class="field__control">
           <option value="">全部</option>
-          <option value="SUCCESS">成功</option>
-          <option value="FAILURE">失败</option>
+          <option v-for="item in resultOptions" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
         </select>
       </label>
       <div class="field">
@@ -241,7 +260,7 @@ onMounted(() => {
       actions-width="120px"
     >
       <template #cell-result="{ row }">
-        <span class="tag" :class="RESULT_STYLE[row.result] ?? ''">{{ row.result }}</span>
+        <span class="tag" :class="RESULT_STYLE[row.result] ?? ''">{{ resultLabel(row.result) }}</span>
       </template>
       <template #cell-resource_id="{ row }">
         <span>{{ row.resource_id ?? '—' }}</span>
@@ -303,7 +322,7 @@ onMounted(() => {
           <dt>动作</dt>
           <dd>{{ detail.action }}</dd>
           <dt>结果</dt>
-          <dd><span class="tag" :class="RESULT_STYLE[detail.result] ?? ''">{{ detail.result }}</span></dd>
+          <dd><span class="tag" :class="RESULT_STYLE[detail.result] ?? ''">{{ resultLabel(detail.result) }}</span></dd>
           <dt>错误码</dt>
           <dd>{{ detail.error_code ?? '—' }}</dd>
           <dt>操作者</dt>

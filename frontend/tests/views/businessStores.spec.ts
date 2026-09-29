@@ -247,6 +247,75 @@ describe('用户管理页', () => {
     expect(checkbox.props('disabled')).toBe(true)
   })
 
+  it('初始口令不查复杂度：简单的口令能提交，空的不能', async () => {
+    usePermissionStore().buttonCodes = new Set(['user:create'])
+    org.createUser.mockResolvedValue({
+      id: '9001',
+      username: 'simple',
+      display_name: '简单口令',
+      department_id: null,
+      status: 'ACTIVE',
+      must_change_password: true,
+      password_changed_at: null,
+      phone: null,
+      email: null,
+      failed_login_count: 0,
+      locked_until: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+
+    const wrapper = await mountView(UserListView)
+    await wrapper.findAll('button').filter((b) => b.text().includes('新建用户'))[0]?.trigger('click')
+    await flushPromises()
+
+    const dialog = document.querySelector('[role="dialog"]')
+    const textOf = () => dialog?.textContent ?? ''
+
+    /** 原生 input 走 v-model：直接赋 value 不会触发更新，必须派发 input 事件。 */
+    async function fillAt(index: number, value: string) {
+      const input = dialog?.querySelectorAll('input')[index]
+      if (input === undefined) throw new Error(`弹窗里没有第 ${index} 个输入框`)
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+    }
+    function clickSave() {
+      const button = Array.from(dialog?.querySelectorAll('button') ?? []).find(
+        (item) => item.textContent?.trim() === '保存',
+      )
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    }
+
+    await fillAt(0, 'simple-pw')
+    await fillAt(1, '张三')
+    await fillAt(2, '123456')
+
+    // 简单的初始口令不被前端拦住（与后端 `_hash_new_password` 同口径）。
+    expect(textOf()).not.toContain('大写字母')
+    expect(textOf()).not.toContain('请填写初始口令')
+
+    org.createUser.mockClear()
+    clickSave()
+    await flushPromises()
+    expect(org.createUser).toHaveBeenCalledTimes(1)
+    expect(org.createUser.mock.calls[0]?.[0]).toMatchObject({ password: '123456' })
+
+    // 但"空口令"仍必须拦 —— 免复杂度不等于可以不给口令。
+    // 提交成功会关掉弹窗，所以要重新打开一次；错误条又是"点过保存才显形"
+    // 的（FormDialog 的 `attempted`），故这次也得再点一次保存。
+    await wrapper.findAll('button').filter((b) => b.text().includes('新建用户'))[0]?.trigger('click')
+    await flushPromises()
+    await fillAt(0, 'empty-pw')
+    await fillAt(1, '李四')
+    await fillAt(2, '   ')
+    clickSave()
+    await flushPromises()
+
+    expect(textOf()).toContain('请填写初始口令')
+    expect(org.createUser).toHaveBeenCalledTimes(1)
+  })
+
   it('新增弹窗打开时不显示必填提示，点了保存才提示', async () => {
     usePermissionStore().buttonCodes = new Set(['user:create'])
     const wrapper = await mountView(UserListView)
@@ -337,6 +406,71 @@ describe('系统参数页', () => {
 })
 
 describe('权限资源维护页', () => {
+  it('五种资源类型在列表里各用一种颜色（不是五种灰）', async () => {
+    resources.listResources.mockResolvedValue({
+      list: ['PAGE', 'MENU', 'BUTTON', 'API', 'FIELD'].map((type, index) => ({
+        ...treeNode({ id: `80${index}`, resource_type: type as PermissionResource['resource_type'] }),
+        resource_code: `demo:${type.toLowerCase()}`,
+      })),
+      total: 5,
+      pageNum: 1,
+      pageSize: 20,
+    })
+
+    const wrapper = await mountView(PermissionResourceListView)
+
+    const cells = wrapper.findAll('tbody tr').map((row) => {
+      const found = row.findAll('span.tag').filter((tag) => /^(页面|菜单|按钮|接口|字段)$/.test(tag.text().trim()))
+      return found[0]
+    })
+    expect(cells).toHaveLength(5)
+    expect(cells.map((cell) => cell?.text().trim())).toEqual(['页面', '菜单', '按钮', '接口', '字段'])
+
+    // 关键断言：五行的**文字色两两不同**。同色即"五种类型看起来一样"，
+    // 那正是这次要解决的问题；这条比"用了某个具体色值"更抗换色。
+    const colors = cells.map((cell) => cell?.attributes('style') ?? '')
+    expect(new Set(colors).size).toBe(5)
+    for (const style of colors) {
+      expect(style).toContain('color')
+      expect(style).toContain('background')
+    }
+  })
+
+  it('树里的类型标签同样按类型着色（两处不能有一处偷懒）', async () => {
+    resources.getResourceTree.mockResolvedValue([
+      {
+        resource: treeNode({ id: '7001', resource_type: 'PAGE', resource_name: '用户管理' }),
+        children: [
+          {
+            resource: treeNode({ id: '7002', resource_type: 'BUTTON', resource_name: '新建用户' }),
+            children: [],
+          },
+          {
+            resource: treeNode({ id: '7004', resource_type: 'API', resource_name: '创建用户接口' }),
+            children: [],
+          },
+        ],
+      },
+    ])
+
+    const wrapper = await mountView(PermissionResourceListView)
+    await treeButton(wrapper).trigger('click')
+    await flushPromises()
+
+    const tags = wrapper
+      .findAll('.tree__row span.tag')
+      .filter((tag) => /^(页面|菜单|按钮|接口|字段)$/.test(tag.text().trim()))
+    expect(tags.map((tag) => tag.text().trim())).toEqual(['页面', '按钮', '接口'])
+    const styles = tags.map((tag) => tag.attributes('style') ?? '')
+    expect(new Set(styles).size).toBe(3)
+    // 每一条都必须显式带上文字色与底色 —— 少了底色就在深底上读不清，
+    // 少任何一种都会被浏览器渲染成默认灰标。
+    for (const style of styles) {
+      expect(style).toContain('color')
+      expect(style).toContain('background')
+    }
+  })
+
   it('列表与树两种模式都能挂载', async () => {
     resources.listResources.mockResolvedValue({
       list: [

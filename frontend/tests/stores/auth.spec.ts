@@ -224,6 +224,80 @@ describe('登出', () => {
   })
 })
 
+describe('身份回填（刷新页面后 topbar 不能停在「未登录」）', () => {
+  function meResponse() {
+    return {
+      id: '7001',
+      username: 'admin',
+      display_name: '管理员',
+      department_id: null,
+      status: 'ACTIVE' as const,
+      must_change_password: false,
+      password_expired: false,
+    }
+  }
+
+  it('令牌还在但 user 为空时，用 /auth/me 把身份补回来', async () => {
+    window.localStorage.setItem('vctn.access_token', 'access-old')
+    window.localStorage.setItem('vctn.refresh_token', 'refresh-old')
+    api.getMe.mockResolvedValue(meResponse())
+
+    const store = useAuthStore()
+    store.restorePersistedTokens()
+    // 复的就是故障现场：令牌恢复了，身份还没人管。
+    expect(store.isAuthenticated).toBe(true)
+    expect(store.user).toBeNull()
+
+    await store.hydrate()
+
+    expect(api.getMe).toHaveBeenCalledTimes(1)
+    expect(store.user?.display_name).toBe('管理员')
+    expect(store.user?.username).toBe('admin')
+  })
+
+  it('identity 已有时不重复请求（幂等，刷新时不放大流量）', async () => {
+    const store = useAuthStore()
+    store.setTokens(makeTokenPair())
+    store.user = { id: '7001', username: 'admin', display_name: '管理员', must_change_password: false }
+    api.getMe.mockClear()
+
+    await store.hydrate()
+
+    expect(api.getMe).not.toHaveBeenCalled()
+  })
+
+  it('me 返回 401 就清会话 —— 令牌已失效不能继续摆「已登录」', async () => {
+    const store = useAuthStore()
+    store.setTokens(makeTokenPair())
+    api.getMe.mockRejectedValue(new UnauthorizedError(401001, '令牌无效', 401))
+
+    await expect(store.hydrate()).resolves.toBeUndefined()
+
+    expect(store.isAuthenticated).toBe(false)
+    expect(store.peekAccessToken()).toBeNull()
+    expect(window.localStorage.getItem('vctn.access_token')).toBeNull()
+  })
+
+  it('me 的其它失败向上抛出，由调用方决定（不冒充"未登录"）', async () => {
+    const store = useAuthStore()
+    store.setTokens(makeTokenPair())
+    api.getMe.mockRejectedValue(new NetworkError('网络请求失败', ''))
+
+    await expect(store.hydrate()).rejects.toBeInstanceOf(NetworkError)
+    // 网络抖动不能当成令牌失效：会话还得留着，等下一次请求成功再说。
+    expect(store.isAuthenticated).toBe(true)
+  })
+
+  it('没有令牌时直接返回，一个请求都不发', async () => {
+    api.getMe.mockClear()
+    const store = useAuthStore()
+
+    await store.hydrate()
+
+    expect(api.getMe).not.toHaveBeenCalled()
+  })
+})
+
 describe('权限变更后的自我感知', () => {
   it('must_change_password 为 true 的会话受保护接口会拿到 403（FE-05 / RISK-001）', async () => {
     api.login.mockResolvedValue(loginOk(true))

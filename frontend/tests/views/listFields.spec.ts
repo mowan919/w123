@@ -425,7 +425,9 @@ describe('审计日志页 —— `AuditLogResponse` 的每个字段都有去处'
     expect(cellOf(wrapper, '操作者 ID')).toBe(row.operator_id)
     expect(cellOf(wrapper, '错误码')).toBe('409001')
     expect(cellOf(wrapper, '客户端')).toBe('curl/8.4.0')
-    expect(cellOf(wrapper, '结果')).toBe('FAILURE')
+    // 「结果」列现在显示**中文**（字典 `audit_result`，取不到时回落）。
+    // 断言跟着改成中文：这一列要证明的是"字段有去处"，不是"值没被翻译"。
+    expect(cellOf(wrapper, '结果')).toBe('失败')
   })
 
   it('成功的记录错误码列是占位符（0 与"没有错误码"是两回事）', async () => {

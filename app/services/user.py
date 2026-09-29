@@ -350,7 +350,9 @@ class UserService:
         with self._denial_audited(actor=actor, action=AuditAction.USER_CREATE, resource_id=None):
             await self._assert_department_in_scope(scope=scope, department_id=department_id)
 
-        password_hash = self._hash_new_password(password)
+        # 初始口令：不套复杂度策略（理由见 `_hash_new_password`），
+        # 且它自带的"必须改密"标记正是本处的风险对冲。
+        password_hash = self._hash_new_password(password, enforce_policy=False)
 
         if await self._users.get_by_username(username) is not None:
             raise ConflictError(f"登录名已存在：{username}")
@@ -538,7 +540,12 @@ class UserService:
         )
 
         before = _snapshot(user)
-        new_hash = await self._prepare_password_change(user=user, new_password=new_password)
+        # 管理员重置出来的是**初始口令**，套复杂度策略没有意义
+        # （详见 `_hash_new_password` 的说明）；真正的约束是把
+        # `must_change_password` 置 True —— 用户首次登录就必须换掉它。
+        new_hash = await self._prepare_password_change(
+            user=user, new_password=new_password, enforce_policy=False
+        )
         user.password_hash = new_hash
         user.password_changed_at = utc_now()
         user.must_change_password = True  # Spec 00 §2：管理员重置后首次登录必须改密
@@ -659,17 +666,36 @@ class UserService:
     # 密码内部逻辑
     # ------------------------------------------------------------------
     @staticmethod
-    def _hash_new_password(password: str) -> str:
-        """校验策略并生成哈希。"""
-        violations = validate_password_policy(password)
-        if violations:
-            raise BadRequestError(
-                "密码不符合策略：" + "; ".join(v.message for v in violations),
-                data={"violations": [v.code for v in violations]},
-            )
+    def _hash_new_password(password: str, *, enforce_policy: bool = True) -> str:
+        """校验策略并生成哈希。
+
+        `enforce_policy=False` 用于**初始口令**（新建用户的新户口令、
+        管理员重置口令）：这类口令不是"用户自己的口令"，而是管理员临时签发、
+        首次登录就被强制换掉的一次性凭据（`00 §2`）。对它们套复杂度策略的
+        实际效果是让管理员不得不把初始口令设得又长又难，再想办法告诉用户 ——
+        而这一过程本身（写纸条、发消息）已经比"口令简单"危险得多。
+
+        哪些**不算**初始口令：用户自行修改口令（`change_own_password`）。
+        那条路径仍然走完整策略，否则整个复杂度要求就只剩对一半场景生效。
+
+        ⚠️ 豁免的下限：空口令在任何场景下都不接受。
+        "不查复杂度"说的是不查**构成**（大小写/数字/符号），
+        不是"可以不给口令" —— 后者不是弱口令，是没有口令。
+        """
+        if enforce_policy:
+            violations = validate_password_policy(password)
+            if violations:
+                raise BadRequestError(
+                    "密码不符合策略：" + "; ".join(v.message for v in violations),
+                    data={"violations": [v.code for v in violations]},
+                )
+        elif password.strip() == "":
+            raise BadRequestError("初始口令不能为空")
         return get_password_hasher().hash(password)
 
-    async def _prepare_password_change(self, *, user: AdminUser, new_password: str) -> str:
+    async def _prepare_password_change(
+        self, *, user: AdminUser, new_password: str, enforce_policy: bool = True
+    ) -> str:
         """生成新哈希并维护密码历史。
 
         顺序（保证"最近 5 个密码不可重复"语义正确）：
@@ -678,7 +704,7 @@ class UserService:
         3. 裁剪历史到 5 条；
         4. 返回新哈希（由调用方写入 `password_hash`）。
         """
-        new_hash = self._hash_new_password(new_password)
+        new_hash = self._hash_new_password(new_password, enforce_policy=enforce_policy)
         hasher = get_password_hasher()
 
         if hasher.verify(new_password, user.password_hash):

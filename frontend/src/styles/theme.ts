@@ -55,6 +55,25 @@ export const TOKENS = {
   info: '#3b6ef6',
   infoWeak: '#e8effe',
 
+  /**
+   * 五类权限资源的**分类色**（`00 §4` 的资源模型只有这五类）。
+   *
+   * 为什么必须五**个**而不是"按语义复用主色"：这五类在树上混排
+   * （PAGE 下面同时挂着 BUTTON / API / FIELD），如果两类同色，
+   * "这一行是什么类型"就只能靠读文字 —— 而浏览树的时候眼睛扫的是色块。
+   * 因此刻意拉开色相：PAGE 蓝 / MENU 紫 / BUTTON 绿 / API 橙 / FIELD 青。
+   */
+  kindPage: '#3b6ef6',
+  kindPageWeak: '#e8effe',
+  kindMenu: '#7c4df0',
+  kindMenuWeak: '#f1ecfe',
+  kindButton: '#12a150',
+  kindButtonWeak: '#e7f6ee',
+  kindApi: '#d97706',
+  kindApiWeak: '#fdf4e3',
+  kindField: '#0d9488',
+  kindFieldWeak: '#e3f4f2',
+
   /** 侧边栏（深色）专属配色，与浅色主区分离。 */
   sidebarBg: '#141a29',
   sidebarBgSub: '#1b2334',

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import type { LoginRequest, LoginResponse, TokenPair } from '@/types'
 import * as authApi from '@/api/endpoints/auth'
+import { UnauthorizedError } from '@/api/errors'
 
 /**
  * authStore（FE-04）。
@@ -197,6 +198,36 @@ export const useAuthStore = defineStore('auth', {
         // 状态里，比"重登一次"更糟。
       } finally {
         this.clearSession()
+      }
+    },
+
+    /**
+     * 令牌还在、`user` 为空时，用 `/auth/me` 把身份补回来。
+     *
+     * 为什么必须显式做一次：`restorePersistedTokens()` 只恢复**令牌**，
+     * 而 `user` 必须由服务端确认 —— 于是"刷新页面（或关掉浏览器再打开）"
+     * 之后一切都正常，唯独 `user` 是 null，顶栏把它渲染成「未登录」，
+     * 看上去就是"我已经登录了，系统却说我没登录"。
+     *
+     * `/auth/me` 走的是宽松依赖（`CurrentActorAllowPasswordChangeDep`），
+     * 因此处于"需先修改密码"的用户也能拿到响应，不会被这里的失败挡住。
+     *
+     * 401 的处理必须是**清会话**而不是留 TERMI 空：令牌已失效却仍摆着
+     * `isAuthenticated = true`，守卫会把后续请求一路放行到受保护接口，
+     * 每个都 401 一次，再由 client 兜底清场 —— 中间那段"看起来登录着"
+     * 的状态是不必要的。
+     */
+    async hydrate(): Promise<void> {
+      if (accessToken === null && refreshToken === null) return
+      if (this.user !== null) return
+      try {
+        await this.loadMe()
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          this.clearSession()
+          return
+        }
+        throw error
       }
     },
 

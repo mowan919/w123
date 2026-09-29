@@ -45,8 +45,15 @@ export function deleteDictType(dictTypeId: ID): Promise<DictTypeDeleteResult> {
   return http.delete<DictTypeDeleteResult>(`/admin/dicts/${dictTypeId}`)
 }
 
-export function listDictItems(dictTypeId: ID, status?: DictStatus | null): Promise<DictItem[]> {
-  return http.get<DictItem[]>(`/admin/dicts/${dictTypeId}/items`, { status })
+export async function listDictItems(
+  dictTypeId: ID,
+  status?: DictStatus | null,
+): Promise<DictItem[]> {
+  // ⚠️ 后端这条端点把列表包在 `items` 键里（`DictItemListResponse`），
+  // 不是裸数组 —— 直接把 data 当数组用，`v-for` 会去遍历对象，
+  // 渲染出一行全是"—"的怪数据（字段管理里"只有字典没有资源类型"）。
+  const data = await http.get<{ items: DictItem[] }>(`/admin/dicts/${dictTypeId}/items`, { status })
+  return data.items
 }
 
 export function createDictItem(dictTypeId: ID, payload: DictItemCreateRequest): Promise<DictItem> {

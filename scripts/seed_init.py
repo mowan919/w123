@@ -48,10 +48,10 @@ from seed_common import (  # noqa: E402
     grant_role_permissions,
     seed_admin_user,
     seed_departments,
+    seed_dictionaries,
     seed_mfa_default_param,
     seed_resources,
     seed_roles,
-    seed_user_status_dict,
 )
 from sqlalchemy import text  # noqa: E402
 
@@ -115,7 +115,9 @@ async def run(*, with_admin: bool, apply: bool) -> int:
                 dept_id=dept_id.get(ADMIN_DEPARTMENT_CODE),
             )
 
-        _, dict_created = await seed_user_status_dict(session)
+        # 字典**整套**都建（不只有 user_status）：页面下拉与状态标签现在都读它，
+        # 缺一套的表现不是报错，而是"界面退回英文枚举值"—— 从现象上看不出来。
+        dict_created = await seed_dictionaries(session)
         _, param_created = await seed_mfa_default_param(session)
 
         if apply:

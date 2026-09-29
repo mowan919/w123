@@ -37,6 +37,7 @@ from app.db.redis import check_redis, close_redis
 from app.db.session import check_database, dispose_engine
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.trace import TraceMiddleware
+from app.services.mfa_totp import install_totp_provider
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,13 @@ def create_app() -> FastAPI:
     )
 
     register_exception_handlers(application)
+
+    # MFA Provider 是**进程级**配置：装上谁用 = 部署事实，与请求无关。
+    # 放在 `create_app()` 里而不是某个 lifespan 里，是因为它在进程存活期间
+    # 不该有"未安装"的时间窗 —— 请求到达时才发现没有 Provider，只能
+    # fail-closed 抛 `ConfigurationError`，界面上表现为"MFA 功能整体不可用"。
+    install_totp_provider()
+
     application.add_middleware(TraceMiddleware)
     # 安全响应头：最后 add 的中间件**最外层**，因此它看到的
     # `http.response.start` 是最终发出的那一版 —— 包括 TraceMiddleware

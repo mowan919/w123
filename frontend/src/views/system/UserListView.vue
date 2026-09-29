@@ -41,7 +41,6 @@ import { useDictionaryStore } from '@/stores/dictionaries'
 import { useOrganizationStore } from '@/stores/organization'
 import { useRolesStore } from '@/stores/roles'
 import { formatDateTime, localInputToUtcIso, nowAsLocalInput } from '@/utils/format'
-import { PASSWORD_HINT, validatePassword } from '@/utils/validate'
 import type { DataTableColumn } from '@/components/data/types'
 
 const appStore = useAppStore()
@@ -175,6 +174,28 @@ function onReset(): void {
   reload({})
 }
 
+/** 字典没到 / 字典里没这一项时的回落（字典是运营数据，可能不完整）。 */
+const STATUS_FALLBACK: Record<string, string> = {
+  ACTIVE: '正常',
+  DISABLED: '禁用',
+  LOCKED: '锁定',
+}
+
+/**
+ * 状态下拉的选项。
+ *
+ * 兜底清单写在这里而不让页面空着：字典是"运营可改的数据"，它可能被停用、
+ * 也可能首屏还没到；但筛选框少一个选项，用户看到的是"这个功能坏了"。
+ * 下拉提交的是 `item_value`，因此两侧的值必须逐字一致（后端枚举真值）。
+ */
+const statusOptions = computed(() =>
+  dictionaryStore.optionsOr('user_status', [
+    { label: '正常', value: 'ACTIVE' },
+    { label: '禁用', value: 'DISABLED' },
+    { label: '锁定', value: 'LOCKED' },
+  ]),
+)
+
 function statusClass(status: string): string {
   if (status === 'ACTIVE') return 'tag tag--active'
   if (status === 'LOCKED') return 'tag tag--locked'
@@ -242,7 +263,13 @@ const draftError = computed<string | null>(() => {
   const current = draft.value
   if (current.username.trim() === '') return '请填写用户名'
   if (current.display_name.trim() === '') return '请填写姓名'
-  if (current.id === null) return validatePassword({ next: current.password })
+  if (current.id === null) {
+    // 初始口令**不查复杂度**（与后端 `UserService._hash_new_password` 同口径）：
+    // 它是管理员临时签发、用户首次登录就被强制换掉的一次性凭据。
+    // 逼人把初始口令设得又长又难，只会让它被写下来传给对方。
+    // 但"不能为空"仍要拦 —— 那不是弱口令，是没有口令。
+    return current.password.trim() === '' ? '请填写初始口令' : null
+  }
   return null
 })
 
@@ -359,8 +386,13 @@ const resetTarget = ref<User | null>(null)
 const resetPassword = ref('')
 const resetting = ref(false)
 
+/** 管理员重置出来的同样是初始口令 —— 不查复杂度，但不能为空。 */
 const resetError = computed<string | null>(() =>
-  resetTarget.value === null ? null : validatePassword({ next: resetPassword.value }),
+  resetTarget.value === null
+    ? null
+    : resetPassword.value.trim() === ''
+      ? '请填写新口令'
+      : null,
 )
 
 async function confirmDisable(): Promise<void> {
@@ -432,11 +464,13 @@ onMounted(async () => {
       </label>
       <label class="field">
         <span class="field__label">状态</span>
+        <!-- 选项来自字典（`user_status`），失败时回落到本地清单 ——
+             "字典服务抖一下"不该表现为"筛选框里一个选项都没有"。 -->
         <select v-model="filters.status" class="field__control">
           <option value="">全部</option>
-          <option value="ACTIVE">正常</option>
-          <option value="DISABLED">禁用</option>
-          <option value="LOCKED">锁定</option>
+          <option v-for="item in statusOptions" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
         </select>
       </label>
       <label class="field">
@@ -535,7 +569,12 @@ onMounted(async () => {
       actions-width="260px"
     >
       <template #cell-status="{ row }">
-        <span :class="statusClass(row.status)">{{ dictionaryStore.labelOf('user_status', row.status) || row.status }}</span>
+        <span :class="statusClass(row.status)">
+          {{
+            dictionaryStore.labelOf('user_status', row.status, STATUS_FALLBACK[row.status]) ||
+            row.status
+          }}
+        </span>
       </template>
       <template #cell-phone="{ row }">
         <!--
@@ -707,7 +746,8 @@ onMounted(async () => {
           用户名是登录标识，创建后不可修改；角色的调整入口未开放。
         </template>
         <template v-else>
-          初始口令{{ PASSWORD_HINT }}；用户首次登录需重新设置口令。
+          <!-- 初始口令不设复杂度门槛：一次性凭据，用户首次登录即被强制换掉。 -->
+          初始口令可自行设定，不设复杂度门槛；用户首次登录必须重新设置。
         </template>
       </p>
     </FormDialog>
@@ -749,7 +789,7 @@ onMounted(async () => {
         <span class="field__label">新口令</span>
         <input v-model="resetPassword" type="password" class="field__control" autocomplete="new-password" />
       </label>
-      <p class="hint">{{ PASSWORD_HINT }}。</p>
+      <p class="hint">重置出来的是初始口令，不设复杂度门槛；用户首次登录会被要求重新设置。</p>
     </FormDialog>
   </PageContainer>
 </template>

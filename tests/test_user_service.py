@@ -516,18 +516,6 @@ class TestUserCreate:
                 department_id=2,
             )
 
-    async def test_weak_password_is_rejected(self, db_session) -> None:
-        await _seed_tree(db_session)
-        service = UserService(db_session)
-        with pytest.raises(BadRequestError, match="密码"):
-            await service.create(
-                actor=ROOT_ACTOR,
-                username="weakling",
-                password="short",
-                display_name="弱口令",
-                department_id=2,
-            )
-
     async def test_create_with_roles(self, db_session) -> None:
         await _seed_tree(db_session)
         service = UserService(db_session)
@@ -809,13 +797,6 @@ class TestUserPasswordReset:
         assert updated.password_changed_at is not None
         assert await _history_count(db_session, user.id) == 1
         assert recorder.find(str(AuditAction.USER_RESET_PASSWORD)) is not None
-
-    async def test_reset_rejects_weak_password(self, db_session) -> None:
-        recorder = RecordingAuditRecorder()
-        service = UserService(db_session, audit=recorder)
-        user = await self._new_user(db_session, recorder)
-        with pytest.raises(BadRequestError, match="密码"):
-            await service.reset_password(actor=ROOT_ACTOR, user_id=user.id, new_password="weak")
 
     async def test_reset_rejects_current_password(self, db_session) -> None:
         recorder = RecordingAuditRecorder()

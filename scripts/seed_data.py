@@ -310,3 +310,93 @@ ALL_RESOURCE_CODES: set[str] = (
 
 ROLE_CODES: list[str] = [entry[0] for entry in ROLES]
 DEPARTMENT_CODES: list[str] = [entry[0] for entry in DEPARTMENTS]
+
+# ---------------------------------------------------------------- 数据字典
+#
+# 为什么清单放在这里：字典与权限资源是同一类"初始数据"——
+# 缺席不会报错，只会让界面退化成英文枚举值（`ACTIVE` / `BUTTON` / `ALL`）。
+# 混入执行脚本就等于多一处会被漏改的清单（`DESIGN-DECISIONS §19.2`）。
+#
+# 取值约定
+# --------
+# `item_value` **必须**是后端真会吐出来的那个值：下拉选项按它提交、
+# 状态标签按它反查。写成中文或别的别名，结果是"选了之后后端 422"。
+#: (dict_code, dict_name, description, [(label, value, code, sort_order, is_default)])
+DICTIONARIES: list[tuple[str, str, str, list[tuple[str, str, str, int, bool]]]] = [
+    (
+        "user_status",
+        "用户状态",
+        "后台用户的账号状态；缺失后状态列会退回显示原始枚举值",
+        [
+            ("正常", "ACTIVE", "user_status_active", 10, True),
+            ("停用", "DISABLED", "user_status_disabled", 20, False),
+            ("已锁定", "LOCKED", "user_status_locked", 30, False),
+        ],
+    ),
+    (
+        "resource_type",
+        "资源类型",
+        "权限资源的五分类；与 `permission_resources.resource_type` 列名同源",
+        [
+            ("页面", "PAGE", "resource_type_page", 10, True),
+            ("菜单", "MENU", "resource_type_menu", 20, False),
+            ("按钮", "BUTTON", "resource_type_button", 30, False),
+            ("接口", "API", "resource_type_api", 40, False),
+            ("字段", "FIELD", "resource_type_field", 50, False),
+        ],
+    ),
+    (
+        "resource_status",
+        "资源状态",
+        "资源的启用 / 停用；被停用的资源不参与授权计算",
+        [
+            ("启用", "ACTIVE", "resource_status_active", 10, True),
+            ("禁用", "DISABLED", "resource_status_disabled", 20, False),
+        ],
+    ),
+    (
+        "data_scope",
+        "数据范围",
+        "角色的数据范围策略；取值必须与 `app.core.scope.DataScope` 逐字一致",
+        [
+            ("全部数据", "ALL", "data_scope_all", 10, False),
+            ("本部门及下级", "DEPARTMENT_CHILDREN", "data_scope_children", 20, True),
+            ("仅本部门", "DEPARTMENT", "data_scope_department", 30, False),
+            ("仅本人", "SELF", "data_scope_self", 40, False),
+            ("自定义部门", "CUSTOM", "data_scope_custom", 50, False),
+        ],
+    ),
+    (
+        "session_revoke_reason",
+        "会话撤销原因",
+        "会话行被撤销的来源；取值必须与 `app.models.enums.SessionRevokeReason` 逐字一致",
+        [
+            ("本人登出", "LOGOUT", "revoke_logout", 10, True),
+            ("管理员撤销", "ADMIN_REVOKE", "revoke_admin", 20, False),
+            ("强制下线", "REVOKE_ALL", "revoke_all", 30, False),
+            ("令牌复用", "TOKEN_REUSE_DETECTED", "revoke_token_reuse", 40, False),
+        ],
+    ),
+    (
+        "audit_result",
+        "审计结果",
+        "审计记录的成败；取值必须与 `app.audit` 写入的值一致",
+        [
+            ("成功", "SUCCESS", "audit_success", 10, True),
+            ("失败", "FAILURE", "audit_failure", 20, False),
+        ],
+    ),
+    (
+        "field_access_level",
+        "字段权限级别",
+        "四级取值由 DD-06 冻结；改名不会报错，只会让授权界面的下拉变成空选项",
+        [
+            ("隐藏", "HIDDEN", "field_hidden", 10, False),
+            ("可见", "VISIBLE", "field_visible", 20, True),
+            ("只读", "READ_ONLY", "field_read_only", 30, False),
+            ("可编辑", "EDITABLE", "field_editable", 40, False),
+        ],
+    ),
+]
+
+DICT_CODES: list[str] = [entry[0] for entry in DICTIONARIES]

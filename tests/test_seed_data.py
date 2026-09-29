@@ -233,6 +233,50 @@ def test_field_access_levels_are_the_frozen_four_levels() -> None:
             assert level in valid, f"{role} 对字段 {field_key} 的等级 {level!r} 不是四级之一"
 
 
+def test_dictionary_values_are_the_real_backend_values() -> None:
+    """字典项的 `item_value` 必须是**后端真会吐出来的那一个值**。
+
+    这条断言是写本轮种子时真踩出来的：凭印象写了 `WRITE`
+    （正确是 `EDITABLE`）与 `REFRESH_INVALID` / `PASSWORD_CHANGED`
+    （正确是 `REVOKE_ALL` / `TOKEN_REUSE_DETECTED`）。
+    这类错误的表现是"下拉里有一项，选了之后后端 422"——
+    而且只在用户真的选了那一项时才出现，静态读代码读不出来。
+    """
+    from app.audit.events import AuditResult
+    from app.core.scope import DataScope
+    from app.models.enums import FieldAccessLevel, SessionRevokeReason, UserStatus
+
+    #: 字典码 → 该码允许取值的集合（None 表示"只校验形状，不校验取值"）。
+    expected: dict[str, set[str] | None] = {
+        "user_status": {member.value for member in UserStatus},
+        "resource_type": {"PAGE", "MENU", "BUTTON", "API", "FIELD"},
+        "resource_status": {"ACTIVE", "DISABLED"},
+        "data_scope": {member.value for member in DataScope},
+        "session_revoke_reason": {member.value for member in SessionRevokeReason},
+        "audit_result": {member.value for member in AuditResult},
+        "field_access_level": {member.value for member in FieldAccessLevel},
+    }
+
+    codes = [entry[0] for entry in data.DICTIONARIES]
+    assert len(codes) == len(set(codes)), f"重复的字典码：{codes}"
+    # 新增字典码必须**同时**在这里登记允许取值 ——
+    # 否则"这个值到底对不对"就是无人校验的状态。
+    assert set(codes) == set(expected), f"字典码与校验表不一致：{set(codes) ^ set(expected)}"
+
+    for code, _name, _description, items in data.DICTIONARIES:
+        allowed = expected[code]
+        values = [item[1] for item in items]
+        assert len(values) == len(set(values)), f"{code} 的取值重复：{values}"
+        item_codes = [item[2] for item in items]
+        assert len(item_codes) == len(set(item_codes)), f"{code} 的 item_code 重复：{item_codes}"
+        # 有且只有一个默认项：多个默认值会让"默认选中"变成看实现心情。
+        assert sum(1 for item in items if item[4]) == 1, f"{code} 的默认项不是一个"
+        if allowed is None:
+            continue
+        for value in values:
+            assert value in allowed, f"{code} 的取值 {value!r} 不是后端真值：{sorted(allowed)}"
+
+
 def test_department_tree_is_well_formed() -> None:
     """部门是邻接表；根必须唯一，其余父节点必须存在，否则建树时 FK 直接 RESTRICT。"""
     codes = {entry[0] for entry in data.DEPARTMENTS}

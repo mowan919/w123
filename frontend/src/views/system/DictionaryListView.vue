@@ -90,7 +90,10 @@ const pageSize = ref(20)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const keyword = ref('')
-const statusFilter = ref<'ACTIVE' | 'DISABLED' | null>(null)
+// 空串 = 「全部」：select 的第一个 option 是 value=""，默认值必须是 ''
+// 才能让下拉显示「全部」。此前默认 null，哪个 option 都匹配不上 → 显示空白；
+// 且空串若原样发给后端会被 enum 校验 422 拒掉，必须在请求前归一为 null。
+const statusFilter = ref<'' | 'ACTIVE' | 'DISABLED'>('')
 
 function emptyTypeDraft(): TypeDraft {
   return { id: null, dict_code: '', dict_name: '', description: '', status: 'ACTIVE' }
@@ -157,7 +160,12 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const result = await listDictTypes({ pageNum: pageNum.value, pageSize: pageSize.value, keyword: keyword.value, status: statusFilter.value })
+    const result = await listDictTypes({
+      pageNum: pageNum.value,
+      pageSize: pageSize.value,
+      keyword: keyword.value,
+      status: statusFilter.value === '' ? null : statusFilter.value,
+    })
     rows.value = result.list
     total.value = result.total
     pageNum.value = result.pageNum
@@ -178,7 +186,7 @@ function search(): void {
 
 function resetFilters(): void {
   keyword.value = ''
-  statusFilter.value = null
+  statusFilter.value = ''
   pageNum.value = 1
   void load()
 }
