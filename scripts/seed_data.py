@@ -375,6 +375,7 @@ DICTIONARIES: list[tuple[str, str, str, list[tuple[str, str, str, int, bool]]]] 
             ("管理员撤销", "ADMIN_REVOKE", "revoke_admin", 20, False),
             ("强制下线", "REVOKE_ALL", "revoke_all", 30, False),
             ("令牌复用", "TOKEN_REUSE_DETECTED", "revoke_token_reuse", 40, False),
+            ("顶替下线", "SUPERSEDED", "revoke_superseded", 50, False),
         ],
     ),
     (

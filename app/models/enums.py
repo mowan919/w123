@@ -203,13 +203,17 @@ class SessionRevokeReason(StrEnum):
     - `LOGOUT`：用户本人登出（`04 §4` "仅本人 logout"）；
     - `ADMIN_REVOKE`：管理员踢出单个会话（`04 §4` revoke one，Session Phase 落地）；
     - `REVOKE_ALL`：管理员踢出某用户全部会话（`04 §4` revoke all，同上）；
-    - `TOKEN_REUSE_DETECTED`：检测到已轮换的 Refresh Token 被复用（DD-02 P4）。
+    - `TOKEN_REUSE_DETECTED`：检测到已轮换的 Refresh Token 被复用（DD-02 P4）；
+    - `SUPERSEDED`：同账号新登录成功，旧会话被自动顶替下线
+      （`DESIGN-DECISIONS §31`，人类裁定"新登录踢旧会话"）。
+      与 `REVOKE_ALL` 的区别：它由**系统**在登录路径发起，不是管理员动作。
     """
 
     LOGOUT = "LOGOUT"
     ADMIN_REVOKE = "ADMIN_REVOKE"
     REVOKE_ALL = "REVOKE_ALL"
     TOKEN_REUSE_DETECTED = "TOKEN_REUSE_DETECTED"  # noqa: S105 - 撤销原因枚举值
+    SUPERSEDED = "SUPERSEDED"
 
 
 class RefreshTokenRetirement(StrEnum):

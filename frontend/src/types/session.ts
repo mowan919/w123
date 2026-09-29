@@ -14,7 +14,7 @@ export interface Session {
   access_expires_at: DateTime
   refresh_expires_at: DateTime
   revoked_at: DateTime | null
-  revoke_reason: 'LOGOUT' | 'ADMIN_REVOKE' | 'REVOKE_ALL' | 'TOKEN_REUSE_DETECTED' | null
+  revoke_reason: 'LOGOUT' | 'ADMIN_REVOKE' | 'REVOKE_ALL' | 'TOKEN_REUSE_DETECTED' | 'SUPERSEDED' | null
   online: boolean
 }
 

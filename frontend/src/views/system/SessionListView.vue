@@ -66,6 +66,7 @@ const REVOKE_REASON_LABEL: Record<string, string> = {
   ADMIN_REVOKE: '管理员撤销',
   REVOKE_ALL: '强制下线',
   TOKEN_REUSE_DETECTED: '令牌复用',
+  SUPERSEDED: '顶替下线',
 }
 
 function revokeReasonLabel(reason: string): string {

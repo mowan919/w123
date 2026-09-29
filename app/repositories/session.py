@@ -95,36 +95,60 @@ class SessionListFilters:
         }
 
 
-def online_session_condition(now: datetime) -> ColumnElement[bool]:
-    """**在线会话**的 SQL 条件（`04 §5` 在线状态判定的落地）。
+#: 「在线」的空闲阈值（`DESIGN-DECISIONS §31`，人类裁定 2026-09-29）。
+#:
+#: 在线从"会话有效"改为"**在场**"：超过该时长没有任何请求活动的会话
+#: 显示为离线。此前不设阈值（INTERIM-4-04），后果是关掉标签页的会话
+#: 要等 7 天 refresh 过期才从"在线"里消失，同一用户挂着一排假在线会话。
+#: 取 30 分钟：与常见的"会话空闲超时"直觉一致 —— 页面开着就必然有请求
+#: （轮询 / 刷新）维持 `last_active_at`。
+SESSION_ONLINE_IDLE_WINDOW = timedelta(minutes=30)
 
-    INTERIM-4-04：Spec `04 §5` 只说"在线状态由有效 Session / 最近活动**等**规则
-    计算"，未给数值口径。本实现取：
+
+def session_valid_condition(now: datetime) -> ColumnElement[bool]:
+    """会话**仍然有效**（可用于认证）的 SQL 条件。
 
     ```text
-    在线 = 会话未撤销 且 会话总寿命（refresh）未过
+    有效 = 会话未撤销 且 会话总寿命（refresh）未过
     ```
 
-    两个刻意的取舍：
-
-    1. **不把 access 到期算作离线**。access 只活 15 分钟，
-       若把它算进来，那么"用户开着页面但 20 分钟没动"就会显示离线 ——
-       而客户端只要 refresh 一下就能继续用，会话并未结束。
-       因此判定用 refresh（会话总寿命），不用 access。
-    2. **不引入空闲阈值**（如"30 分钟无活动即离线"）。
-       Spec 未规定该数值，自造数值等于发明业务规则；
-       需要按空闲度判断时，调用方读响应里的 `last_active_at` 自行判断。
-
-    与实体方法 `UserSession.is_active` 语义完全一致
-    （SQL 版与 Python 版必须同源，否则会出现"列表说在线、鉴权说失效"）。
-    此外**在线**还要求所属用户为 ACTIVE 且未逻辑删除 ——
-    该部分条件在 `_admin_conditions` 中与用户表一起施加，
-    因为 `authenticate()` 要求"会话有效 **且** 用户 ACTIVE"，
-    被禁用用户的会话实际不可用，报其为"在线"会与系统自身的有效性定义矛盾。
+    这是"能否继续用"的判定，与 `UserSession.is_active` 同源；
+    鉴权语义只认它，**不**受空闲阈值影响 —— 空闲 1 小时的会话
+    依然可以 refresh 后继续用，只是不再显示"在线"。
+    "在线"（在场）判定见 `online_session_condition`。
     """
     return and_(
         UserSession.revoked_at.is_(None),
         UserSession.refresh_expires_at > now,
+    )
+
+
+def online_session_condition(now: datetime) -> ColumnElement[bool]:
+    """**在线（在场）会话**的 SQL 条件（`04 §5` 在线状态判定的落地）。
+
+    `DESIGN-DECISIONS §31` 修订（取代 INTERIM-4-04 的"不设空闲阈值"）：
+
+    ```text
+    在线 = 会话有效 且 最近活动在空闲窗口内
+    ```
+
+    取舍：
+
+    1. **不把 access 到期算作离线**。access 过期本就是可刷新的正常状态。
+    2. **空闲阈值 30 分钟**（`SESSION_ONLINE_IDLE_WINDOW`）：裁定见上。
+       判定需要的是"这个人现在还在不在"，不是"这个会话还能不能用"。
+
+    ⚠️ 本条件与 `UserSession.is_active`（有效性）**有意分叉**：
+    "在线"是展示 / 统计口径（presence），"有效"是鉴权口径（validity）。
+    因此凡是**鉴权 / 生命周期**语义的调用方（如 `list_active_for_user`、
+    管理员踢人名单）必须用 `session_valid_condition` ——
+    用在线条件挑"要撤销的会话"会把空闲但有效的会话漏掉。
+    此外**在线**还要求所属用户为 ACTIVE 且未逻辑删除 ——
+    该部分条件在 `_admin_conditions` 中与用户表一起施加。
+    """
+    return and_(
+        session_valid_condition(now),
+        UserSession.last_active_at >= now - SESSION_ONLINE_IDLE_WINDOW,
     )
 
 
@@ -533,14 +557,16 @@ class SessionRepository:
         """
         stmt = select(UserSession).where(
             UserSession.user_id == user_id,
-            online_session_condition(now),
+            session_valid_condition(now),
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
 
 __all__ = [
     "SESSION_ACTIVITY_WRITE_INTERVAL",
+    "SESSION_ONLINE_IDLE_WINDOW",
     "SessionListFilters",
     "SessionRepository",
     "online_session_condition",
+    "session_valid_condition",
 ]

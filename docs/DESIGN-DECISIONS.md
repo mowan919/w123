@@ -2551,3 +2551,58 @@ field:department_name    0     (无父 → 根节点)
   语义重复的用例移除：它们挂在固定 ID 装置（角色 9001）上，在共享库环境下
   必然撞 `uq_roles_role_code_active` —— 与该文件其余既存红同因，
   而语义已由环境无关的新文件全量覆盖，留着只给"失败集合差集"添噪声。
+
+## 31. 会话在线口径与新登录顶替 —— 实际落地口径（2026-09-29）
+
+用户反馈（附会话管理页截图）：`同一个用户显示多个session在线`。
+
+诊断：admin 三次登录产生的三个会话，全部显示"在线"。成因是 INTERIM-4-04
+的在线判定**不设空闲阈值**（在线 = 未撤销 + refresh 未过 + 用户 ACTIVE），
+refresh TTL 7 天 → 关掉标签页的会话要挂 7 天"在线"。
+
+人类裁定（三选一）：**"两个都要"** —— 既加空闲判定，也开新登录踢旧会话。
+
+### 31.1 在线从"有效"改为"在场"（presence ≠ validity）
+
+- 新常量 `SESSION_ONLINE_IDLE_WINDOW = 30 分钟`；
+  `online_session_condition()` = `session_valid_condition()` + 空闲窗口内有活动。
+- **有意分叉**（取代"两者必须同源"的旧约定）：
+  - "在线" = 展示 / 统计口径（列表状态列、`?online=` 筛选、报表的
+    `online_users` / `online_sessions` —— 后者经同一条件函数自动跟随）；
+  - "有效" = 鉴权口径（`authenticate()`、踢人名单 `list_active_for_user`）。
+  - `list_active_for_user` 刻意**留在有效性**上：按在场挑"要撤销的会话"
+    会把空闲但有效的会话漏掉 —— "看似没人可踢，实际该踢的没踢"。
+  - 鉴权不受影响：空闲 1 小时的会话照样能 refresh 后继续用。
+
+### 31.2 新登录顶替旧会话（新枚举值 `SUPERSEDED`）
+
+- `SessionService.create()`（口令登录与 MFA 完成登录**共用**的签发点）在
+  新会话落库后，撤销同账号其余**有效**会话，原因 `SUPERSEDED`（顶替下线），
+  逐个走 `revoke_and_retire`（refresh 哈希留档，与登出 / 单踢完全同源），
+  并逐个记 `AUTH_SESSION_REVOKE` 审计（reason=SUPERSEDED + superseded_by）。
+- 新会话先落库、后撤旧：同处登录事务，"建新"失败不会白踢旧会话。
+- refresh 轮换**不经过** `create` → 多标签页共用同一会话，不会被自己顶掉。
+- `SessionRevokeReason` 新增 `SUPERSEDED`；CHECK 约束
+  `ck_sessions_revoke_reason` 由迁移 `phase13_session_presence` 扩入
+  （幂等；downgrade 先把 SUPERSEDED 行改记 REVOKE_ALL 再收窄 ——
+  改写历史，但方向是"系统顶替 → 管理员强制下线"，可接受并已登记）。
+- ⚠️ 迁移必须用**原生 SQL DDL** 改约束：环境的 naming_convention 会给
+  `op.create_check_constraint` 传入的名字再套一层 `ck_`，
+  拼出 `ck_sessions_ck_sessions_revoke_reason`。约束名必须与 phase4 一字不差。
+- 字典 `session_revoke_reason` 补项（顶替下线 / `revoke_superseded`），
+  前端类型与回落清单同步补 `SUPERSEDED`。
+
+### 31.3 验证
+
+- 新增 `tests/test_session_presence.py` **10 例**：顶替（原因 / 令牌立即失效 /
+  refresh 轮换不自我顶替 / 审计留痕）+ 在场口径（新鲜在线 / 空闲 40 分钟离线
+  但仍可认证 / 窗口内 25 分钟在线 / 踢人名单仍覆盖空闲会话）+ 常量钉住。
+  ⚠️ 空闲用例必须用**绝对偏移**（40 / 25 分钟）写：按常量算偏移的话，
+  "把窗口改大"这种变异抓不到（首轮 M2 未捕获即此因，已补常量断言）。
+- 受影响套件（auth / session / mfa / 权限矩阵）全套 before/after 差集：
+  **新增失败 0 条**（24 条红均为共享库既存）。
+- 变异 `.workbuddy/tmp/mutate_session_presence.py` **6/6 精确捕获**
+  （去窗口 / 窗口放大 30 天 / 名单用在场条件 / 不顶替 / 错用原因 / 连新会话一起顶）。
+- 迁移在真实库 `upgrade → downgrade → upgrade` 往返一致。
+- 运行中的后端重启后实测：`/admin/sessions?online=true` **total=1**
+  （此前同一页面 3 行在线）。

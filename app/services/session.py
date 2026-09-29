@@ -67,6 +67,9 @@ from app.services.auth_audit import AuthAudit, AuthOperator
 #: 区分它们会让攻击者能通过错误文案枚举"哪些令牌曾经存在"。
 _UNAUTHENTICATED_MESSAGE = "认证失败或登录状态已失效"
 
+#: 会话域审计事件的 resource_type（与 `auth.py` 的 `_SESSION_RESOURCE` 同口径）。
+_SESSION_RESOURCE = "SESSION"
+
 
 @dataclass(frozen=True, slots=True)
 class IssuedTokens:
@@ -141,6 +144,11 @@ class SessionService:
 
         令牌明文**只在此处产生**，随后立即被哈希；
         返回的 `IssuedTokens` 是明文唯一的出口（交给响应体）。
+
+        副作用：同账号其余**有效**会话被自动撤销（`SUPERSEDED`，顶替下线）——
+        同一时刻每个账号至多一个有效会话（`DESIGN-DECISIONS §31`）。
+        登出 / 管理员撤销的语义不受影响；refresh 轮换不经过这里，
+        多标签页共用同一会话，不会被自己顶掉。
         """
         issued_at = now or utc_now()
         access_token = generate_token()
@@ -159,6 +167,29 @@ class SessionService:
             device=describe_device(user_agent),
         )
         await self._sessions.add(user_session)
+
+        # ---- 顶替同账号旧会话（`DESIGN-DECISIONS §31`，人类裁定 2026-09-29）----
+        # 新会话先落库、后撤旧：与签发同处一个事务，"建新"失败就不会白踢旧会话。
+        # 名单按**有效性**挑（`session_valid_condition`，经 list_active_for_user），
+        # 空闲但未过期的会话照样要被顶替 —— 它们仍然能认证。
+        others = await self._sessions.list_active_for_user(user.id, now=issued_at)
+        operator = AuthOperator.of_user(
+            user_id=user.id, username=user.username, ip=ip, user_agent=user_agent
+        )
+        for other in others:
+            if other.id == user_session.id:
+                continue
+            if await self._sessions.revoke_and_retire(
+                other, reason=SessionRevokeReason.SUPERSEDED, now=issued_at
+            ):
+                self._audit.success(
+                    action=AuditAction.AUTH_SESSION_REVOKE,
+                    operator=operator,
+                    resource_type=_SESSION_RESOURCE,
+                    resource_id=other.id,
+                    reason="SUPERSEDED",
+                    after={"superseded_by": user_session.id},
+                )
 
         return user_session, IssuedTokens(
             access_token=access_token,

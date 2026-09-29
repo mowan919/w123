@@ -78,9 +78,10 @@ class SessionListQuery(BaseModel):
         default=None,
         description=(
             "在线状态三态筛选：省略 / null=**不筛选**（返回全部会话，含已撤销与已过期）；"
-            "true=仅在线（未撤销且会话总寿命未过，且所属用户为 ACTIVE）；"
-            "false=仅离线 —— 在线的**补集**，即已撤销、会话总寿命已过、"
-            "或所属用户不是 ACTIVE 三者之一。\n\n"
+            "true=仅在线（会话有效，且最近活动在空闲窗口内，且所属用户为 ACTIVE；"
+            "口径见 `DESIGN-DECISIONS §31`）；"
+            "false=仅离线 —— 在线的**补集**（已撤销 / 总寿命已过 / 空闲超时 / "
+            "所属用户不是 ACTIVE）。\n\n"
             "默认不筛选，因为会话列表的主要用途之一是排查"
             "'某个登录为什么失效了'，那种场景下恰恰需要看到已结束的会话。"
         ),
@@ -160,7 +161,9 @@ class SessionResponse(BaseModel):
     revoke_reason: SessionRevokeReason | None = Field(
         default=None, description="撤销原因；与 revoked_at 同生共死"
     )
-    online: bool = Field(description="当前是否在线（会话有效且所属用户为 ACTIVE）")
+    online: bool = Field(
+        description="当前是否在线（在场口径：会话有效 + 空闲窗口内有活动 + 所属用户 ACTIVE；§31）"
+    )
 
 
 class SessionPageResponse(BaseModel):
