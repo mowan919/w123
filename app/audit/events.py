@@ -169,6 +169,27 @@ class AuditAction(StrEnum):
     #: 撤回公告（`POST /admin/notifications/announcements/{id}/revoke`）。
     NOTIFICATION_REVOKE = "NOTIFICATION_REVOKE"
 
+    # ---- V3.1 四新增域（VCTN §33，结构层 CRUD 的审计动作） ----
+    # 业务规则（等级计算 / 积分记账 / 工具执行 / 博客发布流）属 §09-D 未冻结项，
+    # 本轮**不实现**，因此这里只提供结构层 CRUD 所需的审计动作；
+    # 后续冻结业务语义后，再为每个业务动作补专属 `RESOURCE_VERB`。
+    BIZ_USER_CREATE = "BIZ_USER_CREATE"
+    BIZ_USER_UPDATE = "BIZ_USER_UPDATE"
+    BIZ_USER_DELETE = "BIZ_USER_DELETE"
+    GROWTH_CREATE = "GROWTH_CREATE"
+    GROWTH_UPDATE = "GROWTH_UPDATE"
+    GROWTH_DELETE = "GROWTH_DELETE"
+    TOOL_CREATE = "TOOL_CREATE"
+    TOOL_UPDATE = "TOOL_UPDATE"
+    TOOL_DELETE = "TOOL_DELETE"
+    BLOG_CREATE = "BLOG_CREATE"
+    BLOG_UPDATE = "BLOG_UPDATE"
+    BLOG_DELETE = "BLOG_DELETE"
+    BIZ_USER_READ = "BIZ_USER_READ"
+    GROWTH_READ = "GROWTH_READ"
+    TOOL_READ = "TOOL_READ"
+    BLOG_READ = "BLOG_READ"
+
 
 class AuditResult(StrEnum):
     """审计结果。"""

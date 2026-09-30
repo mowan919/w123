@@ -152,6 +152,17 @@ class ApiPermissionCode(StrEnum):
     #: DEPARTMENT_ADMIN / VIEWER —— 公告面向全员广播，属超管职责，
     #: 与"字典与参数维护不给部门管理员"同一取向。
     NOTIFICATION_MANAGE = "NOTIFICATION_MANAGE"
+    #: 管理统一业务用户域（V3.1，VCTN §33）。
+    #:
+    #: 读与写共用一个权限位（与 `DICT_MANAGE` 同口径）：业务用户清单本身是
+    #: 敏感信息，且 §33 未给出业务用户相关的资源编码表，拆细只会增加待冻结项。
+    BIZ_USER_MANAGE = "BIZ_USER_MANAGE"
+    #: 管理用户成长中心域（V3.1，VCTN §33）。
+    GROWTH_MANAGE = "GROWTH_MANAGE"
+    #: 管理 Tools 工具域（V3.1，VCTN §33）。
+    TOOL_MANAGE = "TOOL_MANAGE"
+    #: 管理 Blog 博客域（V3.1，VCTN §33）。
+    BLOG_MANAGE = "BLOG_MANAGE"
 
 
 class AuthorizationService:

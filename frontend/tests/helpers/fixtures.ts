@@ -6,6 +6,7 @@ import type {
   PermissionPageItem,
   TokenPair,
 } from '@/types'
+import { V31_PAGE_SPECS } from '@/api/endpoints/v31-pages'
 
 /**
  * 测试夹具。
@@ -32,14 +33,15 @@ export interface PageSpec {
 }
 
 /**
- * 十个页面，与 `VIEW_REGISTRY` 的十个键一一对应。
+ * 系统管理域的页面（Phase 1~14），每一个 `component_path` 都是
+ * `VIEW_REGISTRY` 里**真实存在**的键。
  *
  * 每个页面都显式给出 `component_path`（等于注册表键），因为后端 CHECK 约束
  * 保证了 PAGE 必须同时具备 `route_path` 与 `component_path`。
  * 覆盖全部键是关键：只要有一个键没被任何页面引用，"注册表里有、文件不存在"
  * 这类错误就测不出来。
  */
-export const FULL_PAGE_SPECS: PermissionPageItem[] = [
+const SYSTEM_PAGE_SPECS: PermissionPageItem[] = [
   { id: '1001', code: 'system:user:page', name: '用户管理', route_path: '/system/users', component_path: '/system/user', sort_order: 10 },
   { id: '1002', code: 'system:department:page', name: '部门管理', route_path: '/system/departments', component_path: '/system/department', sort_order: 20 },
   { id: '1003', code: 'system:role:page', name: '角色管理', route_path: '/system/roles', component_path: '/system/role', sort_order: 30 },
@@ -66,7 +68,14 @@ export const FULL_PAGE_SPECS: PermissionPageItem[] = [
  * 少了 `id`、且 `route_path` 写死成非空 `string` —— 于是"某个页面的
  * `route_path` 是 null"这个真实情况在测试里根本构造不出来。
  * 少一层转换，就少一处能藏住错误的缝。
+ *
+ * V3.1 的四域结构层页面（44 条）来自 `@/api/endpoints/v31-pages`，由
+ * `scripts/gen_v31_crud.py` 从 ORM 模型生成 —— 与后端种子用的是**同一份**清单。
+ * 它们共用 `crud/generic` 这一个注册表键，因此"契约里有 44 条页面而
+ * 前端只认一个键"这件事是被真实覆盖到的，而不是靠手写夹具碰巧成立。
  */
+export const FULL_PAGE_SPECS: PermissionPageItem[] = [...SYSTEM_PAGE_SPECS, ...V31_PAGE_SPECS]
+
 export function buildPages(): PermissionPageItem[] {
   return FULL_PAGE_SPECS
 }

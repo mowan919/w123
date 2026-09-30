@@ -318,10 +318,114 @@ class NotificationLevel(StrEnum):
     IMPORTANT = "IMPORTANT"
 
 
+# ===========================================================================
+# 业务用户 / 成长 / 工具 / 博客 域枚举（V3.1 数据库设计基线）
+# ---------------------------------------------------------------------------
+# 仅收录 DDL 基线或域文档**显式给出取值域**的列；未给出取值域的 status /
+# 类型列一律用普通 VARCHAR（不发明取值、不猜业务规则，见 DESIGN-DECISIONS §33）。
+# ===========================================================================
+
+
+class BizUserLoginIdentityType(StrEnum):
+    """业务用户登录身份类型（`02 统一业务用户域 §3`）。
+
+    `USERNAME` / `EMAIL` / `PHONE` 三种，域文档显式枚举。
+    """
+
+    USERNAME = "USERNAME"
+    EMAIL = "EMAIL"
+    PHONE = "PHONE"
+
+
+class ToolExecutionMode(StrEnum):
+    """工具执行模式（`04 Tools 工具域 §2`）。
+
+    `FRONTEND` 纯前端执行 / `BACKEND` 后端执行 / `ASYNC` 异步执行。
+    """
+
+    FRONTEND = "FRONTEND"
+    BACKEND = "BACKEND"
+    ASYNC = "ASYNC"
+
+
+class ToolLifecycleStatus(StrEnum):
+    """工具生命周期状态（`04 Tools 工具域 §2`）。
+
+    `DRAFT` 草稿 / `TESTING` 测试中 / `ACTIVE` 已上线 / `DISABLED` 已下线。
+    """
+
+    DRAFT = "DRAFT"
+    TESTING = "TESTING"
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
+class ToolAccessSubjectType(StrEnum):
+    """工具访问主体类型（`04 Tools 工具域 §5`）。
+
+    `GUEST` 游客 / `USER_LEVEL` 用户等级（必须同时带 `user_level_id`）。
+    """
+
+    GUEST = "GUEST"
+    USER_LEVEL = "USER_LEVEL"
+
+
+class BlogAuthorApplicationStatus(StrEnum):
+    """博客作者申请状态（`05 Blog 博客域 §2`）。
+
+    `PENDING` 待审核 / `APPROVED` 通过 / `REJECTED` 拒绝。
+    """
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class BlogArticleStatus(StrEnum):
+    """博客文章状态（`05 Blog 博客域 §4`）。
+
+    `DRAFT` 草稿 / `PENDING_REVIEW` 待审核 / `REJECTED` 驳回 /
+    `PUBLISHED` 已发布 / `OFFLINE` 已下线。
+    """
+
+    DRAFT = "DRAFT"
+    PENDING_REVIEW = "PENDING_REVIEW"
+    REJECTED = "REJECTED"
+    PUBLISHED = "PUBLISHED"
+    OFFLINE = "OFFLINE"
+
+
+class CosmeticType(StrEnum):
+    """装扮类型（`03 用户成长中心 §11`）。
+
+    `AVATAR` 头像 / `AVATAR_FRAME` 头像框 / `CROWN` 皇冠 /
+    `BADGE` 徽章 / `TITLE` 头衔 / `NAME_EFFECT` 昵称特效。
+    """
+
+    AVATAR = "AVATAR"
+    AVATAR_FRAME = "AVATAR_FRAME"
+    CROWN = "CROWN"
+    BADGE = "BADGE"
+    TITLE = "TITLE"
+    NAME_EFFECT = "NAME_EFFECT"
+
+
+# 其余未在 DDL 基线 / 域文档显式枚举取值域的 status / 类型列
+# （如 biz_user.status、tool_category.status、blog_category.status、
+# blog_author.status、blog_comment.status、各类 rule/level/cosmetic 的 status、
+# 以及 visibility / gender / operator_type / transaction_type / source_type /
+# event_type / result 等）一律以普通 VARCHAR 落库，取值域等待冻结决策，
+# 不在 Agent 侧发明。
+
+
 __all__ = [
     "FIELD_ACCESS_READABLE",
     "FIELD_ACCESS_WRITABLE",
     "AnnouncementAudience",
+    "BizUserLoginIdentityType",
+    "BlogArticleStatus",
+    "BlogAuthorApplicationStatus",
+    "CosmeticType",
     "DepartmentStatus",
     "DictStatus",
     "FieldAccessLevel",
@@ -337,6 +441,9 @@ __all__ = [
     "SessionRevokeReason",
     "SystemParamStatus",
     "SystemParamType",
+    "ToolAccessSubjectType",
+    "ToolExecutionMode",
+    "ToolLifecycleStatus",
     "UserStatus",
     "most_permissive_field_level",
 ]

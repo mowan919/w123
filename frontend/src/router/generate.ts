@@ -56,6 +56,11 @@ export const VIEW_REGISTRY: Record<string, () => Promise<{ default: Component }>
   // 通知**管理**（发公告）。与顶栏铃铛指向的 `/notifications`（消息中心）
   // 是不同的两页：前者需要权限位、管"发给谁"，后者人人可达、管"我收到什么"。
   'system/notification': () => import('@/views/system/NotificationManageView.vue'),
+  // V3.1 四新增域（统一业务用户 / 成长中心 / Tools / Blog）的**结构层**页面
+  // （VCTN §33）。44 个实体的结构层交互完全一致，因此共用**一个**视图：
+  // 它按路由路径里的 `<kebab>` 反查 `V31_META`，渲染对应的表格与表单。
+  // 与之对应的后端契约是 44 条 PAGE（`/v31/<kebab>` + 本键）。
+  'crud/generic': () => import('@/views/crud/GenericCrudView.vue'),
 }
 
 /**

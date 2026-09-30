@@ -54,6 +54,10 @@ from app.api.v1.endpoints import (
     sessions,
     statistics,
     users,
+    v31_biz_user,
+    v31_blog,
+    v31_growth,
+    v31_tool,
 )
 
 api_router = APIRouter()
@@ -79,5 +83,19 @@ api_router.include_router(statistics.router)
 # 它按 `/auth/me`、`/auth/mfa*` 的先例挂在认证域（见
 # `endpoints/notifications.py` 的模块文档与 `DESIGN-DECISIONS §32`）。
 api_router.include_router(notifications.router)
+# V3.1 四新增域的**结构层 CRUD**（VCTN §33）。每个域一个聚合 `ROUTER`，
+# 域内每个实体一组 `/v31/<kebab>` 子路由（list/get/create/update/delete）。
+#
+# 授权是**域级单一位**（BIZ_USER_MANAGE / GROWTH_MANAGE / TOOL_MANAGE /
+# BLOG_MANAGE），由 `require_api_permission` 在**路由层**声明式绑定 ——
+# 因此这些路由全部落在 `test_route_authorization_guard.py` 的
+# "已声明"一侧，不需要登记白名单。
+#
+# 业务规则（等级计算 / 积分记账 / 工具执行 / 博客发布流）属 `09-D` 未冻结项，
+# 本轮只交付结构层，不含任何业务语义（详见 `app/crud/base.py` 的模块文档）。
+api_router.include_router(v31_biz_user.ROUTER)
+api_router.include_router(v31_growth.ROUTER)
+api_router.include_router(v31_tool.ROUTER)
+api_router.include_router(v31_blog.ROUTER)
 
 __all__ = ["api_router"]

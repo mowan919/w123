@@ -28,6 +28,8 @@
 
 from __future__ import annotations
 
+from _v31_seed import V31_BUTTONS, V31_MENU_PAGES, V31_MENUS, V31_PAGES
+
 from app.core.scope import DataScope
 from app.models.enums import FieldAccessLevel
 
@@ -250,6 +252,30 @@ MENU_PAGES: list[tuple[str, str]] = [
     ("system:audit-log", "system:audit-log:page"),
     ("system:trace", "system:trace:page"),
 ]
+
+# ---------------------------------------------------------------- V3.1 四新增域
+#
+# 结构层 CRUD 页面（VCTN §33）。清单由 `scripts/gen_v31_crud.py` 生成到
+# `scripts/_v31_seed.py`，这里在主清单**末尾 extend**，好处是
+# `ROLE_PAGES` / `ROLE_BUTTONS` 里 SUPER_ADMIN 的"全部"派生自动包含它们
+# （它们写的是 `[page[0] for page in PAGES]` 这类自动推导）。
+#
+# 为什么只登记 PAGES / MENUS / MENU_PAGES / BUTTONS，而**不登记 APIS**
+# -----------------------------------------------------------------
+# V3.1 的权限是**域级单一位**（`BIZ_USER_MANAGE` / `GROWTH_MANAGE` /
+# `TOOL_MANAGE` / `BLOG_MANAGE`，见 `app/services/authorization.py`）：
+# 44 个实体共用 4 个权限码。若按实体逐条登记进 `APIS`，会同时违反
+# `APIS` 的编码唯一性（`test_resource_codes_are_unique_within_each_kind`）
+# 并写出 44 条指向同一权限码的冗余台账。
+#
+# 那"不登记 APIS 会不会导致超管用不了"——不会：`AuthorizationService
+# .has_api_permission` 对 `SUPER_ADMIN` 集中 bypass（包括 `ROLE_APIS`
+# 里没出现的权限码）。因此 V3.1 端点对超管开箱即用，而
+# DEPARTMENT_ADMIN / VIEWER 拿不到域级写权限，正是期望的收敛。
+PAGES.extend(V31_PAGES)
+BUTTONS.extend(V31_BUTTONS)
+MENUS.extend(V31_MENUS)
+MENU_PAGES.extend(V31_MENU_PAGES)
 
 # ---------------------------------------------------------------- 授权映射
 

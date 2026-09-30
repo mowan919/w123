@@ -2928,3 +2928,162 @@ API 权限位。收件箱是"我自己的消息"，任何已认证用户都有 �
 **验证手段必须按层配**：行为测试管"拦不拦得住"，
 静态护栏管"该声明的地方声明了没有"。见 §32.7 与
 `docs/DESIGN-DECISIONS.md` 里"分层 PASS ≠ 串联成立"的一贯取向。
+
+## 33. V3.1 新增四域落地（仅模型 + 迁移）—— 2026-09-30
+
+> 依据：`docs/vctn_database_full_design_v3.1`（README / 00~09）。
+> 裁定（AskUserQuestion）：本轮**只落结构、不猜业务规则** ——
+> "全新区先建模型 + 迁移（推荐）"。仓储 / 服务 / API / 前端不在本轮范围。
+
+### 33.1 落地的四个新域
+
+| 域 | 模型文件 | 表 |
+|----|----------|-----|
+| 统一业务用户 | `app/models/biz_user.py` | biz_user, biz_user_level, biz_user_profile, biz_user_login_identity, biz_user_session, biz_user_login_log, biz_user_password_history, biz_user_verification |
+| 用户成长中心 | `app/models/growth.py` | biz_user_growth_account, biz_user_point_account, biz_growth_rule, biz_point_rule, biz_growth_event, biz_user_growth_transaction, biz_user_point_transaction, biz_user_level_history, biz_user_level_benefit, biz_cosmetic, biz_user_cosmetic, biz_user_equipment, biz_task, biz_user_task, biz_achievement, biz_user_achievement |
+| Tools 工具域 | `app/models/tool.py` | tool_category, tool, tool_version, tool_component_registry, tool_access_policy, tool_usage_event, tool_usage_daily, tool_recent_usage, tool_popularity_daily |
+| Blog 博客域 | `app/models/blog.py` | blog_author, blog_author_application, blog_category, blog_article, blog_article_version, blog_tag, blog_article_tag, blog_comment, blog_like, blog_favorite, blog_user_follow |
+
+- 系统管理域（`admin_users` / `roles` / `departments` / `permission_resources` /
+  `sessions` / `sys_dict_*`）**已冻结实现，本轮不动、不重命名**。
+- 新枚举（仅 DDL/文档显式枚举取值域的列才建枚举列）：`BizUserLoginIdentityType`、
+  `ToolExecutionMode`、`ToolLifecycleStatus`、`ToolAccessSubjectType`、
+  `BlogAuthorApplicationStatus`、`BlogArticleStatus`、`CosmeticType`
+  （均 `native_enum=False` + CHECK，约束名走 naming_convention）。
+- **未枚举**的 status / 类型列（biz_user.status、tool_category.status、
+  visibility、gender、transaction_type、result、tool_version.status 等）一律
+  **普通 VARCHAR**，取值域待冻结 —— 严守"不发明未冻结取值"的纪律（`09-D` 禁令）。
+- 主键全部 BIGINT/Snowflake；时间 UTC；软删除 `deleted_at`（index=True）。
+
+### 33.2 迁移
+
+- 文件：`alembic/versions/20260930_1404_f2ea6e296956_phase15_v31_new_domains.py`
+- `down_revision = phase14_notifications`，`revision = f2ea6e296956`。
+- 已 `alembic upgrade head` 应用到开发库，并通过 `alembic check`（零漂移）。
+- 门禁：`tests/test_hardening.py` 三项全绿 ——
+  `test_alembic_sees_no_drift`、`test_no_cascade_foreign_keys`
+  （本迁移新增 FK 全部 RESTRICT，无新 CASCADE，白名单仍是 `mfa_challenges` 一条）、
+  `test_soft_delete_unique_indexes_are_partial`（含本迁移新增的 8 个 partial unique index）。
+
+### 33.3 两个被踩出的建模坑（已修）
+
+1. **软删除感知唯一 = 仅 partial unique index，不要普通 UniqueConstraint**。
+   初版在 biz_user_level / biz_cosmetic / blog_category / tool_category / tool /
+   blog_article 上同时写了 `UniqueConstraint` 与 partial `Index`，逻辑自相矛盾
+   （普通唯一约束会让软删除后重建同名失败）。已对齐 `roles`/`admin_users` 的写法：
+   软删除表的"可复用 code/slug"只保留 `Index(..., unique=True, postgresql_where=text("deleted_at IS NULL"))`，
+   命名统一 `uq_<table>_<col>_active`。
+2. **降序索引写法**：`Index("idx", "user_id", "created_at", text("DESC"))`
+   会被 autogenerate 渲染成非法 SQL `(user_id, created_at, DESC)`。正确写法
+   是 `Index("idx", "user_id", text("created_at DESC"))`，已修正
+   idx_biz_growth_tx_user_time / idx_biz_point_tx_user_time /
+   ix_blog_comment_article_time。
+
+### 33.4 INTERIM 技术推导表（DDL 基线未给列定义，等待冻结）
+
+以下表 `08-DDL基线.sql` **未含列定义**，按最小可审查结构推导，列结构待冻结裁定：
+- `biz_user_login_log` / `biz_user_password_history` / `biz_user_verification`
+  （`02 §5~§7` 仅文字描述）
+- `biz_task` / `biz_user_task` / `biz_achievement` / `biz_user_achievement`
+  （成长中心，DDL 基线无对应段落）
+
+### 33.5 本轮未做（明确不做）
+
+- 仓储 / 服务 / API / 前端页面：用户裁定"只建模型 + 迁移"。
+  → **后续已补**，见 §34（同一份裁定的升级：结构层 + 前端，仍未碰业务规则）。
+- 未冻结业务语义（`09-C`）：规则引擎、幂等消费、等级计算、周期限制、
+  Redis 额度 key、具体数值 —— 属未冻结项，本轮不实现。
+- 未提交 git（`git add` / `commit` 待用户确认）。
+
+## 34. V3.1 新增四域：结构层（仓储 / 服务 / API）+ 前端 —— 2026-09-30
+
+> 依据：同一份 V3.1 文档 + 裁定的升级版"**全量结构层 + 前端（推荐）**"。
+> 与 §33 的差别：§33 只落"模型 + 迁移"（数据形状）；本节落"结构层 CRUD +
+> 前端管理页"（可操作性），但**业务规则一律不实现** —— 见 §34.5。
+
+### 34.1 为什么是"通用底座 + 代码生成"而不是 44 份 bespoke
+
+四新增域共 **44 张表**（biz_user 8 / growth 16 / tool 9 / blog 11，见 §33.1）。
+若逐实体手写仓储 + 服务 + 契约 + 路由 + 前端视图：
+
+- 44 × 5 层 ≈ 220 个文件，其中 200 个是"名字不同、内容相同"的重复；
+- 每一处重复都是**可以写错、且错了没人发现**的地方（漏挂权限依赖、漏写审计、
+  排序漂移、分页边界不一致……）。
+
+因此改为：
+
+- **一个通用底座** `app/crud/base.py`（332 行）：`BaseCrudRepository[T]` +
+  `BaseCrudService[T]` + `CrudPage`。软删除感知、`(created_at desc, id desc)`
+  全序分页、`exclude_unset` 局部更新、服务端托管字段回填、审计留痕 —— 44 个实体
+  **共用同一套行为**，差异只在"绑哪个模型 / 哪个权限码 / 哪个审计动作"。
+- **一次性代码生成器** `scripts/gen_v31_crud.py`（787 行）：introspect ORM 模型，
+  生成**静态、强类型**的 schema 与 endpoint。为什么不用运行时动态模型 ——
+  `mypy --strict` 下动态 `create_model` 无法通过（字段类型不可静态判定）。
+
+### 34.2 后端落地物
+
+| 物 | 文件 | 内容 |
+|----|------|------|
+| 通用底座 | `app/crud/base.py` | `BaseCrudRepository` / `BaseCrudService` / `CrudPage` |
+| 权限码 | `app/services/authorization.py` | 新增 4 个域级权限位 `BIZ_USER_MANAGE` / `GROWTH_MANAGE` / `TOOL_MANAGE` / `BLOG_MANAGE` |
+| 审计动作 | `app/audit/events.py` | 新增 16 个 `*_CREATE/UPDATE/DELETE/READ`（每域 4 个） |
+| 审计分类 | `app/audit/classify.py` | 把上述 16 个动作登记进写 / 读分类 |
+| 契约 | `app/schemas/v31_{biz_user,growth,tool,blog}.py` | 每实体 `Response` / `ListQuery`（含 `filters()`）/ `CreateRequest` / `UpdateRequest` / `PageResponse` |
+| 路由 | `app/api/v1/endpoints/v31_{domain}.py` | 每实体一组 `list/get/create/update/delete`，汇总为 `ROUTER` |
+| 注册 | `app/api/v1/router.py` | `include_router(v31_*.ROUTER)` → 路径 `/api/v1/admin/<kebab>` |
+
+- 权限收敛：四域共用 **4 个域级权限码**（而非 44 个实体级），写操作挂
+  `require_api_permission(<域码>, action=..., resource_type=...)`；服务层再
+  `assert_manage` 纵深断言。
+- 路由形态：`GET/POST /admin/<kebab>`、`GET/PUT/DELETE /admin/<kebab>/{entity_id}`，
+  即 **44 × 5 = 220** 条 operation（未计既有 69 条，OpenAPI 合计 297 条 / 149 path）。
+
+### 34.3 种子（`scripts/seed_data.py` + 生成的 `scripts/_v31_seed.py`）
+
+- 清单：**44 页 / 49 菜单 / 44 菜单-页面 / 132（=44×3）按钮**，在主清单**末尾
+  extend**，从而 SUPER_ADMIN 的"全部页面 / 全部按钮"自动派生包含它们。
+- **刻意不登记 `APIS`**：V3.1 是域级单一位，若逐实体登记会违反 `APIS` 编码唯一性
+  （`test_resource_codes_are_unique_within_each_kind`）。超管走
+  `has_api_permission` 的 **SUPER_ADMIN 集中 bypass**，端点开箱即用；
+  DEPARTMENT_ADMIN / VIEWER 拿不到域级写权限，正是期望的收敛。
+- `--dry-run` 复核：走完全相同的代码路径后 `rollback()`，输出
+  "资源 225 新建 / 295 可用"，与预期一致。
+
+### 34.4 前端落地物
+
+| 物 | 文件 | 内容 |
+|----|------|------|
+| 契约客户端 | `frontend/src/api/endpoints/v31-crud.ts` | 5 个泛型函数（list/get/create/update/delete），按 `kebab` 参数区分 44 个资源 |
+| 列元数据 | `frontend/src/api/endpoints/v31-meta.ts`（生成） | `V31_META` + `V31_META_BY_KEBAB`（路由段 → 资源定义） |
+| 页面夹具 | `frontend/src/api/endpoints/v31-pages.ts`（生成） | `V31_PAGE_SPECS`（44 条），供测试夹具摊平 |
+| 入口视图 | `frontend/src/views/crud/GenericCrudView.vue` | 从路由解出 `kebab` → 交给面板；反查不到资源时**如实报错**而非渲染空表 |
+| 资源面板 | `frontend/src/views/crud/CrudResourcePanel.vue`（519 行） | 复用 `DataTable/s` + 分页 + 表单弹窗；按 `v31-meta` 的列类型渲染 |
+| 注册表 | `frontend/src/router/generate.ts` | 新增 **唯一**一个键 `crud/generic` → 44 个契约页面共用 |
+
+- **44 个页面共用 1 个注册表键**：`component_path = 'crud/generic'`、
+  `route_path = '/v31/<kebab>'`，视图靠路径反查资源。
+- 测试夹具 `frontend/tests/helpers/fixtures.ts` 的 `FULL_PAGE_SPECS`
+  改为 `[...SYSTEM_PAGE_SPECS, ...V31_PAGE_SPECS]`；`generate.spec.ts` 的
+  "注册表 ↔ 文件" 断言同步放行 `crud/generic`。这样"契约里 44 条页面而前端只认
+  一个键"是被**真实覆盖**的，不是靠手写夹具碰巧成立。
+
+### 34.5 明确不实现（严守 §09-D）
+
+以下均属**未冻结业务规则**，结构层只做 CRUD，**不发明取值域、不写规则**：
+
+- 等级计算 / 成长值入账 / 积分记账 / 幂等消费 / 周期限额 / Redis 额度 key；
+- 工具执行（`ToolExecutionMode` 的运行时语义）/ 生命周期流转；
+- 博客发布流（审核状态机、版本发布、审核人回填规则）；
+- 统一业务用户的登录 / 注册 / 二次校验业务。
+
+对应地，未枚举的 `status` / 类型列仍是普通 VARCHAR（§33.1），前端也**不放**
+"按状态流转"之类的动作 —— 只做结构层的增删改查。
+
+### 34.6 本轮门禁结果
+
+- 后端：`ruff check .` / `ruff format --check .` / `mypy`（136 源文件）**全绿**；
+  `alembic check` 零漂移；`test_hardening.py` 三项（迁移零漂移 / 无新 CASCADE /
+  partial unique index）**全绿**；`test_seed_data.py` +
+  `test_route_authorization_guard.py` + `test_log_classification.py` **54 passed**。
+- 前端：`npm run typecheck` / `npm run lint` 通过；`npx vitest run`
+  **38 文件 / 463 用例全绿**；`npm run build` 成功（`GenericCrudView` chunk 55.2 kB）。

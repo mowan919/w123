@@ -117,6 +117,18 @@ READ_ONLY_ACTIONS: frozenset[AuditAction] = frozenset(
         # 改动是把这两个动作从本集合搬到 `SECURITY_ACTIONS` 一次。
         AuditAction.AUDIT_LOG_READ,
         AuditAction.AUDIT_TRACE_READ,
+        # ---- V3.1 四新增域（VCTN §33）：结构层 CRUD 的读操作 ----
+        #
+        # 与 `USER_READ` / `DEPARTMENT_READ` 同一口径：管理员查看业务数据
+        # 属"管理员行为"，必须留痕，但把它塞进 `operation_logs`
+        # 会让该表退化成读日志（见模块文档）。
+        #
+        # 业务规则（等级计算 / 积分记账 / 工具执行 / 博客发布流）属 §09-D
+        # 未冻结项，本轮不实现；冻结后若新增业务动作，需同步登记到三个集合之一。
+        AuditAction.BIZ_USER_READ,
+        AuditAction.GROWTH_READ,
+        AuditAction.TOOL_READ,
+        AuditAction.BLOG_READ,
     }
 )
 
@@ -162,6 +174,28 @@ OPERATION_ACTIONS: frozenset[AuditAction] = frozenset(
         # （它有社会工程学用途），改动是把这两个动作搬进 `SECURITY_ACTIONS` 一次。
         AuditAction.NOTIFICATION_ANNOUNCE,
         AuditAction.NOTIFICATION_REVOKE,
+        # ---- V3.1 四新增域（VCTN §33）：结构层 CRUD 的写操作 ----
+        #
+        # 结构层 CRUD 只是把行写进表 / 改掉 / 标记删除，不改变任何人的
+        # 权限、不涉及认证与会话，属 `06 §1` 的"普通业务操作"。
+        # 因此进 `operation_logs`（与 `audit_logs` 同写，180 天），
+        # 而不是 `security_logs`。
+        #
+        # 反方向的风险已记录：若某域后续冻结出"会放宽安全策略"的业务动作
+        # （例如工具执行触发外呼），改动是把那一个动作单独搬进
+        # `SECURITY_ACTIONS` 一次，而不是把整个域搬过去。
+        AuditAction.BIZ_USER_CREATE,
+        AuditAction.BIZ_USER_UPDATE,
+        AuditAction.BIZ_USER_DELETE,
+        AuditAction.GROWTH_CREATE,
+        AuditAction.GROWTH_UPDATE,
+        AuditAction.GROWTH_DELETE,
+        AuditAction.TOOL_CREATE,
+        AuditAction.TOOL_UPDATE,
+        AuditAction.TOOL_DELETE,
+        AuditAction.BLOG_CREATE,
+        AuditAction.BLOG_UPDATE,
+        AuditAction.BLOG_DELETE,
     }
 )
 
